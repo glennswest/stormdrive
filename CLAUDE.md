@@ -109,7 +109,11 @@ src/
 - [x] Repo, CLAUDE.md, README, CHANGELOG, .gitignore
 - [x] Crate scaffold compiles + tests pass on dev.g8.lo (27/27, clippy
       clean, release binary smoke-tested against a real disk)
-- [ ] File stormblock integration/bug issues (rule 11)
+- [x] File stormblock integration/bug issues (rule 11) — stormblock#65
+      (unstable DeviceId), #66 (DELETE drives guard), #67 (evacuate_slab
+      break), #68 (drive gauges never set), #69 (RAID failure states
+      unreachable), #70 (drive-plane integration surface: stable id on
+      open, slab↔drive link, HTTP drain, failure-domain labels)
 - [x] Tag v0.1.0
 
 ### Phase 1: Discovery + inventory
