@@ -1,5 +1,42 @@
 # Changelog
 
+## [Unreleased]
+
+### 2026-08-26
+- **docs:** Position in the distributed hierarchy: physical chain
+  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay
+  with cluster as the logical overlay; stormdrive authoritative below the
+  node only; shared label vocabulary pinned. stormblock#72 filed
+  (one hierarchical failure-domain model, cross-cluster moves/RAID) with
+  the full-site-hierarchy amendment
+- **docs:** Testbed recorded: three clusters as three levels — 2.5" shelf
+  (high performance), 3.5" shelf (medium), PVE cluster (backup)
+- **docs:** Logical overlay is multicluster-of-multiclusters (recursive
+  federation) with tiering across clusters — a tier can be a whole
+  cluster, tier migration is cross-cluster movement; #72 amended
+
+## [v0.3.0] — 2026-08-26
+
+### Added
+- Shelf-rig topology (NetApp DS-series target): `Location` is now
+  controller → shelf → bay, with shelf identity read from the SES
+  processor's SCSI device (vendor/model + serial via VPD page 0x80 — the
+  canonical key, since a dual-IOM shelf is two enclosure devices with one
+  serial); controllers carry scsi_host/PCIe BDF/driver
+- Multipath awareness: observations grouped by WWID-derived DriveId — one
+  Drive with a `paths` list and a stable sorted-first primary, instead of
+  a path that flaps between IOMs every scan; location re-resolved on path
+  changes
+- `GET /api/v1/topology` — the controller → shelf → drive tree, shelves
+  deduplicated by serial
+- UI shows shelf model/serial + bay in the location column and a
+  path-count badge on multipath drives
+
+### Documentation
+- Work plan: pending drive-crypto phase (SED/OPAL, crypto erase — scope to
+  confirm); stormblock#71 filed (shelf/controller failure-domain-aware
+  slab placement)
+
 ## [v0.2.0] — 2026-08-26
 
 ### Added
@@ -58,40 +95,3 @@
   API on :9092, stormd summary card, stormblock integration + migration
   flow)
 - Project bootstrap: CLAUDE.md work plan, README
-
-## [v0.3.0] — 2026-08-26
-
-### Added
-- Shelf-rig topology (NetApp DS-series target): `Location` is now
-  controller → shelf → bay, with shelf identity read from the SES
-  processor's SCSI device (vendor/model + serial via VPD page 0x80 — the
-  canonical key, since a dual-IOM shelf is two enclosure devices with one
-  serial); controllers carry scsi_host/PCIe BDF/driver
-- Multipath awareness: observations grouped by WWID-derived DriveId — one
-  Drive with a `paths` list and a stable sorted-first primary, instead of
-  a path that flaps between IOMs every scan; location re-resolved on path
-  changes
-- `GET /api/v1/topology` — the controller → shelf → drive tree, shelves
-  deduplicated by serial
-- UI shows shelf model/serial + bay in the location column and a
-  path-count badge on multipath drives
-
-### Documentation
-- Work plan: pending drive-crypto phase (SED/OPAL, crypto erase — scope to
-  confirm); stormblock#71 filed (shelf/controller failure-domain-aware
-  slab placement)
-
-## [Unreleased]
-
-### 2026-08-26
-- **docs:** Position in the distributed hierarchy: physical chain
-  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay
-  with cluster as the logical overlay; stormdrive authoritative below the
-  node only; shared label vocabulary pinned. stormblock#72 filed
-  (one hierarchical failure-domain model, cross-cluster moves/RAID) with
-  the full-site-hierarchy amendment
-- **docs:** Testbed recorded: three clusters as three levels — 2.5" shelf
-  (high performance), 3.5" shelf (medium), PVE cluster (backup)
-- **docs:** Logical overlay is multicluster-of-multiclusters (recursive
-  federation) with tiering across clusters — a tier can be a whole
-  cluster, tier migration is cross-cluster movement; #72 amended
