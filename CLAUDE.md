@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.1.0** — version locations: `Cargo.toml`, this file.
+**Version: 0.2.0** — version locations: `Cargo.toml`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -130,21 +130,24 @@ Model change: the single `DriveState` becomes three orthogonal fields —
 `membership` (out|fleet), `designation` (none|reserved|spare|failed,
 operator-set), `activity` (idle|testing|joining|draining|missing).
 
-- [ ] Rework drive model (breaking for the persisted inventory shape —
+- [x] Rework drive model (breaking for the persisted inventory shape —
       old files load, lifecycle fields reset to defaults; pre-1.0 minor)
-- [ ] `POST /api/v1/drives/{id}/fleet` — join (stormblock add + optional
+- [x] `POST /api/v1/drives/{id}/fleet` — join (stormblock add + optional
       slab format with tier) / leave (guarded: refuse when the drive still
       carries a slab, `force` override until stormblock#70 drain lands)
-- [ ] `POST /api/v1/drives/{id}/designation` — none|reserved|spare|failed;
+- [x] `POST /api/v1/drives/{id}/designation` — none|reserved|spare|failed;
       failed-in-fleet raises a drain-needed warning event
-- [ ] Test engine (`test.rs`): smoke (sampled reads), read_scan (full
-      sequential read, progress, cancel), destructive_sample (write/verify,
-      O_DIRECT, out-of-fleet + unmounted only); one test per drive;
-      results kept in inventory
-- [ ] Embedded UI page (vanilla JS, stormd style tokens, relative URLs so
-      it works at :9092/ and through /ui/proxy/stormdrive/): drive table
-      with join/leave, designation, test, locate actions
-- [ ] Update summary card + reconcile for the new model; docs; v0.2.0
+- [x] Test engine (`drivetest.rs`): smoke (sampled reads), read_scan (full
+      sequential read, progress, cancel, maps past bad regions),
+      destructive_sample (write/verify, O_DIRECT read-back, out-of-fleet +
+      unmounted only); one test per drive
+- [x] Embedded UI page (vanilla JS, stormd style tokens, proxy-prefix
+      aware): drive table with join/leave, designation, test, locate,
+      event feed
+- [x] Update summary card + two-way fleet reconcile; docs; v0.2.0
+      (34/34 tests + live smoke test on dev: designation, smoke test
+      passed on real disk, UI served. Not yet exercised: destructive test
+      on real hardware, join/leave against a live stormblock)
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD

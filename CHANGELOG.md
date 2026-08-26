@@ -1,5 +1,35 @@
 # Changelog
 
+## [v0.2.0] — 2026-08-26
+
+### Added
+- Fleet membership / designation / activity model replaces the single
+  DriveState — a drive is `out|fleet` (stormblock membership), carries an
+  operator designation (`none|reserved|spare|failed`, valid both in fleet
+  and out), and has an activity (`idle|testing|draining|missing`)
+- Fleet actions: `POST /api/v1/drives/{id}/fleet` join (stormblock add +
+  optional explicit slab format with derived tier) / leave (guarded by a
+  best-effort slab check until stormblock#70; `force` override)
+- Drive testing engine: smoke (sampled reads), read_scan (full sequential
+  read with progress + cancel, maps past bad regions), destructive_sample
+  (write/verify via O_DIRECT read-back; refused in-fleet or mounted);
+  verdict events, one test per drive
+- Embedded web UI at `/` (vanilla JS, stormd style tokens, proxy-prefix
+  aware) — drive table with join/leave, designation dropdown, test buttons
+  with progress, locate LED, event feed
+- `POST /api/v1/drives/{id}/designation`; fleet reconcile now two-way
+  (stormblock listing ↔ membership)
+
+### Breaking
+- `POST /api/v1/drives/{id}/state` removed (replaced by fleet/designation
+  endpoints); persisted inventories from 0.1.0 load but lifecycle fields
+  reset to defaults
+
+### Changed
+- Repo made public (matching stormblock); dev.g8.lo pulls directly from
+  GitHub over https, bare-repo workaround removed
+- Cargo.lock committed (binary crate convention)
+
 ## [v0.1.0] — 2026-08-26
 
 ### Added
@@ -30,26 +60,4 @@
 - Project bootstrap: CLAUDE.md work plan, README
 
 ## [Unreleased]
-
-### 2026-08-26
-- **feat:** Fleet membership / designation / activity model replaces the
-  single DriveState — a drive is `out|fleet` (stormblock membership),
-  carries an operator designation (`none|reserved|spare|failed`, valid both
-  in fleet and out), and has an activity (`idle|testing|draining|missing`)
-- **feat:** Fleet actions: `POST /api/v1/drives/{id}/fleet` join (stormblock
-  add + optional explicit slab format with derived tier) / leave (guarded by
-  a best-effort slab check until stormblock#70; `force` override)
-- **feat:** Drive testing engine: smoke (sampled reads), read_scan (full
-  sequential read with progress + cancel, skips past bad regions),
-  destructive_sample (write/verify via O_DIRECT read-back; refused in-fleet
-  or mounted); verdict events, one test per drive
-- **feat:** Embedded web UI at `/` (vanilla JS, stormd style tokens,
-  proxy-prefix aware) — drive table with join/leave, designation dropdown,
-  test buttons + progress, locate LED, event feed
-- **feat:** `POST /api/v1/drives/{id}/designation`; fleet reconcile now
-  two-way (stormblock listing ↔ membership)
-- **BREAKING:** `POST /api/v1/drives/{id}/state` removed (replaced by
-  fleet/designation endpoints); persisted inventories from 0.1.0 load but
-  lifecycle fields reset to defaults
-- **chore:** Repo made public (matching stormblock); dev.g8.lo pulls
-  directly from GitHub over https, bare-repo workaround removed
+<!-- New unreleased changes go here -->
