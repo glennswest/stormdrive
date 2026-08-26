@@ -30,4 +30,7 @@
 - Project bootstrap: CLAUDE.md work plan, README
 
 ## [Unreleased]
-<!-- New unreleased changes go here -->
+
+### 2026-08-26
+- **chore:** Repo made public (matching stormblock); dev.g8.lo pulls
+  directly from GitHub over https, bare-repo workaround removed
