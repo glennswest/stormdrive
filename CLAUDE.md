@@ -119,6 +119,33 @@ src/
       open, slab↔drive link, HTTP drain, failure-domain labels)
 - [x] Tag v0.1.0
 
+### Phase 1b: Fleet membership, designations, drive testing (2026-08-26) — IN PROGRESS
+
+Glenn's direction: discovery finds drives; the UI then moves them to the
+**fleet** (= handed to stormblock). Independently of fleet membership a
+drive can be **tested** (only destructively when out of fleet), or marked
+**reserved**, **spare**, or **failed** — both in fleet and out.
+
+Model change: the single `DriveState` becomes three orthogonal fields —
+`membership` (out|fleet), `designation` (none|reserved|spare|failed,
+operator-set), `activity` (idle|testing|joining|draining|missing).
+
+- [ ] Rework drive model (breaking for the persisted inventory shape —
+      old files load, lifecycle fields reset to defaults; pre-1.0 minor)
+- [ ] `POST /api/v1/drives/{id}/fleet` — join (stormblock add + optional
+      slab format with tier) / leave (guarded: refuse when the drive still
+      carries a slab, `force` override until stormblock#70 drain lands)
+- [ ] `POST /api/v1/drives/{id}/designation` — none|reserved|spare|failed;
+      failed-in-fleet raises a drain-needed warning event
+- [ ] Test engine (`test.rs`): smoke (sampled reads), read_scan (full
+      sequential read, progress, cancel), destructive_sample (write/verify,
+      O_DIRECT, out-of-fleet + unmounted only); one test per drive;
+      results kept in inventory
+- [ ] Embedded UI page (vanilla JS, stormd style tokens, relative URLs so
+      it works at :9092/ and through /ui/proxy/stormdrive/): drive table
+      with join/leave, designation, test, locate actions
+- [ ] Update summary card + reconcile for the new model; docs; v0.2.0
+
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
 - [ ] Stable identity: WWID → uuid5, fallback model+serial
