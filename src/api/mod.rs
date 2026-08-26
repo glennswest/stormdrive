@@ -107,14 +107,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui", get(ui_index))
         .route("/ui/", get(ui_index))
         .route("/api/v1/health", get(health))
+        .route("/api/v1/components", get(components_feed))
+        .route("/ws/components", get(ws_components))
         .route("/api/v1/drives", get(list_drives))
         .route("/api/v1/drives/{id}", get(get_drive))
         .route("/api/v1/drives/{id}/health", get(get_drive_health))
         .route("/api/v1/drives/{id}/locate", post(set_locate))
+        // Parameter-less action routes: a stormview renderer invokes
+        // method+path with no body, so every action needs a body-free form.
+        .route("/api/v1/drives/{id}/locate/{state}", post(locate_by_path))
         .route("/api/v1/drives/{id}/fleet", post(fleet_action))
+        .route("/api/v1/drives/{id}/fleet/{action}", post(fleet_by_path))
         .route("/api/v1/drives/{id}/designation", post(set_designation))
+        .route("/api/v1/drives/{id}/designation/{value}", post(designation_by_path))
         .route("/api/v1/drives/{id}/test", get(get_test).post(start_test))
         .route("/api/v1/drives/{id}/test/cancel", post(cancel_test))
+        .route("/api/v1/drives/{id}/test/{kind}", post(test_by_path))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
@@ -517,6 +525,91 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         })
         .collect();
     Json(json!({ "controllers": controllers, "unlocated": unlocated }))
+}
+
+async fn components_feed(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let feed = crate::components::collect(&s).await;
+    Json(serde_json::to_value(feed).unwrap_or_default())
+}
+
+/// Full-snapshot pushes, stormd-style: every 2 s, send the feed when it
+/// changed. No delta protocol on purpose.
+async fn ws_components(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(s): State<Arc<AppState>>,
+) -> Response {
+    ws.on_upgrade(move |mut sock| async move {
+        let mut last = String::new();
+        loop {
+            let feed = crate::components::collect(&s).await;
+            let json = serde_json::to_string(&feed).unwrap_or_default();
+            if json != last {
+                if sock
+                    .send(axum::extract::ws::Message::Text(json.clone().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                last = json;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    })
+}
+
+// --- Parameter-less action wrappers (stormview renderers POST with no body) ---
+
+async fn locate_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((id, state)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let on = match state.as_str() {
+        "on" => true,
+        "off" => false,
+        other => return Err(ApiError::bad_request(format!("locate {other:?}: use on|off"))),
+    };
+    set_locate(State(s), Path(id), Json(LocateBody { on })).await
+}
+
+async fn fleet_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((id, action)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if action != "join" && action != "leave" {
+        return Err(ApiError::bad_request(format!("fleet {action:?}: use join|leave")));
+    }
+    // The body-free join never formats a slab; the JSON endpoint stays the
+    // door for that explicitly destructive choice.
+    fleet_action(
+        State(s),
+        Path(id),
+        Json(FleetBody {
+            action,
+            format_slab: false,
+            tier: None,
+            force: false,
+        }),
+    )
+    .await
+}
+
+async fn designation_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((id, value)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let designation: Designation = serde_json::from_value(serde_json::Value::String(value.clone()))
+        .map_err(|_| ApiError::bad_request(format!("designation {value:?}")))?;
+    set_designation(State(s), Path(id), Json(DesignationBody { designation })).await
+}
+
+async fn test_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((id, kind)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let kind: TestKind = serde_json::from_value(serde_json::Value::String(kind.clone()))
+        .map_err(|_| ApiError::bad_request(format!("test kind {kind:?}")))?;
+    start_test(State(s), Path(id), Json(TestBody { kind })).await
 }
 
 #[derive(Deserialize)]

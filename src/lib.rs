@@ -5,6 +5,7 @@
 //! drives to stormblock. See docs/architecture.md.
 
 pub mod api;
+pub mod components;
 pub mod config;
 pub mod discovery;
 pub mod drive;
