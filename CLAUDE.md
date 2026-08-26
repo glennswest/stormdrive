@@ -213,6 +213,15 @@ Consequences:
 - [x] v0.3.0 (37/37 tests, clippy clean, live topology tree verified on
       dev; shelf/multipath paths await the NetApp rig)
 
+### Phase 1d: stormview feed — DONE (v0.4.0)
+- [x] `GET /api/v1/components` + `/ws/components` via the stormview crate
+      (now public): drives + shelves with relations (shelf has_many
+      drives → grids) and real actions (locate, fleet join/leave,
+      designation, tests) through parameter-less action routes
+- [x] Renders in stormd's dashboard/SPA, stormsh tiles, and stormconsole's
+      stormdrive plugin (stormconsole consumes the feed per its
+      architecture doc — no bespoke mapping needed)
+
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
 - [ ] Stable identity: WWID → uuid5, fallback model+serial
