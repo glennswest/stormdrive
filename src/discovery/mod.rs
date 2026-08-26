@@ -50,9 +50,20 @@ pub fn mount_source_is_disk(source: &str, name: &str) -> bool {
     let Some(tail) = rest.strip_prefix(name) else {
         return false;
     };
-    tail.is_empty()
-        || tail.chars().next().is_some_and(|c| c.is_ascii_digit())
-        || (tail.starts_with('p') && tail[1..].chars().all(|c| c.is_ascii_digit()) && tail.len() > 1)
+    if tail.is_empty() {
+        return true;
+    }
+    // Names ending in a digit (nvme0n1, md0) take a 'p' separator before the
+    // partition number — a bare digit tail is a *different* device
+    // (nvme0n10). Names ending in a letter (sda) append the number directly.
+    let name_ends_digit = name.chars().last().is_some_and(|c| c.is_ascii_digit());
+    if name_ends_digit {
+        tail.len() > 1
+            && tail.starts_with('p')
+            && tail[1..].chars().all(|c| c.is_ascii_digit())
+    } else {
+        tail.chars().all(|c| c.is_ascii_digit())
+    }
 }
 
 #[cfg(target_os = "linux")]
