@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.2.0** — version locations: `Cargo.toml`, this file.
+**Version: 0.3.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -165,12 +165,14 @@ Consequences:
 - `GET /api/v1/topology` — the controller → shelf → drive tree.
 - UI: location column shows shelf model + bay; multipath badge.
 
-- [ ] Location restructure + shelf enrichment (vendor/model/serial)
-- [ ] Multipath grouping in discovery merge
-- [ ] Topology API + UI updates
-- [ ] stormblock issue: shelf/controller failure-domain-aware slab
-      placement (spreading below node level)
-- [ ] v0.3.0
+- [x] Location restructure + shelf enrichment (vendor/model/serial via SES
+      device + VPD 0x80)
+- [x] Multipath grouping in discovery merge (stable sorted-first primary)
+- [x] Topology API (`GET /api/v1/topology`) + UI shelf/bay + paths badge
+- [x] stormblock issue: shelf/controller failure-domain-aware slab
+      placement — stormblock#71
+- [x] v0.3.0 (37/37 tests, clippy clean, live topology tree verified on
+      dev; shelf/multipath paths await the NetApp rig)
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
