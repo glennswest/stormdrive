@@ -22,6 +22,37 @@
         (NVMe, SAS2/3, SATA; HBAs, expanders, enclosures)
 ```
 
+## Position in the distributed hierarchy
+
+stormblock is fully distributed and hierarchical: volumes move between
+clusters, RAID legs can span clusters, and the physical world carries the
+full site hierarchy. Two chains overlay each other:
+
+```
+PHYSICAL  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay
+          └──────────────── stormblock owns ───────────────┘└─ stormdrive owns ─┘
+LOGICAL   cluster = a set of nodes (may span racks, rooms, even sites)
+```
+
+Placement reasons over the **physical** chain (what fails together);
+cross-cluster moves and RAID legs address the **logical** grouping. The
+two meet at the node.
+
+stormdrive is deliberately **per-node and authoritative only below the
+node**: it resolves hba/shelf/bay from the hardware and hands them up as
+labels. Node-and-above — node name, rack, row, room, building, site, and
+cluster membership — is stormblock's (`[management].topology` plus its
+cluster machinery), so neither daemon duplicates the other's half and the
+halves compose into one chain.
+
+**Label vocabulary (must stay agreed across the stack):** `site`,
+`building`, `room`, `row`, `rack`, `node`, `cluster` (stormblock's half);
+`hba`, `shelf`, `bay`, `pcie_slot` (stormdrive's half, emitted by
+`Location::labels()`). One vocabulary at every rung is what lets a single
+placement mechanism express "spread across shelves", "across racks", and
+"across clusters" as the same operation at different depths — which is
+exactly what cross-cluster RAID needs (stormblock#72).
+
 Separation of duties: **stormblock never has to learn hardware, stormdrive
 never touches data.** stormdrive reads identify/log/mode pages and sysfs; it
 never reads or writes a drive's data blocks. The one write-class thing it does

@@ -88,7 +88,34 @@ src/
 **Ports:** stormdrive listens on **:9092** (stormblock has :9090, stormd
 :9080).
 
+## The testbed (Glenn, 2026-08-26)
+
+Three clusters across three machines — three performance levels:
+
+| Cluster | Hardware | Role |
+|---|---|---|
+| 2.5" shelf | NetApp SAS shelf, 2.5" drives | High performance |
+| 3.5" shelf | NetApp SAS shelf, 3.5" drives | Medium performance |
+| PVE (spinning up) | Proxmox VE cluster | Backup |
+
+So tiering operates at **cluster** granularity here, not only per-drive
+within a node — a volume's hot copy lives on the 2.5" cluster, its
+protection copy on the 3.5" one, its backup on PVE. That is the concrete
+case behind stormblock#72 (cross-cluster placement/RAID) and it composes
+with per-drive tiers: stormdrive's kind→tier derivation still applies
+*within* each cluster.
+
 ## Integration contracts
+
+**The hierarchy (Glenn, 2026-08-26):** stormblock is fully distributed —
+moves between clusters, RAID between clusters, and the **full site
+hierarchy** physically: site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node
+⊃ hba ⊃ shelf ⊃ bay, with *cluster* as the logical grouping of nodes laid
+over it. stormdrive is authoritative **below the node only**; everything
+node-and-above stays with stormblock. Shared label vocabulary: `site`,
+`building`, `room`, `row`, `rack`, `node`, `cluster` (theirs); `hba`,
+`shelf`, `bay`, `pcie_slot` (ours). See docs/architecture.md "Position in
+the distributed hierarchy"; stormblock#72 carries the placement ask.
 
 - **stormblock** (`http://127.0.0.1:9090`): `POST /api/v1/drives {path}`,
   `POST /api/v1/slabs {device_path,tier}`, `GET /api/v1/drives/{id}/smart`,

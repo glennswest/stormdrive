@@ -82,4 +82,13 @@
   slab placement)
 
 ## [Unreleased]
-<!-- New unreleased changes go here -->
+
+### 2026-08-26
+- **docs:** Position in the distributed hierarchy: physical chain
+  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay
+  with cluster as the logical overlay; stormdrive authoritative below the
+  node only; shared label vocabulary pinned. stormblock#72 filed
+  (one hierarchical failure-domain model, cross-cluster moves/RAID) with
+  the full-site-hierarchy amendment
+- **docs:** Testbed recorded: three clusters as three levels — 2.5" shelf
+  (high performance), 3.5" shelf (medium), PVE cluster (backup)
