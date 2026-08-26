@@ -149,6 +149,29 @@ operator-set), `activity` (idle|testing|joining|draining|missing).
       passed on real disk, UI served. Not yet exercised: destructive test
       on real hardware, join/leave against a live stormblock)
 
+### Phase 1c: NetApp shelf topology (2026-08-26) — IN PROGRESS
+
+Glenn's direction: testing happens on **NetApp SAS shelves** behind
+stormblock, more shelves over time — so the hierarchy is
+**controller / shelf / drive, multiple of each**.
+
+Consequences:
+- `Location` becomes hierarchical: `controller {scsi_host, pcie_addr,
+  driver}`, `shelf {id, vendor, model, serial, sas_address}` (from the SES
+  processor's SCSI device; serial from VPD page 0x80), `bay`.
+- **Dual-IOM shelves present one physical drive on two /dev paths with one
+  WWID.** Discovery must group observations by DriveId: one Drive, a
+  `paths` list, a stable primary — not a path that flaps every scan.
+- `GET /api/v1/topology` — the controller → shelf → drive tree.
+- UI: location column shows shelf model + bay; multipath badge.
+
+- [ ] Location restructure + shelf enrichment (vendor/model/serial)
+- [ ] Multipath grouping in discovery merge
+- [ ] Topology API + UI updates
+- [ ] stormblock issue: shelf/controller failure-domain-aware slab
+      placement (spreading below node level)
+- [ ] v0.3.0
+
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
 - [ ] Stable identity: WWID → uuid5, fallback model+serial
@@ -197,6 +220,19 @@ operator-set), `activity` (idle|testing|joining|draining|missing).
 - [ ] Threshold alerts (warn/critical from config)
 - [ ] SES fan/cooling element control (SG_IO SES-2 control page) — actuation,
       gated behind explicit config
+
+### Phase 8: Drive crypto (pending — scope to be confirmed with Glenn)
+
+Glenn (2026-08-26): "some crypto work is also pending." Assumed scope for a
+drive-management plane — confirm before building:
+- [ ] SED / TCG OPAL: discover locking capability + state, take ownership,
+      unlock on boot, key management (where keys live is the design
+      question — stormcert? local TPM? stormblock?)
+- [ ] Crypto erase for retirement: NVMe Format with SES=2 / Sanitize
+      (crypto erase), ATA SECURITY ERASE / OPAL revert, SCSI SANITIZE —
+      wired into the retire flow as the step before a drive leaves the bay
+- [ ] Erase certificates in the event log (what was erased, how, verified
+      when)
 
 ### Phase 7: UI extension (stormd newer UI)
 - [ ] Embedded SPA (Svelte, stormd style tokens), relocatable base path
