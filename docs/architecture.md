@@ -31,12 +31,21 @@ full site hierarchy. Two chains overlay each other:
 ```
 PHYSICAL  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay
           └──────────────── stormblock owns ───────────────┘└─ stormdrive owns ─┘
-LOGICAL   cluster = a set of nodes (may span racks, rooms, even sites)
+LOGICAL   multicluster ⊃ multicluster ⊃ … ⊃ cluster ⊃ node
+          (clusters group into multiclusters, recursively — a federation,
+           not one flat set; a cluster's nodes may span racks/rooms/sites)
 ```
 
 Placement reasons over the **physical** chain (what fails together);
 cross-cluster moves and RAID legs address the **logical** grouping. The
 two meet at the node.
+
+**Tiering is a cross-cluster policy, not only a per-drive property.** A
+tier can be an entire cluster (the testbed: 2.5" cluster = high, 3.5" =
+medium, PVE = backup), so a volume's tier policy names rungs of the
+logical hierarchy, and tier migration is movement *between clusters*.
+stormdrive's kind→tier derivation still applies within each cluster — it
+decides which drives make that cluster its tier.
 
 stormdrive is deliberately **per-node and authoritative only below the
 node**: it resolves hba/shelf/bay from the hardware and hands them up as

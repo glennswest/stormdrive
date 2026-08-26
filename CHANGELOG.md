@@ -92,3 +92,6 @@
   the full-site-hierarchy amendment
 - **docs:** Testbed recorded: three clusters as three levels — 2.5" shelf
   (high performance), 3.5" shelf (medium), PVE cluster (backup)
+- **docs:** Logical overlay is multicluster-of-multiclusters (recursive
+  federation) with tiering across clusters — a tier can be a whole
+  cluster, tier migration is cross-cluster movement; #72 amended

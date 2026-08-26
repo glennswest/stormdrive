@@ -110,8 +110,10 @@ with per-drive tiers: stormdrive's kind→tier derivation still applies
 **The hierarchy (Glenn, 2026-08-26):** stormblock is fully distributed —
 moves between clusters, RAID between clusters, and the **full site
 hierarchy** physically: site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node
-⊃ hba ⊃ shelf ⊃ bay, with *cluster* as the logical grouping of nodes laid
-over it. stormdrive is authoritative **below the node only**; everything
+⊃ hba ⊃ shelf ⊃ bay, with the logical overlay itself hierarchical:
+**multicluster-of-multiclusters** — clusters group recursively into a
+federation, and **tiering runs across clusters** (a tier can be a whole
+cluster; tier migration is movement between clusters). stormdrive is authoritative **below the node only**; everything
 node-and-above stays with stormblock. Shared label vocabulary: `site`,
 `building`, `room`, `row`, `rack`, `node`, `cluster` (theirs); `hba`,
 `shelf`, `bay`, `pcie_slot` (ours). See docs/architecture.md "Position in
