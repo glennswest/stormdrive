@@ -1,0 +1,13 @@
+# Snippet for the node's stormd config: supervises stormdrive and extends
+# the newer UI with a nav tab (iframe via reverse proxy) and a dashboard
+# card (summary pull, 400 ms budget — served from cache).
+
+[[process]]
+name = "stormdrive"
+command = "/usr/sbin/stormdrive"
+args = ["--config", "/etc/stormdrive/stormdrive.toml"]
+
+[process.ui]
+label   = "Drives"
+proxy   = "http://127.0.0.1:9092/ui/"
+summary = "http://127.0.0.1:9092/api/v1/summary"

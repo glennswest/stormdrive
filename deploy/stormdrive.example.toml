@@ -1,0 +1,32 @@
+# stormdrive.toml — /etc/stormdrive/stormdrive.toml
+# A missing file is fine: every value below shows its default.
+
+listen_addr = "0.0.0.0:9092"
+# Inventory + trend history persist here; unset = in-memory only.
+data_dir = "/var/lib/stormdrive"
+# node_name = ""            # default: hostname
+
+[discovery]
+interval_secs = 30
+exclude = []                # extra '*' patterns on kernel names
+include = []                # explicit allow-list; empty = all eligible
+manage_mounted = false      # drives with mounted partitions are left alone
+
+[monitor]
+interval_secs  = 60
+temp_warn_c    = 55
+temp_crit_c    = 70
+spare_warn_pct = 20
+spare_crit_pct = 10
+wear_warn_pct  = 80
+wear_crit_pct  = 95
+hysteresis     = 3          # consecutive samples before a worsening sticks
+
+[stormblock]
+enabled  = true
+url      = "http://127.0.0.1:9090"
+auto_add = false            # phase 4: register qualified drives automatically
+# tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", sas_hdd = "cool", sata_hdd = "cool" }
+
+[api]
+api_token = ""              # empty = no auth

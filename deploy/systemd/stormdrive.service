@@ -1,0 +1,20 @@
+[Unit]
+Description=StormDrive physical drive management
+After=network-online.target
+Wants=network-online.target
+# Runs happily without stormblock; ordering only matters when both exist.
+After=stormblock-target.service
+ConditionPathExists=/usr/sbin/stormdrive
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/stormdrive --config /etc/stormdrive/stormdrive.toml
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+# sysfs LED writes, NVMe admin ioctls, SG_IO
+User=root
+
+[Install]
+WantedBy=multi-user.target
