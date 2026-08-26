@@ -1,23 +1,27 @@
 # Changelog
 
-## [Unreleased]
+## [v0.4.0] — 2026-08-26
 
-### 2026-08-26
-- **docs:** Position in the distributed hierarchy: physical chain
-  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay
-  with cluster as the logical overlay; stormdrive authoritative below the
-  node only; shared label vocabulary pinned. stormblock#72 filed
-  (one hierarchical failure-domain model, cross-cluster moves/RAID) with
-  the full-site-hierarchy amendment
-- **docs:** Testbed recorded: three clusters as three levels — 2.5" shelf
-  (high performance), 3.5" shelf (medium), PVE cluster (backup)
-- **docs:** Logical overlay is multicluster-of-multiclusters (recursive
-  federation) with tiering across clusters — a tier can be a whole
-  cluster, tier migration is cross-cluster movement; #72 amended
-- **docs:** Layering pinned: stormblock is an execution engine; the
-  cross-node/cluster control plane is a separate planned service
-  (stormstorage). stormblock#72 re-scoped to engine primitives (label
-  chains, rung-aware local allocation, remotely-drivable /v1)
+### Added
+- stormview integration — `GET /api/v1/components` + `/ws/components`
+  (full-snapshot pushes) serving drives and shelves as ComponentSummary
+  entries with relations (shelf has_many drives) and real actions;
+  parameter-less action routes for renderers (`/locate/{on|off}`,
+  `/fleet/{join|leave}`, `/designation/{value}`, `/test/{kind}`) so
+  stormd/stormsh/stormconsole buttons make things happen
+
+### Documentation
+- Position in the distributed hierarchy: physical chain
+  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay;
+  logical overlay is multicluster-of-multiclusters with tiering across
+  clusters; stormblock is an execution engine, the cross-node control
+  plane is stormstorage (live at github.com/glennswest/stormstorage);
+  shared label vocabulary pinned; testbed recorded (2.5" high / 3.5"
+  medium / PVE backup); stormblock#72 filed, amended, and re-scoped to
+  engine primitives
+
+## [Unreleased]
+<!-- New unreleased changes go here -->
 
 ## [v0.3.0] — 2026-08-26
 
