@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### 2026-08-26
+- **feat:** Phase 1 scaffold: stable `DriveId` (uuid5 of WWID/model+serial),
+  persistent inventory (atomic writes, wear-trend ring), sysfs discovery
+  with exclusion policy + mounted-drive guard, NVMe SMART collector
+  (admin ioctl, log page 0x02), SCSI/SATA sysfs collector, threshold engine
+  with hysteresis, event ring, topology resolution (PCIe BDF/slot, SAS
+  address, SES enclosure/bay) with locate-LED control, axum REST API on
+  :9092 incl. stormd summary card, stormblock client with Active-state
+  reconcile; deploy files (example config, systemd unit, stormd UI snippet)
 - **docs:** StormBlock deep review captured in `docs/stormblock-review.md`
   (drive model, add/remove paths, health/failure gaps, topology gap, mgmt
   surface, stormd UI extension contract)
