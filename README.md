@@ -14,6 +14,11 @@ network volumes; StormDrive curates the drives themselves:
 - **Firmware** — inventory now; sequenced, health-gated updates later
 - **Location** — enclosure/bay mapping (SES), PCIe slot, SAS address,
   locate-LED control; failure-domain labels for placement
+- **Fleet lifecycle** — discovery finds drives; the UI moves them into the
+  **fleet** (stormblock registration + slab format). Orthogonally, drives
+  can be **tested** (smoke / full read scan / destructive write-verify —
+  destructive only out of fleet) and designated **reserved**, **spare**, or
+  **failed**, both in fleet and out
 - **Sequencing** — one disruptive operation at a time, pre/post health
   checks
 - **StormBlock hand-off** — registers qualified drives (add + slab format

@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         inventory: RwLock::new(inventory),
         events: RwLock::new(EventLog::new(4096)),
         stormblock,
+        tests: RwLock::new(std::collections::HashMap::new()),
         inventory_path,
         node_name,
     });

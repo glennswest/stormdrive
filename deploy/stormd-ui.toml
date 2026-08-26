@@ -9,5 +9,7 @@ args = ["--config", "/etc/stormdrive/stormdrive.toml"]
 
 [process.ui]
 label   = "Drives"
-proxy   = "http://127.0.0.1:9092/ui/"
+# Root, not /ui/: the page uses relative API URLs and detects the proxy
+# prefix itself, so /ui/proxy/stormdrive/{sub} must map to :9092/{sub}.
+proxy   = "http://127.0.0.1:9092/"
 summary = "http://127.0.0.1:9092/api/v1/summary"

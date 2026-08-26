@@ -100,21 +100,43 @@ impl Location {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Is the drive handed to stormblock? Orthogonal to designation and
+/// activity: a spare or even an operator-failed drive can still be in the
+/// fleet (until drained), and a reserved drive can sit out of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DriveState {
-    /// Seen and identified, not yet offered anywhere.
-    Discovered,
-    /// Qualified and eligible for stormblock.
-    Available,
+pub enum Membership {
+    /// Not registered with stormblock.
+    #[default]
+    Out,
     /// Registered with stormblock (in its drive list and/or carrying a slab).
-    Active,
-    /// Being evacuated ahead of retirement or failure.
-    Draining,
-    /// Deliberately withdrawn.
-    Retired,
-    /// Health said so.
+    Fleet,
+}
+
+/// Operator-set label. Applies both in fleet and out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Designation {
+    #[default]
+    None,
+    /// Held back on purpose — not to be joined or consumed.
+    Reserved,
+    /// Standing by as a replacement.
+    Spare,
+    /// Operator declared it bad (health can also conclude this on its own).
     Failed,
+}
+
+/// What the drive is doing right now.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Activity {
+    #[default]
+    Idle,
+    /// A drive test is running (see test.rs).
+    Testing,
+    /// Being evacuated ahead of removal (needs stormblock#70 to automate).
+    Draining,
     /// Inventory remembers it; the node cannot see it.
     Missing,
 }
@@ -166,11 +188,50 @@ pub struct Drive {
     pub block_size: u32,
     #[serde(default)]
     pub location: Location,
-    pub state: DriveState,
+    #[serde(default)]
+    pub membership: Membership,
+    #[serde(default)]
+    pub designation: Designation,
+    #[serde(default)]
+    pub activity: Activity,
     #[serde(default)]
     pub health: HealthReport,
     pub first_seen: SystemTime,
     pub last_seen: SystemTime,
+}
+
+impl Drive {
+    /// Why this drive cannot join the fleet right now, if it can't.
+    pub fn fleet_join_blocker(&self) -> Option<String> {
+        if self.membership == Membership::Fleet {
+            return Some("already in the fleet".into());
+        }
+        if self.designation == Designation::Failed {
+            return Some("designated failed".into());
+        }
+        if self.designation == Designation::Reserved {
+            return Some("designated reserved".into());
+        }
+        if self.activity != Activity::Idle {
+            return Some(format!("activity is {:?}", self.activity));
+        }
+        if self.health.status() >= HealthStatus::Failing {
+            return Some(format!("health is {:?}", self.health.status()));
+        }
+        None
+    }
+
+    /// Destructive tests are only allowed on drives that are out of the
+    /// fleet and present.
+    pub fn destructive_test_blocker(&self) -> Option<String> {
+        if self.membership == Membership::Fleet {
+            return Some("in the fleet — destructive tests need an out-of-fleet drive".into());
+        }
+        if self.activity != Activity::Idle {
+            return Some(format!("activity is {:?}", self.activity));
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +270,66 @@ mod tests {
         assert!(HealthStatus::Failed > HealthStatus::Failing);
         assert!(HealthStatus::Failing > HealthStatus::Warning);
         assert!(HealthStatus::Warning > HealthStatus::Good);
+    }
+
+    fn base_drive() -> Drive {
+        Drive {
+            id: DriveId::derive(None, "M", "S"),
+            path: "/dev/sdx".into(),
+            name: "sdx".into(),
+            kind: DriveKind::SataSsd,
+            model: "M".into(),
+            serial: "S".into(),
+            firmware: "1".into(),
+            wwid: None,
+            capacity_bytes: 1 << 30,
+            block_size: 512,
+            location: Location::default(),
+            membership: Membership::Out,
+            designation: Designation::None,
+            activity: Activity::Idle,
+            health: HealthReport::default(),
+            first_seen: SystemTime::now(),
+            last_seen: SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn fleet_join_blockers() {
+        assert!(base_drive().fleet_join_blocker().is_none());
+
+        let mut d = base_drive();
+        d.membership = Membership::Fleet;
+        assert!(d.fleet_join_blocker().is_some());
+
+        let mut d = base_drive();
+        d.designation = Designation::Failed;
+        assert!(d.fleet_join_blocker().is_some());
+        d.designation = Designation::Reserved;
+        assert!(d.fleet_join_blocker().is_some());
+        d.designation = Designation::Spare;
+        assert!(d.fleet_join_blocker().is_none(), "a spare may be pressed into service");
+
+        let mut d = base_drive();
+        d.activity = Activity::Testing;
+        assert!(d.fleet_join_blocker().is_some());
+
+        let mut d = base_drive();
+        d.health.status = Some(HealthStatus::Failing);
+        assert!(d.fleet_join_blocker().is_some());
+        d.health.status = Some(HealthStatus::Warning);
+        assert!(d.fleet_join_blocker().is_none());
+    }
+
+    #[test]
+    fn destructive_test_blockers() {
+        assert!(base_drive().destructive_test_blocker().is_none());
+        let mut d = base_drive();
+        d.membership = Membership::Fleet;
+        assert!(d.destructive_test_blocker().is_some());
+        let mut d = base_drive();
+        d.activity = Activity::Missing;
+        assert!(d.destructive_test_blocker().is_some());
     }
 
     #[test]

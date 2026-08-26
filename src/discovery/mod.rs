@@ -66,6 +66,27 @@ pub fn mount_source_is_disk(source: &str, name: &str) -> bool {
     }
 }
 
+/// Is the disk (or any of its partitions) mounted right now? False on
+/// non-Linux. Checked at discovery and re-checked immediately before any
+/// destructive test.
+pub fn is_mounted(name: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
+            return false;
+        };
+        mounts
+            .lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .any(|src| mount_source_is_disk(src, name))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = name;
+        false
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
@@ -76,16 +97,6 @@ mod linux {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-    }
-
-    fn has_mounted_partition(name: &str) -> bool {
-        let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
-            return false;
-        };
-        mounts
-            .lines()
-            .filter_map(|l| l.split_whitespace().next())
-            .any(|src| mount_source_is_disk(src, name))
     }
 
     fn classify(base: &Path, name: &str) -> DriveKind {
@@ -112,7 +123,7 @@ mod linux {
             if !name_eligible(cfg, &name) {
                 continue;
             }
-            if !cfg.manage_mounted && has_mounted_partition(&name) {
+            if !cfg.manage_mounted && super::is_mounted(&name) {
                 tracing::debug!(%name, "skipping drive with mounted partitions");
                 continue;
             }

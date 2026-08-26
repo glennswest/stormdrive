@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StormDrive</title>
+<style>
+:root{
+  --bg:#0f0f1a; --panel:#16192e; --border:#2a2d45; --brand:#e94560;
+  --ok:#50fa7b; --warnc:#f1fa8c; --err:#ff5555; --accent:#8be9fd;
+  --muted:#8890b5; --fg:#e6e6f0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:13px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;padding:16px}
+h1{font-size:16px;margin-bottom:2px}
+.sub{color:var(--muted);font-size:12px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+th,td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);vertical-align:middle}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+tr:last-child td{border-bottom:none}
+.chip{display:inline-block;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600}
+.c-ok{background:rgba(80,250,123,.15);color:var(--ok)}
+.c-warn{background:rgba(241,250,140,.15);color:var(--warnc)}
+.c-err{background:rgba(255,85,85,.18);color:var(--err)}
+.c-mut{background:rgba(136,144,181,.15);color:var(--muted)}
+.c-acc{background:rgba(139,233,253,.15);color:var(--accent)}
+button,select{background:#1d2140;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.danger{color:var(--err)}
+button:disabled{opacity:.4;cursor:default}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.dim{color:var(--muted)}
+.bar{height:5px;background:#1d2140;border-radius:3px;overflow:hidden;min-width:70px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+#events{margin-top:16px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:220px;overflow-y:auto}
+#events h2{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.ev{font-size:12px;padding:2px 0;border-bottom:1px solid rgba(42,45,69,.5)}
+.ev:last-child{border-bottom:none}
+.ev .t{color:var(--muted);margin-right:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px}
+td .row{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+#err{color:var(--err);font-size:12px;margin:8px 0;display:none}
+.wrap{overflow-x:auto}
+</style>
+</head>
+<body>
+<h1>StormDrive</h1>
+<div class="sub" id="node">…</div>
+<div id="err"></div>
+<div class="wrap">
+<table>
+<thead><tr>
+  <th>Drive</th><th>Model / Serial</th><th>Kind</th><th>Size</th><th>Location</th>
+  <th>Health</th><th>Fleet</th><th>Designation</th><th>Activity</th><th>Actions</th>
+</tr></thead>
+<tbody id="rows"></tbody>
+</table>
+</div>
+<div id="events"><h2>Events</h2><div id="evlist"></div></div>
+<script>
+// API base: direct (:9092/ or :9092/ui/) → "/", through stormd's proxy
+// (/ui/proxy/stormdrive/ or /ui/ext/stormdrive/) → that prefix. Same
+// pattern mkube uses.
+const m = location.pathname.match(/^(\/ui\/(?:proxy|ext)\/[^\/]+\/)/);
+const API = m ? m[1] : '/';
+const $ = id => document.getElementById(id);
+
+function human(b){
+  if(!b) return '0';
+  const u=['B','KiB','MiB','GiB','TiB','PiB']; let i=0;
+  while(b>=1024 && i<u.length-1){b/=1024;i++}
+  return b.toFixed(b>=100||i===0?0:1)+' '+u[i];
+}
+function chip(text, cls){return `<span class="chip ${cls}">${text}</span>`}
+function healthChip(h){
+  const s=(h&&h.status)||'unknown';
+  const cls={good:'c-ok',warning:'c-warn',failing:'c-err',failed:'c-err',unknown:'c-mut'}[s]||'c-mut';
+  let extra=[];
+  if(h&&h.temperature_c!=null) extra.push(h.temperature_c+'°C');
+  if(h&&h.wear_pct!=null) extra.push('wear '+h.wear_pct+'%');
+  const title=(h&&h.messages&&h.messages.length)?h.messages.join('\n'):'';
+  return `<span title="${title.replace(/"/g,'&quot;')}">${chip(s,cls)} <span class="dim">${extra.join(' · ')}</span></span>`;
+}
+function locStr(l){
+  if(!l) return '';
+  const parts=[];
+  if(l.enclosure!=null&&l.bay!=null) parts.push(`enc ${l.enclosure} bay ${l.bay}`);
+  else if(l.bay!=null) parts.push('bay '+l.bay);
+  if(l.pcie_slot) parts.push('slot '+l.pcie_slot);
+  else if(l.pcie_addr) parts.push(l.pcie_addr);
+  if(l.scsi_host) parts.push(l.scsi_host);
+  return parts.join(' · ');
+}
+
+async function api(path, opts){
+  const r = await fetch(API+path, opts);
+  if(!r.ok){
+    let msg = r.status+' '+r.statusText;
+    try{ const j = await r.json(); if(j.error) msg = j.error; }catch(e){}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+function post(path, body){
+  return api(path, {method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify(body||{})});
+}
+function fail(e){ $('err').style.display='block'; $('err').textContent=e.message||String(e);
+                  setTimeout(()=>{$('err').style.display='none'},6000); }
+function act(p){ return p.then(refresh).catch(e=>{fail(e);refresh();}); }
+
+// Actions (global for onclick handlers)
+window.joinFleet = (id,name)=>{
+  const fmt = confirm(`Join ${name} to the fleet and FORMAT A SLAB on it?\n\nOK = format slab (destroys data on ${name})\nCancel = choose`);
+  if(fmt) return act(post(`api/v1/drives/${id}/fleet`,{action:'join',format_slab:true}));
+  if(confirm(`Join ${name} without formatting a slab? (drive is only opened in stormblock)`))
+    return act(post(`api/v1/drives/${id}/fleet`,{action:'join',format_slab:false}));
+};
+window.leaveFleet=(id,name)=>{
+  if(confirm(`Remove ${name} from the fleet?`))
+    act(post(`api/v1/drives/${id}/fleet`,{action:'leave'})
+        .catch(e=>{ if(confirm(e.message+'\n\nForce leave anyway?'))
+                      return post(`api/v1/drives/${id}/fleet`,{action:'leave',force:true});
+                    throw e; }));
+};
+window.setDesig=(id,v)=>act(post(`api/v1/drives/${id}/designation`,{designation:v}));
+window.runTest=(id,name,kind)=>{
+  if(kind==='destructive_sample' &&
+     !confirm(`DESTRUCTIVE test on ${name}: writes patterns into sampled regions and destroys data there. Continue?`)) return;
+  act(post(`api/v1/drives/${id}/test`,{kind}));
+};
+window.cancelTest=id=>act(post(`api/v1/drives/${id}/test/cancel`));
+window.setLocate=(id,on)=>act(post(`api/v1/drives/${id}/locate`,{on}));
+
+function activityCell(d){
+  if(d.activity==='testing'&&d.test){
+    const pct=d.test.bytes_total?Math.floor(100*d.test.bytes_done/d.test.bytes_total):0;
+    return `<div class="row">${chip(d.test.kind,'c-acc')}
+      <span class="bar"><i style="width:${pct}%"></i></span><span class="dim">${pct}%</span>
+      <button onclick="cancelTest('${d.id}')">✕</button></div>`;
+  }
+  if(d.activity==='missing') return chip('missing','c-err');
+  if(d.activity==='draining') return chip('draining','c-warn');
+  let last='';
+  if(d.test&&d.test.state!=='running'){
+    const cls={passed:'c-ok',failed:'c-err',cancelled:'c-mut'}[d.test.state]||'c-mut';
+    last=' '+chip(d.test.kind+' '+d.test.state,cls);
+  }
+  return chip('idle','c-mut')+last;
+}
+function actionsCell(d){
+  const b=[];
+  const idle = d.activity==='idle';
+  if(d.membership==='fleet')
+    b.push(`<button onclick="leaveFleet('${d.id}','${d.name}')">Leave fleet</button>`);
+  else if(idle && d.designation!=='failed' && d.designation!=='reserved')
+    b.push(`<button onclick="joinFleet('${d.id}','${d.name}')">Join fleet</button>`);
+  if(idle && d.activity!=='missing'){
+    b.push(`<button onclick="runTest('${d.id}','${d.name}','smoke')">Smoke</button>`);
+    b.push(`<button onclick="runTest('${d.id}','${d.name}','read_scan')">Scan</button>`);
+    if(d.membership!=='fleet')
+      b.push(`<button class="danger" onclick="runTest('${d.id}','${d.name}','destructive_sample')">Destructive</button>`);
+  }
+  if(d.location&&d.location.bay!=null){
+    b.push(`<button title="locate LED" onclick="setLocate('${d.id}',true)">💡</button>`);
+    b.push(`<button title="LED off" onclick="setLocate('${d.id}',false)">◦</button>`);
+  }
+  return `<div class="row">${b.join('')}</div>`;
+}
+function desigCell(d){
+  const opts=['none','reserved','spare','failed'].map(v=>
+    `<option value="${v}" ${d.designation===v?'selected':''}>${v}</option>`).join('');
+  return `<select onchange="setDesig('${d.id}',this.value)">${opts}</select>`;
+}
+
+async function refresh(){
+  try{
+    const [h,dr,ev] = await Promise.all([
+      api('api/v1/health'), api('api/v1/drives'), api('api/v1/events')]);
+    $('node').textContent = `${h.node} · v${h.version} · ${dr.drives.length} drives`;
+    $('rows').innerHTML = dr.drives.map(d=>`<tr>
+      <td class="mono">${d.name}</td>
+      <td>${d.model||'?'}<br><span class="dim mono">${d.serial||''}</span></td>
+      <td>${(d.kind||'').replace('_',' ')}</td>
+      <td>${human(d.capacity_bytes)}</td>
+      <td class="dim">${locStr(d.location)}</td>
+      <td>${healthChip(d.health)}</td>
+      <td>${d.membership==='fleet'?chip('fleet','c-acc'):chip('out','c-mut')}</td>
+      <td>${desigCell(d)}</td>
+      <td>${activityCell(d)}</td>
+      <td>${actionsCell(d)}</td>
+    </tr>`).join('') || '<tr><td colspan="10" class="dim">no drives discovered</td></tr>';
+    $('evlist').innerHTML = ev.events.slice(-30).reverse().map(e=>{
+      const t = e.time&&e.time.secs_since_epoch ? new Date(e.time.secs_since_epoch*1000).toLocaleTimeString() : '';
+      const cls={info:'',warning:'c-warn',error:'c-err'}[e.severity]||'';
+      return `<div class="ev"><span class="t">${t}</span><span class="${cls?'chip '+cls:''}">${e.severity}</span> ${e.message}</div>`;
+    }).join('') || '<div class="dim">no events</div>';
+  }catch(e){ fail(e); }
+}
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

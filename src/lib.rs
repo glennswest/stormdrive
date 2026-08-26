@@ -8,6 +8,7 @@ pub mod api;
 pub mod config;
 pub mod discovery;
 pub mod drive;
+pub mod drivetest;
 pub mod events;
 pub mod inventory;
 pub mod monitor;

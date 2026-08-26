@@ -57,8 +57,11 @@ Location {
     bay: Option<u32>,              // slot index within the enclosure
     scsi_host: Option<String>,     // hostN (which HBA)
 }
-DriveState  = Discovered → Available → Active → Draining → Retired
-              (∗ → Failed, ∗ → Missing when the device node disappears)
+// Lifecycle is three ORTHOGONAL fields, not one state ladder:
+Membership  = out | fleet          // is the drive handed to stormblock?
+Designation = none | reserved | spare | failed   // operator-set; applies
+                                                 // both in fleet and out
+Activity    = idle | testing | joining | draining | missing
 HealthStatus = Unknown | Good | Warning | Failing | Failed
 HealthReport {
     status, temperature_c, power_on_hours, media_errors,
@@ -68,12 +71,16 @@ HealthReport {
 }
 ```
 
-State meanings: `Discovered` — seen, identified, not yet offered anywhere.
-`Available` — qualified, eligible for stormblock. `Active` — registered with
-stormblock (present in its `/api/v1/drives`, and/or carrying a slab).
-`Draining` — being evacuated ahead of retirement/failure. `Retired` —
-deliberately withdrawn. `Failed` — health said so. `Missing` — inventory
-remembers it, the node can't see it (pulled, dead, cabling).
+The flow: discovery finds drives (membership `out`); the UI moves them to
+the **fleet** (register with stormblock, optionally format a slab with a
+tier derived from the drive kind). Independently, a drive can be **tested**
+(destructive kinds only out of fleet and unmounted), or designated
+**reserved** (never join), **spare** (standing by; still joinable when
+pressed into service), or **failed** (operator verdict — health can reach
+the same conclusion on its own; the two are kept separate). `missing`
+means the inventory remembers a drive the node can't see. A `failed`
+designation on an in-fleet drive raises a drain-needed warning; automating
+the drain itself waits on stormblock#70.
 
 The inventory (all `Drive` records + wear-trend samples) persists to
 `<data_dir>/inventory.json` with atomic tmp+rename writes, so identity,
@@ -171,15 +178,22 @@ polls this; SSE can come later for direct consumers.
 ## API (axum, `0.0.0.0:9092`)
 
 ```
+GET  /                                 embedded UI (also /ui, /ui/; the page
+                                       detects stormd's proxy prefix itself)
 GET  /api/v1/health                    liveness {status, version}
-GET  /api/v1/drives                    inventory (all states)
-GET  /api/v1/drives/{id}               id = DriveId, path, serial, or wwid
+GET  /api/v1/drives                    inventory (running test inlined)
+GET  /api/v1/drives/{id}               id = DriveId, name, path, serial, wwid
 GET  /api/v1/drives/{id}/health        latest HealthReport + trend
 POST /api/v1/drives/{id}/locate        {"on": true|false} → SES slot LED
-POST /api/v1/drives/{id}/state         explicit transitions (retire, drain…)
+POST /api/v1/drives/{id}/fleet         {"action":"join","format_slab":bool,
+                                        "tier"?} | {"action":"leave","force"?}
+POST /api/v1/drives/{id}/designation   {"designation":"none|reserved|spare|failed"}
+POST /api/v1/drives/{id}/test          {"kind":"smoke|read_scan|destructive_sample"}
+GET  /api/v1/drives/{id}/test          current/last run (progress, errors)
+POST /api/v1/drives/{id}/test/cancel
 GET  /api/v1/events?since=<seq>
 GET  /api/v1/summary                   stormd RemoteSummary card
-GET  /metrics                          Prometheus
+GET  /metrics                          Prometheus (phase 2)
 ```
 Errors use stormblock's `{error, code}` envelope shape for familiarity.
 Auth: same posture as the rest of the ecosystem for now (none on the node

@@ -5,7 +5,7 @@
 //! transitions are hysteresis-guarded — one bad poll never flips a drive.
 
 use crate::config::MonitorConfig;
-use crate::drive::{DriveId, DriveKind, DriveState, HealthReport, HealthStatus};
+use crate::drive::{Activity, DriveId, DriveKind, HealthReport, HealthStatus, Membership};
 use crate::events::Severity;
 use crate::inventory::TrendSample;
 use crate::smart::{self, crit, Sample};
@@ -168,7 +168,7 @@ async fn tick(
         let inv = state.inventory.read().await;
         inv.drives
             .iter()
-            .filter(|(_, d)| !matches!(d.state, DriveState::Missing | DriveState::Retired))
+            .filter(|(_, d)| d.activity != Activity::Missing)
             .map(|(id, d)| (*id, d.clone()))
             .collect()
     };
@@ -202,9 +202,9 @@ async fn tick(
                 messages: why.clone(),
                 collected_at: Some(SystemTime::now()),
             };
-            if effective >= HealthStatus::Failed && d.state != DriveState::Failed {
-                d.state = DriveState::Failed;
-            }
+            // Health and designation stay separate: a health-Failed drive
+            // keeps its operator designation; the summary card and the UI
+            // treat health-Failed as bad regardless.
         }
         if d_is_ssd(&drive.kind) || sample.wear_pct.is_some() {
             inv.record_trend(
@@ -282,8 +282,8 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                 d.capacity_bytes = o.capacity_bytes;
                 d.block_size = o.block_size;
                 d.last_seen = now;
-                if d.state == DriveState::Missing {
-                    d.state = DriveState::Discovered;
+                if d.activity == Activity::Missing {
+                    d.activity = Activity::Idle;
                     events.push((
                         Some(id),
                         Severity::Info,
@@ -315,7 +315,9 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         capacity_bytes: o.capacity_bytes,
                         block_size: o.block_size,
                         location,
-                        state: DriveState::Discovered,
+                        membership: Membership::Out,
+                        designation: Default::default(),
+                        activity: Activity::Idle,
                         health: HealthReport::default(),
                         first_seen: now,
                         last_seen: now,
@@ -325,10 +327,8 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
         }
     }
     for (id, d) in inv.drives.iter_mut() {
-        if !seen.contains(id)
-            && !matches!(d.state, DriveState::Missing | DriveState::Retired)
-        {
-            d.state = DriveState::Missing;
+        if !seen.contains(id) && d.activity != Activity::Missing {
+            d.activity = Activity::Missing;
             events.push((
                 Some(*id),
                 Severity::Error,
@@ -344,8 +344,10 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
     }
 }
 
-/// Mark drives Active when stormblock's /api/v1/drives lists them (matched
-/// by path or serial).
+/// Reconcile fleet membership against stormblock's /api/v1/drives list
+/// (matched by path or serial), in both directions: a drive stormblock
+/// holds is Fleet regardless of who added it; a Fleet drive stormblock no
+/// longer lists is Out.
 async fn reconcile_stormblock(state: &Arc<AppState>) -> anyhow::Result<()> {
     let listed = state.stormblock.list_drives().await?;
     let mut inv = state.inventory.write().await;
@@ -356,14 +358,26 @@ async fn reconcile_stormblock(state: &Arc<AppState>) -> anyhow::Result<()> {
                 || (!d.serial.is_empty()
                     && sd.get("serial").and_then(|v| v.as_str()) == Some(d.serial.as_str()))
         });
-        if in_sb && matches!(d.state, DriveState::Discovered | DriveState::Available) {
-            d.state = DriveState::Active;
-            events.push((
-                Some(d.id),
-                Severity::Info,
-                "stormblock",
-                format!("{}: registered with stormblock", d.name),
-            ));
+        match (in_sb, d.membership) {
+            (true, Membership::Out) => {
+                d.membership = Membership::Fleet;
+                events.push((
+                    Some(d.id),
+                    Severity::Info,
+                    "stormblock",
+                    format!("{}: in stormblock's drive list — marked fleet", d.name),
+                ));
+            }
+            (false, Membership::Fleet) => {
+                d.membership = Membership::Out;
+                events.push((
+                    Some(d.id),
+                    Severity::Warning,
+                    "stormblock",
+                    format!("{}: no longer in stormblock's drive list — marked out of fleet", d.name),
+                ));
+            }
+            _ => {}
         }
     }
     drop(inv);

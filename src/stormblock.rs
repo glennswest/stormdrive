@@ -65,6 +65,42 @@ impl StormBlockClient {
             .await?)
     }
 
+    /// DELETE /api/v1/drives/{id} — id may be a UUID or a path.
+    pub async fn delete_drive(&self, id_or_path: &str, force: bool) -> anyhow::Result<()> {
+        let q = if force { "?force=true" } else { "" };
+        self.http
+            .delete(self.url(&format!(
+                "/api/v1/drives/{}{q}",
+                urlencode_path(id_or_path)
+            )))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// GET /api/v1/slabs — used as a best-effort guard on fleet leave: a
+    /// slab whose device path matches the drive means data still lives
+    /// there (stormblock#70 will make this association first-class).
+    pub async fn list_slabs(&self) -> anyhow::Result<Vec<Value>> {
+        let v: Value = self
+            .http
+            .get(self.url("/api/v1/slabs"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(match v {
+            Value::Array(a) => a,
+            Value::Object(mut o) => o
+                .remove("slabs")
+                .and_then(|d| d.as_array().cloned())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        })
+    }
+
     /// POST /api/v1/slabs {device_path, tier} — format the drive as a slab.
     pub async fn format_slab(&self, device_path: &str, tier: &str) -> anyhow::Result<Value> {
         Ok(self
@@ -97,9 +133,20 @@ impl StormBlockClient {
     }
 }
 
+/// Percent-encode the path-segment characters that matter for a /dev path
+/// used as a URL path parameter.
+fn urlencode_path(s: &str) -> String {
+    s.replace('%', "%25").replace('/', "%2F")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_paths_encode_for_url_segments() {
+        assert_eq!(urlencode_path("/dev/sda"), "%2Fdev%2Fsda");
+    }
 
     #[test]
     fn tier_map_overrides_defaults() {
