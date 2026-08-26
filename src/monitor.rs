@@ -175,9 +175,15 @@ async fn tick(
     for (id, drive) in targets {
         let d2 = drive.clone();
         let sample = tokio::task::spawn_blocking(move || smart::collect(&d2)).await?;
+        // Baseline for growth detection: only a real prior sample counts —
+        // a fresh drive's default 0 would turn its first reading into a
+        // false "growing" warning.
         let prev = {
             let inv = state.inventory.read().await;
-            inv.drives.get(&id).map(|d| d.health.media_errors)
+            inv.drives
+                .get(&id)
+                .filter(|d| d.health.collected_at.is_some())
+                .map(|d| d.health.media_errors)
         };
         let (candidate, why) = evaluate(&state.config.monitor, &sample, prev);
         let current = drive.health.status();

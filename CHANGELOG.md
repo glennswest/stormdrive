@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### 2026-08-26
+- **fix:** first health sample no longer raises a false "media errors
+  growing" warning (baseline requires a real prior sample)
+- **fix:** nvme-style device names only match 'p'-separated partitions in
+  the mounted-drive guard (nvme0n10 is not a partition of nvme0n1)
+
+### 2026-08-26 (bootstrap)
 - **feat:** Phase 1 scaffold: stable `DriveId` (uuid5 of WWID/model+serial),
   persistent inventory (atomic writes, wear-trend ring), sysfs discovery
   with exclusion policy + mounted-drive guard, NVMe SMART collector
