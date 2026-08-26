@@ -49,14 +49,13 @@ decides which drives make that cluster its tier.
 
 **Who owns which rung.** stormblock is an *execution engine* — per-node
 mechanism (slabs, volumes, RAID, targets, the /v1 contract with its epoch
-fencing) that executes what it is told. The cross-node brain is a separate
-service, **stormstorage** (planned): the topology registry for everything
-node-and-above (rack…site, the multicluster tree), placement decisions at
-every rung, cross-cluster tiering policy, and orchestration of moves and
-RAID legs — done by driving stormblock's /v1 on many nodes, informed by
-stormdrive's labels and health. Until stormstorage exists, stormblock's
-`[management].topology` carries the node-level labels as the interim
-bearer.
+fencing) that executes what it is told. The cross-node brain is
+**stormstorage** (github.com/glennswest/stormstorage, live since
+2026-08-26 — see its docs/architecture.md): the topology registry for
+everything node-and-above (rack…site, the multicluster tree), pools,
+placement decisions at every rung, cross-cluster tiering policy, and
+orchestration of moves and RAID legs — done by driving stormblock's /v1
+on many nodes, informed by stormdrive's labels and health.
 
 stormdrive is deliberately **per-node and authoritative only below the
 node**: it resolves hba/shelf/bay from the hardware and hands them up as
