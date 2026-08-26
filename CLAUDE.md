@@ -107,9 +107,10 @@ src/
 - [x] stormblock deep review (docs/stormblock-review.md)
 - [x] Architecture design (docs/architecture.md)
 - [x] Repo, CLAUDE.md, README, CHANGELOG, .gitignore
-- [ ] Crate scaffold compiles + tests pass on dev.g8.lo
+- [x] Crate scaffold compiles + tests pass on dev.g8.lo (27/27, clippy
+      clean, release binary smoke-tested against a real disk)
 - [ ] File stormblock integration/bug issues (rule 11)
-- [ ] Tag v0.1.0
+- [x] Tag v0.1.0
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
