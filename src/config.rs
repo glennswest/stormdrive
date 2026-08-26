@@ -208,8 +208,10 @@ mod tests {
 
     #[test]
     fn bad_listen_addr_fails_validation() {
-        let mut c = Config::default();
-        c.listen_addr = "not-an-addr".into();
+        let c = Config {
+            listen_addr: "not-an-addr".into(),
+            ..Config::default()
+        };
         assert!(c.validate().is_err());
     }
 }
