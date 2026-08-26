@@ -465,8 +465,12 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
     // controller key → (controller json, shelf key → (shelf json, drives), direct drives)
     type ShelfEntry = (serde_json::Value, Vec<serde_json::Value>);
-    let mut controllers: BTreeMap<String, (serde_json::Value, BTreeMap<String, ShelfEntry>, Vec<serde_json::Value>)> =
-        BTreeMap::new();
+    type ControllerEntry = (
+        serde_json::Value,
+        BTreeMap<String, ShelfEntry>,
+        Vec<serde_json::Value>,
+    );
+    let mut controllers: BTreeMap<String, ControllerEntry> = BTreeMap::new();
     let mut unlocated: Vec<serde_json::Value> = Vec::new();
 
     let mut sorted: Vec<_> = inv.drives.values().collect();
