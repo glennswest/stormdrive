@@ -51,13 +51,8 @@ a macOS build skips exactly the code most likely to be wrong.
 commit  →  push  →  ssh root@dev.g8.lo 'cd /root/stormdrive && git pull && cargo test'
 ```
 
-**The GitHub repo is currently private**, and dev has no key for private
-repos, so dev pulls from a bare repo on dev itself instead: the local
-checkout has a second remote `dev` (`ssh://root@dev.g8.lo/root/git/stormdrive.git`)
-and `/root/stormdrive` on dev has that bare repo as `origin`. Push to
-**both** `origin` and `dev` on every push. If the repo is made public
-(matching stormblock), repoint dev's checkout at GitHub over https and drop
-the bare repo.
+The repo is public (matching stormblock); `/root/stormdrive` on dev pulls
+`origin` from GitHub over https.
 
 After building on dev, clean up: `rm -rf /root/stormdrive/target/debug` when
 done; check `df -h /` before and after.
