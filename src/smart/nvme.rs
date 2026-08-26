@@ -34,7 +34,6 @@ pub fn decode_smart_page(page: &[u8; 512]) -> Sample {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::*;
     use std::os::fd::AsRawFd;
 
     /// struct nvme_admin_cmd from linux/nvme_ioctl.h — 72 bytes.
