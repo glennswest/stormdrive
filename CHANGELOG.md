@@ -14,6 +14,10 @@
 - **docs:** Logical overlay is multicluster-of-multiclusters (recursive
   federation) with tiering across clusters — a tier can be a whole
   cluster, tier migration is cross-cluster movement; #72 amended
+- **docs:** Layering pinned: stormblock is an execution engine; the
+  cross-node/cluster control plane is a separate planned service
+  (stormstorage). stormblock#72 re-scoped to engine primitives (label
+  chains, rung-aware local allocation, remotely-drivable /v1)
 
 ## [v0.3.0] — 2026-08-26
 

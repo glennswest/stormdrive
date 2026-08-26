@@ -113,7 +113,17 @@ hierarchy** physically: site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ no
 ⊃ hba ⊃ shelf ⊃ bay, with the logical overlay itself hierarchical:
 **multicluster-of-multiclusters** — clusters group recursively into a
 federation, and **tiering runs across clusters** (a tier can be a whole
-cluster; tier migration is movement between clusters). stormdrive is authoritative **below the node only**; everything
+cluster; tier migration is movement between clusters).
+
+**Layering (Glenn, 2026-08-26): stormblock is an execution engine.** The
+cross-node/cross-cluster brain is a separate planned service,
+**stormstorage** — topology registry (node-and-above), placement at every
+rung, cross-cluster tiering + orchestration, driving stormblock /v1 on
+many nodes. Three layers, no overlap: stormdrive = hardware truth (below
+the node), stormblock = per-node execution, stormstorage = fleet policy.
+stormblock#72 was re-scoped accordingly: stormblock keeps the primitives
+(label chains, rung-aware local allocation, remotely-drivable /v1
+fencing/prestage); orchestration goes to stormstorage. stormdrive is authoritative **below the node only**; everything
 node-and-above stays with stormblock. Shared label vocabulary: `site`,
 `building`, `room`, `row`, `rack`, `node`, `cluster` (theirs); `hba`,
 `shelf`, `bay`, `pcie_slot` (ours). See docs/architecture.md "Position in

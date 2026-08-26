@@ -47,12 +47,21 @@ logical hierarchy, and tier migration is movement *between clusters*.
 stormdrive's kind→tier derivation still applies within each cluster — it
 decides which drives make that cluster its tier.
 
+**Who owns which rung.** stormblock is an *execution engine* — per-node
+mechanism (slabs, volumes, RAID, targets, the /v1 contract with its epoch
+fencing) that executes what it is told. The cross-node brain is a separate
+service, **stormstorage** (planned): the topology registry for everything
+node-and-above (rack…site, the multicluster tree), placement decisions at
+every rung, cross-cluster tiering policy, and orchestration of moves and
+RAID legs — done by driving stormblock's /v1 on many nodes, informed by
+stormdrive's labels and health. Until stormstorage exists, stormblock's
+`[management].topology` carries the node-level labels as the interim
+bearer.
+
 stormdrive is deliberately **per-node and authoritative only below the
 node**: it resolves hba/shelf/bay from the hardware and hands them up as
-labels. Node-and-above — node name, rack, row, room, building, site, and
-cluster membership — is stormblock's (`[management].topology` plus its
-cluster machinery), so neither daemon duplicates the other's half and the
-halves compose into one chain.
+labels. Three layers, no overlap: stormdrive = hardware truth,
+stormblock = execution, stormstorage = fleet policy.
 
 **Label vocabulary (must stay agreed across the stack):** `site`,
 `building`, `room`, `row`, `rack`, `node`, `cluster` (stormblock's half);
