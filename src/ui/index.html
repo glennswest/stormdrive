@@ -83,11 +83,14 @@ function healthChip(h){
 function locStr(l){
   if(!l) return '';
   const parts=[];
-  if(l.enclosure!=null&&l.bay!=null) parts.push(`enc ${l.enclosure} bay ${l.bay}`);
-  else if(l.bay!=null) parts.push('bay '+l.bay);
+  if(l.shelf){
+    const sh=[l.shelf.model, l.shelf.serial||l.shelf.id].filter(Boolean).join(' ');
+    if(sh) parts.push(sh);
+  }
+  if(l.bay!=null) parts.push('bay '+l.bay);
   if(l.pcie_slot) parts.push('slot '+l.pcie_slot);
   else if(l.pcie_addr) parts.push(l.pcie_addr);
-  if(l.scsi_host) parts.push(l.scsi_host);
+  if(l.controller&&l.controller.scsi_host) parts.push(l.controller.scsi_host);
   return parts.join(' · ');
 }
 
@@ -178,7 +181,7 @@ async function refresh(){
       api('api/v1/health'), api('api/v1/drives'), api('api/v1/events')]);
     $('node').textContent = `${h.node} · v${h.version} · ${dr.drives.length} drives`;
     $('rows').innerHTML = dr.drives.map(d=>`<tr>
-      <td class="mono">${d.name}</td>
+      <td class="mono">${d.name}${d.paths&&d.paths.length>1?' '+chip(d.paths.length+' paths','c-acc'):''}</td>
       <td>${d.model||'?'}<br><span class="dim mono">${d.serial||''}</span></td>
       <td>${(d.kind||'').replace('_',' ')}</td>
       <td>${human(d.capacity_bytes)}</td>

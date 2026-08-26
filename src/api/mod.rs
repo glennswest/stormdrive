@@ -115,6 +115,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}/designation", post(set_designation))
         .route("/api/v1/drives/{id}/test", get(get_test).post(start_test))
         .route("/api/v1/drives/{id}/test/cancel", post(cancel_test))
+        .route("/api/v1/topology", get(topology))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
         .with_state(state)
@@ -435,6 +436,83 @@ async fn cancel_test(
     }
     h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(json!({ "cancelling": true })))
+}
+
+/// The controller → shelf → drive tree, for shelf rigs (NetApp DS-series
+/// and friends). Shelves are keyed by serial so a dual-IOM shelf appears
+/// once; drives not behind any shelf land under the controller's `direct`
+/// list; drives with no controller at all land in `unlocated`.
+async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    use std::collections::BTreeMap;
+    let inv = s.inventory.read().await;
+
+    fn drive_leaf(d: &crate::drive::Drive) -> serde_json::Value {
+        json!({
+            "id": d.id,
+            "name": d.name,
+            "bay": d.location.bay,
+            "kind": d.kind,
+            "model": d.model,
+            "serial": d.serial,
+            "capacity_bytes": d.capacity_bytes,
+            "membership": d.membership,
+            "designation": d.designation,
+            "activity": d.activity,
+            "health": d.health.status(),
+            "paths": d.paths,
+        })
+    }
+
+    // controller key → (controller json, shelf key → (shelf json, drives), direct drives)
+    type ShelfEntry = (serde_json::Value, Vec<serde_json::Value>);
+    let mut controllers: BTreeMap<String, (serde_json::Value, BTreeMap<String, ShelfEntry>, Vec<serde_json::Value>)> =
+        BTreeMap::new();
+    let mut unlocated: Vec<serde_json::Value> = Vec::new();
+
+    let mut sorted: Vec<_> = inv.drives.values().collect();
+    sorted.sort_by(|a, b| (a.location.bay, &a.name).cmp(&(b.location.bay, &b.name)));
+    for d in sorted {
+        let leaf = drive_leaf(d);
+        let Some(ctrl) = &d.location.controller else {
+            unlocated.push(leaf);
+            continue;
+        };
+        let ckey = ctrl
+            .scsi_host
+            .clone()
+            .or_else(|| ctrl.pcie_addr.clone())
+            .unwrap_or_else(|| "unknown".into());
+        let entry = controllers.entry(ckey).or_insert_with(|| {
+            (
+                serde_json::to_value(ctrl).unwrap_or_default(),
+                BTreeMap::new(),
+                Vec::new(),
+            )
+        });
+        match &d.location.shelf {
+            Some(sh) => {
+                let skey = sh.key().unwrap_or_else(|| "unknown".into());
+                let shelf_entry = entry
+                    .1
+                    .entry(skey)
+                    .or_insert_with(|| (serde_json::to_value(sh).unwrap_or_default(), Vec::new()));
+                shelf_entry.1.push(leaf);
+            }
+            None => entry.2.push(leaf),
+        }
+    }
+
+    let controllers: Vec<serde_json::Value> = controllers
+        .into_iter()
+        .map(|(key, (ctrl, shelves, direct))| {
+            let shelves: Vec<serde_json::Value> = shelves
+                .into_values()
+                .map(|(sh, drives)| json!({ "shelf": sh, "drives": drives }))
+                .collect();
+            json!({ "key": key, "controller": ctrl, "shelves": shelves, "direct": direct })
+        })
+        .collect();
+    Json(json!({ "controllers": controllers, "unlocated": unlocated }))
 }
 
 #[derive(Deserialize)]

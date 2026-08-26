@@ -49,13 +49,16 @@ Drive {
     health: HealthReport,
     first_seen, last_seen: SystemTime,
 }
-Location {
-    pcie_addr: Option<String>,     // NVMe: BDF of the controller
-    pcie_slot: Option<String>,     // /sys/bus/pci/slots physical slot label
-    sas_address: Option<String>,
-    enclosure: Option<String>,     // SES enclosure identifier
-    bay: Option<u32>,              // slot index within the enclosure
-    scsi_host: Option<String>,     // hostN (which HBA)
+Location {                         // controller → shelf → bay hierarchy
+    controller: Option<Controller>,  // { scsi_host, pcie_addr, driver }
+    shelf: Option<Shelf>,            // { id, vendor, model, serial, sas_address }
+                                     //   identity = the SES processor's SCSI
+                                     //   device; serial from VPD page 0x80 is
+                                     //   the canonical key (a dual-IOM shelf
+                                     //   is two enclosure devices, one serial)
+    bay: Option<u32>,                // slot index within the shelf
+    sas_address: Option<String>,     // the drive's own
+    pcie_addr / pcie_slot,           // NVMe drives
 }
 // Lifecycle is three ORTHOGONAL fields, not one state ladder:
 Membership  = out | fleet          // is the drive handed to stormblock?
@@ -88,6 +91,14 @@ first_seen, and trend history survive restarts — deliberately the opposite of
 stormblock's in-memory `Vec<DriveInfo>`.
 
 ## Subsystems
+
+**Multipath (dual-IOM shelves).** A NetApp shelf with two IOMs presents
+one physical drive as two /dev nodes with one WWID. Discovery groups
+observations by DriveId: one `Drive`, a `paths` list, and a stable primary
+(sorted-first path). SMART, tests, and stormblock hand-off use the
+primary; the path list is visible in the API and UI. Handing stormblock a
+dm-multipath device instead is a later option — one path is correct until
+path failover is actually needed.
 
 ### Discovery (`discovery/`)
 - Full scan on startup and every `discovery.interval_secs`: walk
@@ -191,6 +202,7 @@ POST /api/v1/drives/{id}/designation   {"designation":"none|reserved|spare|faile
 POST /api/v1/drives/{id}/test          {"kind":"smoke|read_scan|destructive_sample"}
 GET  /api/v1/drives/{id}/test          current/last run (progress, errors)
 POST /api/v1/drives/{id}/test/cancel
+GET  /api/v1/topology                  controller → shelf → drive tree
 GET  /api/v1/events?since=<seq>
 GET  /api/v1/summary                   stormd RemoteSummary card
 GET  /metrics                          Prometheus (phase 2)

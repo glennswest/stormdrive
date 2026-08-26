@@ -60,4 +60,18 @@
 - Project bootstrap: CLAUDE.md work plan, README
 
 ## [Unreleased]
-<!-- New unreleased changes go here -->
+
+### 2026-08-26
+- **feat:** Shelf-rig topology (NetApp DS-series target): `Location` is now
+  controller → shelf → bay, with shelf identity read from the SES
+  processor's SCSI device (vendor/model + serial via VPD page 0x80 — the
+  canonical key, since a dual-IOM shelf is two enclosure devices with one
+  serial); controllers carry scsi_host/PCIe BDF/driver
+- **feat:** Multipath awareness: observations grouped by WWID-derived
+  DriveId — one Drive with a `paths` list and a stable sorted-first
+  primary, instead of a path that flaps between IOMs every scan; location
+  re-resolved on path changes
+- **feat:** `GET /api/v1/topology` — the controller → shelf → drive tree,
+  shelves deduplicated by serial
+- **feat:** UI shows shelf model/serial + bay in the location column and a
+  path-count badge on multipath drives

@@ -258,29 +258,54 @@ fn d_is_ssd(k: &DriveKind) -> bool {
     k.is_ssd()
 }
 
+/// Group raw observations by derived DriveId, each group's observations
+/// sorted by path. A dual-IOM shelf presents one physical drive as two
+/// /dev nodes with one WWID — that is ONE drive with two paths, and the
+/// primary path is the sorted-first one so it does not flap between scans.
+pub fn group_observed(
+    observed: Vec<discovery::Observed>,
+) -> Vec<(DriveId, Vec<discovery::Observed>)> {
+    let mut groups: HashMap<DriveId, Vec<discovery::Observed>> = HashMap::new();
+    for o in observed {
+        let id = DriveId::derive(o.wwid.as_deref(), &o.model, &o.serial);
+        groups.entry(id).or_default().push(o);
+    }
+    let mut out: Vec<_> = groups.into_iter().collect();
+    for (_, g) in out.iter_mut() {
+        g.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+    out.sort_by(|a, b| a.1[0].path.cmp(&b.1[0].path));
+    out
+}
+
 async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed>) {
     let now = SystemTime::now();
     let mut inv = state.inventory.write().await;
     let mut seen: Vec<DriveId> = Vec::new();
     let mut events = Vec::new();
-    for o in observed {
-        let id = DriveId::derive(o.wwid.as_deref(), &o.model, &o.serial);
+    for (id, group) in group_observed(observed) {
         seen.push(id);
+        let paths: Vec<String> = group.iter().map(|o| o.path.clone()).collect();
+        let primary = &group[0];
         match inv.drives.get_mut(&id) {
             Some(d) => {
-                if d.path != o.path {
+                if d.paths != paths {
                     events.push((
                         Some(id),
                         Severity::Info,
                         "discovered",
-                        format!("{}: path changed {} → {}", d.name, d.path, o.path),
+                        format!("{}: paths now {}", d.name, paths.join(", ")),
                     ));
+                    // A path change usually means recabling or a re-bay —
+                    // the old location is not to be trusted.
+                    d.location = topology::locate(&primary.name);
                 }
-                d.path = o.path;
-                d.name = o.name;
-                d.firmware = o.firmware;
-                d.capacity_bytes = o.capacity_bytes;
-                d.block_size = o.block_size;
+                d.path = primary.path.clone();
+                d.name = primary.name.clone();
+                d.paths = paths;
+                d.firmware = primary.firmware.clone();
+                d.capacity_bytes = primary.capacity_bytes;
+                d.block_size = primary.block_size;
                 d.last_seen = now;
                 if d.activity == Activity::Missing {
                     d.activity = Activity::Idle;
@@ -293,27 +318,36 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                 }
             }
             None => {
-                let name = o.name.clone();
+                let name = primary.name.clone();
                 let location = topology::locate(&name);
+                let multipath = if paths.len() > 1 {
+                    format!(" ({} paths)", paths.len())
+                } else {
+                    String::new()
+                };
                 events.push((
                     Some(id),
                     Severity::Info,
                     "discovered",
-                    format!("{name}: new drive {} {} ({} bytes)", o.model, o.serial, o.capacity_bytes),
+                    format!(
+                        "{name}: new drive {} {} ({} bytes){multipath}",
+                        primary.model, primary.serial, primary.capacity_bytes
+                    ),
                 ));
                 inv.drives.insert(
                     id,
                     crate::drive::Drive {
                         id,
-                        path: o.path,
+                        path: primary.path.clone(),
                         name,
-                        kind: o.kind,
-                        model: o.model,
-                        serial: o.serial,
-                        firmware: o.firmware,
-                        wwid: o.wwid,
-                        capacity_bytes: o.capacity_bytes,
-                        block_size: o.block_size,
+                        paths,
+                        kind: primary.kind,
+                        model: primary.model.clone(),
+                        serial: primary.serial.clone(),
+                        firmware: primary.firmware.clone(),
+                        wwid: primary.wwid.clone(),
+                        capacity_bytes: primary.capacity_bytes,
+                        block_size: primary.block_size,
                         location,
                         membership: Membership::Out,
                         designation: Default::default(),
@@ -460,6 +494,31 @@ mod tests {
         assert_eq!(evaluate(&cfg(), &s, Some(2)).0, HealthStatus::Warning);
         assert_eq!(evaluate(&cfg(), &s, Some(5)).0, HealthStatus::Good);
         assert_eq!(evaluate(&cfg(), &s, None).0, HealthStatus::Good);
+    }
+
+    #[test]
+    fn multipath_groups_by_wwid_with_stable_primary() {
+        use crate::discovery::Observed;
+        let ob = |name: &str, wwid: &str| Observed {
+            name: name.into(),
+            path: format!("/dev/{name}"),
+            kind: crate::drive::DriveKind::SasHdd,
+            model: "X411_HVIPC420A11".into(),
+            serial: if wwid == "w1" { "S1".into() } else { "S2".into() },
+            firmware: "NA02".into(),
+            wwid: Some(wwid.into()),
+            capacity_bytes: 420 << 30,
+            block_size: 512,
+        };
+        // sdq and sda are the same physical drive through two IOMs.
+        let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);
+        assert_eq!(groups.len(), 2, "two physical drives, not three");
+        let g1 = groups
+            .iter()
+            .find(|(id, _)| *id == DriveId::derive(Some("w1"), "X411_HVIPC420A11", "S1"))
+            .unwrap();
+        assert_eq!(g1.1.len(), 2);
+        assert_eq!(g1.1[0].path, "/dev/sda", "primary is sorted-first, never flaps");
     }
 
     #[test]

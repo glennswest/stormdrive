@@ -68,30 +68,80 @@ impl DriveKind {
     }
 }
 
-/// Where the drive physically is. Every field optional — populated with
-/// whatever the platform exposes.
+/// The HBA a drive hangs off. Multiple controllers per node is the normal
+/// case on a shelf rig.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Controller {
+    /// hostN (SCSI); the grouping key.
+    pub scsi_host: Option<String>,
+    pub pcie_addr: Option<String>,
+    /// Kernel driver (mpt3sas, nvme, …).
+    pub driver: Option<String>,
+}
+
+/// A SAS shelf (SES enclosure), e.g. a NetApp DS4246. Identity comes from
+/// the SES processor's SCSI device; `serial` (VPD 0x80) is the canonical
+/// shelf key — a dual-IOM shelf shows up as two enclosure devices with two
+/// ids but one serial.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shelf {
+    /// sysfs enclosure id (e.g. "1:0:8:0") — per-IOM, not canonical.
+    pub id: Option<String>,
+    pub vendor: Option<String>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+    pub sas_address: Option<String>,
+}
+
+impl Shelf {
+    /// The stable key for grouping: serial when known, else the sysfs id.
+    pub fn key(&self) -> Option<String> {
+        self.serial.clone().or_else(|| self.id.clone())
+    }
+
+    pub fn display(&self) -> String {
+        match (&self.model, &self.serial, &self.id) {
+            (Some(m), Some(s), _) => format!("{m} {s}"),
+            (Some(m), None, Some(i)) => format!("{m} {i}"),
+            (Some(m), None, None) => m.clone(),
+            (None, _, Some(i)) => i.clone(),
+            _ => "shelf".into(),
+        }
+    }
+}
+
+/// Where the drive physically is: controller → shelf → bay. Every field
+/// optional — populated with whatever the platform exposes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
+    #[serde(default)]
+    pub controller: Option<Controller>,
+    #[serde(default)]
+    pub shelf: Option<Shelf>,
+    pub bay: Option<u32>,
+    /// The drive's own SAS address.
+    pub sas_address: Option<String>,
+    /// NVMe drives: the namespace's controller BDF / physical slot.
     pub pcie_addr: Option<String>,
     pub pcie_slot: Option<String>,
-    pub sas_address: Option<String>,
-    pub enclosure: Option<String>,
-    pub bay: Option<u32>,
-    pub scsi_host: Option<String>,
 }
 
 impl Location {
     /// Failure-domain labels for placement, in stormblock topology shape.
     pub fn labels(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        if let Some(e) = &self.enclosure {
-            out.push(("enclosure".into(), e.clone()));
+        if let Some(sh) = &self.shelf {
+            if let Some(k) = sh.key() {
+                out.push(("shelf".into(), k));
+            }
         }
         if let Some(b) = self.bay {
             out.push(("bay".into(), b.to_string()));
         }
-        if let Some(h) = &self.scsi_host {
-            out.push(("hba".into(), h.clone()));
+        if let Some(c) = &self.controller {
+            if let Some(h) = &c.scsi_host {
+                out.push(("hba".into(), h.clone()));
+            }
         }
         if let Some(s) = &self.pcie_slot {
             out.push(("pcie_slot".into(), s.clone()));
@@ -175,10 +225,14 @@ impl HealthReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Drive {
     pub id: DriveId,
-    /// Current /dev node. May change across boots; `id` does not.
+    /// Primary /dev node. May change across boots; `id` does not.
     pub path: String,
-    /// Kernel name (sda, nvme0n1).
+    /// Kernel name of the primary path (sda, nvme0n1).
     pub name: String,
+    /// Every /dev node this physical drive answers on. Dual-IOM shelves
+    /// present two; `path` is always the first (sorted). Includes `path`.
+    #[serde(default)]
+    pub paths: Vec<String>,
     pub kind: DriveKind,
     pub model: String,
     pub serial: String,
@@ -277,6 +331,7 @@ mod tests {
             id: DriveId::derive(None, "M", "S"),
             path: "/dev/sdx".into(),
             name: "sdx".into(),
+            paths: vec!["/dev/sdx".into()],
             kind: DriveKind::SataSsd,
             model: "M".into(),
             serial: "S".into(),
@@ -335,12 +390,40 @@ mod tests {
     #[test]
     fn location_labels() {
         let loc = Location {
-            enclosure: Some("enc0".into()),
+            shelf: Some(Shelf {
+                id: Some("1:0:8:0".into()),
+                serial: Some("SHFSN1".into()),
+                model: Some("DS4246".into()),
+                ..Default::default()
+            }),
             bay: Some(7),
+            controller: Some(Controller {
+                scsi_host: Some("host7".into()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let labels = loc.labels();
-        assert!(labels.contains(&("enclosure".into(), "enc0".into())));
+        assert!(labels.contains(&("shelf".into(), "SHFSN1".into())), "serial beats sysfs id");
         assert!(labels.contains(&("bay".into(), "7".into())));
+        assert!(labels.contains(&("hba".into(), "host7".into())));
+    }
+
+    #[test]
+    fn shelf_key_prefers_serial_and_display_reads_well() {
+        let sh = Shelf {
+            id: Some("1:0:8:0".into()),
+            serial: Some("SN9".into()),
+            model: Some("DS4246".into()),
+            ..Default::default()
+        };
+        assert_eq!(sh.key(), Some("SN9".into()));
+        assert_eq!(sh.display(), "DS4246 SN9");
+        let bare = Shelf {
+            id: Some("1:0:8:0".into()),
+            ..Default::default()
+        };
+        assert_eq!(bare.key(), Some("1:0:8:0".into()));
+        assert_eq!(bare.display(), "1:0:8:0");
     }
 }

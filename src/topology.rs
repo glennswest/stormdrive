@@ -1,8 +1,13 @@
-//! Physical location: PCIe address, SAS address, HBA, SES enclosure/bay —
-//! and the locate LED, which on Linux is a plain sysfs write on the
-//! enclosure slot.
+//! Physical location: controller → shelf → bay, resolved from sysfs — and
+//! the locate LED, which on Linux is a plain sysfs write on the enclosure
+//! slot.
+//!
+//! Shelf identity comes from the SES processor's SCSI device (vendor,
+//! model, serial from VPD page 0x80). A dual-IOM NetApp shelf shows up as
+//! two enclosure devices with two sysfs ids but one serial — `Shelf::key`
+//! prefers the serial for exactly that reason.
 
-use crate::drive::Location;
+use crate::drive::{Controller, Location, Shelf};
 
 /// Does this path component look like a PCI BDF ("0000:03:00.0")?
 pub fn is_pci_bdf(s: &str) -> bool {
@@ -18,6 +23,18 @@ pub fn is_pci_bdf(s: &str) -> bool {
         && hex(8..10)
         && b[10] == b'.'
         && b[11].is_ascii_hexdigit()
+}
+
+/// Parse SCSI VPD page 0x80 (unit serial number): 4-byte header
+/// (peripheral, page code, length BE16) then ASCII serial.
+pub fn parse_vpd80(raw: &[u8]) -> Option<String> {
+    if raw.len() < 4 || raw[1] != 0x80 {
+        return None;
+    }
+    let len = u16::from_be_bytes([raw[2], raw[3]]) as usize;
+    let end = (4 + len).min(raw.len());
+    let s = String::from_utf8_lossy(&raw[4..end]).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 #[cfg(target_os = "linux")]
@@ -54,29 +71,65 @@ mod linux {
         None
     }
 
+    /// Identity of the shelf behind an enclosure id: the SES processor's
+    /// SCSI device at /sys/class/enclosure/<id>/device.
+    fn shelf_identity(enc_id: &str) -> Shelf {
+        let dev = PathBuf::from(format!("/sys/class/enclosure/{enc_id}/device"));
+        let serial = std::fs::read(dev.join("vpd_pg80"))
+            .ok()
+            .and_then(|raw| parse_vpd80(&raw));
+        Shelf {
+            id: Some(enc_id.to_string()),
+            vendor: read_trim(&dev.join("vendor")),
+            model: read_trim(&dev.join("model")),
+            serial,
+            sas_address: read_trim(&dev.join("sas_address")),
+        }
+    }
+
+    fn controller_of(real: &Path) -> Option<Controller> {
+        let mut pcie_addr = None;
+        let mut scsi_host = None;
+        for comp in real.components() {
+            let c = comp.as_os_str().to_string_lossy();
+            if is_pci_bdf(&c) {
+                pcie_addr = Some(c.to_string()); // last BDF wins: the endpoint
+            }
+            if c.starts_with("host") && c[4..].chars().all(|ch| ch.is_ascii_digit()) {
+                scsi_host = Some(c.to_string());
+            }
+        }
+        if pcie_addr.is_none() && scsi_host.is_none() {
+            return None;
+        }
+        let driver = pcie_addr.as_ref().and_then(|bdf| {
+            std::fs::read_link(format!("/sys/bus/pci/devices/{bdf}/driver"))
+                .ok()
+                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+        });
+        Some(Controller {
+            scsi_host,
+            pcie_addr,
+            driver,
+        })
+    }
+
     pub fn locate(name: &str) -> Location {
         let mut loc = Location::default();
         let base = PathBuf::from(format!("/sys/block/{name}"));
-        // The resolved sysfs path carries the PCI chain and (for SCSI) the
-        // hostN component.
         if let Ok(real) = std::fs::canonicalize(&base) {
-            for comp in real.components() {
-                let c = comp.as_os_str().to_string_lossy();
-                if is_pci_bdf(&c) {
-                    loc.pcie_addr = Some(c.to_string()); // last BDF wins: the closest bridge/endpoint
-                }
-                if c.starts_with("host") && c[4..].chars().all(|ch| ch.is_ascii_digit()) {
-                    loc.scsi_host = Some(c.to_string());
-                }
-            }
+            loc.controller = controller_of(&real);
         }
         loc.sas_address = read_trim(&base.join("device/sas_address"));
         if let Some((enc, slot_dir)) = find_enclosure_slot(name) {
-            loc.enclosure = Some(enc);
             loc.bay = read_trim(&slot_dir.join("slot")).and_then(|s| s.parse().ok());
+            loc.shelf = Some(shelf_identity(&enc));
         }
-        if let Some(bdf) = &loc.pcie_addr {
-            loc.pcie_slot = pci_physical_slot(bdf);
+        if name.starts_with("nvme") {
+            loc.pcie_addr = loc.controller.as_ref().and_then(|c| c.pcie_addr.clone());
+            if let Some(bdf) = &loc.pcie_addr {
+                loc.pcie_slot = pci_physical_slot(bdf);
+            }
         }
         loc
     }
@@ -145,5 +198,18 @@ mod tests {
         assert!(!is_pci_bdf("host3"));
         assert!(!is_pci_bdf("0000-03-00.0"));
         assert!(!is_pci_bdf("00000:3:00.0"));
+    }
+
+    #[test]
+    fn vpd80_parses_serial() {
+        let mut raw = vec![0x0d, 0x80, 0x00, 0x08];
+        raw.extend_from_slice(b"SN123   ");
+        assert_eq!(parse_vpd80(&raw), Some("SN123".into()));
+        assert_eq!(parse_vpd80(&[0x0d, 0x83, 0x00, 0x04, b'x']), None, "wrong page");
+        assert_eq!(parse_vpd80(&[0x0d, 0x80]), None, "truncated header");
+        assert_eq!(parse_vpd80(&[0x0d, 0x80, 0x00, 0x00]), None, "empty serial");
+        let mut short = vec![0x0d, 0x80, 0x00, 0x20];
+        short.extend_from_slice(b"AB");
+        assert_eq!(parse_vpd80(&short), Some("AB".into()), "length clamped to buffer");
     }
 }

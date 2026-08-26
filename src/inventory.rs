@@ -65,6 +65,7 @@ impl Inventory {
         self.drives.values().find(|d| {
             d.name == handle
                 || d.path == handle
+                || d.paths.iter().any(|p| p == handle)
                 || d.serial == handle
                 || d.wwid.as_deref() == Some(handle)
         })
@@ -82,6 +83,7 @@ mod tests {
             id: DriveId::derive(None, "M", serial),
             path: format!("/dev/{name}"),
             name: name.into(),
+            paths: vec![format!("/dev/{name}")],
             kind: DriveKind::SataSsd,
             model: "M".into(),
             serial: serial.into(),
