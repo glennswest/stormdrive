@@ -48,8 +48,13 @@ Same rule as every project here: **every `cargo build/test/check` runs on
 a macOS build skips exactly the code most likely to be wrong.
 
 ```
-commit  →  push  →  ssh root@dev.g8.lo 'cd /root/stormdrive && git pull && cargo test'
+commit  →  push  →  ssh root@dev.g8.lo 'cd /root/stormdrive && git pull && \
+    CARGO_TARGET_DIR=/build/cargo/stormdrive cargo test'
 ```
+
+Target dirs live on dev's 2 TB spinning drive (`/build/cargo/<project>`),
+never on the 198 GB SSD root — see ~/CLAUDE.md "Nothing lives on the SSD
+between builds".
 
 The repo is public (matching stormblock); `/root/stormdrive` on dev pulls
 `origin` from GitHub over https.
