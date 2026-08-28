@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+pub mod kube;
+
 const INDEX_HTML: &str = include_str!("../ui/index.html");
 
 pub struct AppState {
@@ -127,6 +129,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
+        // Kubernetes-shaped resources, served by this daemon (stormblock#80).
+        .merge(kube::router(state.clone()))
         .with_state(state)
 }
 

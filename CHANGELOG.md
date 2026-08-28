@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### 2026-08-28
+- **feat:** Kubernetes-shaped resources served by stormdrive (stormblock#80):
+  `/apis/storage.storm.io/v1/drives` and `…/enclosures` in the
+  `apiVersion/kind/metadata/spec/status` shape, API discovery at `/apis`
+  and `/apis/storage.storm.io/v1`, `labelSelector`, `?watch=1` as a
+  newline-delimited event stream. `Drive.spec` writes — `designation`,
+  `fleet` (`fleet`/`out`; out always drains first), `drain`, `locate` —
+  map onto the existing verbs. Labelled `storm.io/component=stormdrive`
+  so they sit beside stormblock's `Volume`/`Slab`/`Node`/`Drive` in one
+  group.
+
 ## [v0.5.0] — 2026-08-28
 
 ### 2026-08-28

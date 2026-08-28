@@ -88,6 +88,7 @@ src/
   sequence.rs     maintenance sequencer: one disruptive op at a time, health-gated
   stormblock.rs   client for stormblock :9090 (add drive w/ labels+uuid, slabs, health, drain)
   fleet.rs        the loop: labels, health push, drains → retire, auto-add
+  api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} — Kubernetes-shaped (stormblock#80)
   api/            axum REST :9092  (/api/v1/*, /api/v1/summary for stormd)
 ```
 

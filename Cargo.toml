@@ -7,6 +7,8 @@ description = "Physical drive management for the Storm ecosystem — discovery, 
 license = "MIT"
 
 [dependencies]
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
 stormview = { git = "https://github.com/glennswest/stormview", branch = "main" }
