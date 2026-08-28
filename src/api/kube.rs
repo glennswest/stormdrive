@@ -443,7 +443,8 @@ async fn list_enclosures(State(s): State<Arc<AppState>>, Query(q): Query<ListQue
     list_or_watch(s, "Enclosure", q).await
 }
 
-pub fn router(state: Arc<AppState>) -> Router {
+/// Routes only; the caller's `with_state` applies to these too.
+pub fn router() -> Router<Arc<AppState>> {
     let gv = format!("/apis/{GROUP}/{VERSION}");
     Router::new()
         .route("/apis", get(apis))
@@ -453,7 +454,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(&format!("{gv}/drives/{{name}}"), get(get_drive).patch(patch_drive))
         .route(&format!("{gv}/enclosures"), get(list_enclosures))
         .route(&format!("{gv}/enclosures/{{name}}"), get(get_enclosure))
-        .with_state(state)
 }
 
 #[cfg(test)]

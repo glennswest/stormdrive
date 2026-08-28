@@ -130,7 +130,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
         // Kubernetes-shaped resources, served by this daemon (stormblock#80).
-        .merge(kube::router(state.clone()))
+        .merge(kube::router())
         .with_state(state)
 }
 
