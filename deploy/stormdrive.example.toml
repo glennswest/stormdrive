@@ -25,7 +25,10 @@ hysteresis     = 3          # consecutive samples before a worsening sticks
 [stormblock]
 enabled  = true
 url      = "http://127.0.0.1:9090"
-auto_add = false            # phase 4: register qualified drives automatically
+auto_add = false            # register qualified drives automatically (with location labels + stable uuid)
+auto_format_slab = true     # …and format a slab on them, tier from tier_map / kind
+push_health = true          # Failing/Failed → stormblock quarantines the drive and its legs
+drain_on_failing = true     # Failing/Failed in the fleet → drain, then retire when empty
 # tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", sas_hdd = "cool", sata_hdd = "cool" }
 
 [api]

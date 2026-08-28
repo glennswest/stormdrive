@@ -252,9 +252,54 @@ pub struct Drive {
     pub health: HealthReport,
     pub first_seen: SystemTime,
     pub last_seen: SystemTime,
+    /// The labels stormblock currently holds for this drive, so a change of
+    /// location is pushed once rather than every tick.
+    #[serde(default)]
+    pub pushed_labels: Vec<(String, String)>,
+    /// The health state last reported to stormblock, so a report is sent
+    /// on change rather than every poll.
+    #[serde(default)]
+    pub pushed_health: Option<String>,
+    /// A drain in progress or finished, as stormblock last reported it.
+    #[serde(default)]
+    pub drain: Option<DrainRecord>,
+}
+
+/// What we know about a drain of this drive.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrainRecord {
+    /// `running`, `empty`, `stuck`, `cancelled`.
+    pub state: String,
+    pub moved: u64,
+    pub failed: u64,
+    pub remaining: u64,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    /// Why it was started: `health`, `operator`, `leave`.
+    #[serde(default)]
+    pub reason: String,
+    /// Whether the drive should leave the fleet once the drain is empty.
+    #[serde(default)]
+    pub then_leave: bool,
 }
 
 impl Drive {
+    /// The labels stormblock should hold for this drive right now.
+    pub fn stormblock_labels(&self) -> Vec<(String, String)> {
+        self.location.labels()
+    }
+
+    /// The health word stormblock understands for our current status.
+    /// Warning is `healthy` to the engine — a warm drive is still a good
+    /// place for data; only Failing and Failed change placement.
+    pub fn stormblock_health(&self) -> &'static str {
+        match self.health.status() {
+            HealthStatus::Failed => "failed",
+            HealthStatus::Failing => "failing",
+            _ => "healthy",
+        }
+    }
+
     /// Why this drive cannot join the fleet right now, if it can't.
     pub fn fleet_join_blocker(&self) -> Option<String> {
         if self.membership == Membership::Fleet {
@@ -346,6 +391,9 @@ mod tests {
             health: HealthReport::default(),
             first_seen: SystemTime::now(),
             last_seen: SystemTime::now(),
+            pushed_labels: Vec::new(),
+            pushed_health: None,
+            drain: None,
         }
     }
 

@@ -21,6 +21,26 @@
   engine primitives
 
 ## [Unreleased]
+
+### 2026-08-28
+- **feat:** Close the stormblock loop (stormblock#70/#71, engine v11).
+  `stormblock.rs` registers drives with location `labels` and the stable
+  `uuid`, relabels (`PUT /drives/{id}/labels`), lists slabs by drive,
+  reports health (`POST /drives/{id}/health`) and starts/polls/cancels
+  drains. New `fleet.rs` runs after every monitor tick: labels pushed on
+  change, Failing/Failed pushed to the engine (which quarantines the slabs
+  and distrusts the legs), a fleet drive that fails is drained and — when
+  stormblock reports it empty — leaves the fleet with its locate LED on;
+  auto-add (`stormblock.auto_add`) registers qualified drives with labels
+  and a slab.
+- **feat:** `POST/GET/DELETE /api/v1/drives/{id}/drain` (`?leave=true`
+  retires when empty); `fleet leave` takes `"drain": true`; the leave guard
+  uses the engine's slab-by-drive listing instead of path matching;
+  designating a fleet drive Failed reports it and starts its drain.
+- **feat:** `Drive` records `pushed_labels`, `pushed_health` and `drain`
+  (state, moved/failed/remaining, reason, then_leave), persisted.
+- **feat:** Config `stormblock.auto_format_slab`, `push_health`,
+  `drain_on_failing` (all default true; `auto_add` stays off).
 <!-- New unreleased changes go here -->
 
 ## [v0.3.0] — 2026-08-26

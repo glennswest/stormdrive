@@ -94,8 +94,24 @@ pub struct StormBlockConfig {
     /// Phase 4: register qualified drives with stormblock automatically.
     /// Explicit opt-in; discovery/monitoring never depends on it.
     pub auto_add: bool,
+    /// Format a slab on a drive auto-add registers (tier from `tier_map`).
+    #[serde(default = "yes")]
+    pub auto_format_slab: bool,
+    /// Push our health conclusions to stormblock: Failing/Failed quarantine
+    /// the drive's slabs and make redundant volumes stop reading that leg.
+    #[serde(default = "yes")]
+    pub push_health: bool,
+    /// Start a stormblock drain on our own when a fleet drive goes
+    /// Failing/Failed, and retire it (leave the fleet, locate LED on) when
+    /// the drain reports empty.
+    #[serde(default = "yes")]
+    pub drain_on_failing: bool,
     /// kind → slab tier overrides; DriveKind::default_tier() otherwise.
     pub tier_map: BTreeMap<String, String>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for StormBlockConfig {
@@ -104,6 +120,9 @@ impl Default for StormBlockConfig {
             enabled: true,
             url: "http://127.0.0.1:9090".into(),
             auto_add: false,
+            auto_format_slab: true,
+            push_health: true,
+            drain_on_failing: true,
             tier_map: BTreeMap::new(),
         }
     }

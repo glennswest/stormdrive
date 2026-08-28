@@ -86,7 +86,8 @@ src/
   firmware.rs     firmware inventory (update engine: Phase 5)
   thermal.rs      thermal policy (report/alert now; actuation later)
   sequence.rs     maintenance sequencer: one disruptive op at a time, health-gated
-  stormblock.rs   client for stormblock :9090 (add drive, format slab, drain)
+  stormblock.rs   client for stormblock :9090 (add drive w/ labels+uuid, slabs, health, drain)
+  fleet.rs        the loop: labels, health push, drains → retire, auto-add
   api/            axum REST :9092  (/api/v1/*, /api/v1/summary for stormd)
 ```
 
@@ -254,13 +255,19 @@ Consequences:
 - [ ] SAS address/expander topology
 - [ ] Location → failure-domain labels for stormblock placement
 
-### Phase 4: StormBlock integration
-- [ ] Client: list/add/remove drives, format slab, SMART passthrough compare
-- [ ] Auto-add policy (off by default): qualified drive → POST drives →
-      POST slabs with tier derived from kind
-- [ ] Failure flow: Failing drive → Draining → (stormblock drain API when it
-      exists) → Retired; until then: event + summary card goes warn/error
-- [ ] Reconcile loop: our inventory vs stormblock's drive list
+### Phase 4: StormBlock integration — DONE (0.5.0, against stormblock v11)
+- [x] Client: list/add (with labels + uuid)/relabel/remove drives, slabs by
+      drive, format slab, health report, drain start/status/cancel
+- [x] Auto-add policy (off by default): qualified drive → POST drives with
+      labels + uuid → POST slabs with tier derived from kind; 10-minute
+      backoff on failure
+- [x] Failure flow: Failing/Failed (health or operator) → health pushed →
+      drain → poll → empty → leave fleet + locate LED → event "safe to pull"
+- [x] Reconcile loop: our inventory vs stormblock's drive list; labels
+      re-pushed on location change
+- [x] `POST/GET/DELETE /api/v1/drives/{id}/drain`; `leave` with `drain: true`
+- [ ] Not yet exercised against real shelves: the label chain a dual-IOM
+      NetApp shelf produces, and a drain under I/O load
 
 ### Phase 5: Firmware management
 - [ ] Firmware inventory per drive (already collected in Phase 1)

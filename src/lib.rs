@@ -11,6 +11,7 @@ pub mod discovery;
 pub mod drive;
 pub mod drivetest;
 pub mod events;
+pub mod fleet;
 pub mod inventory;
 pub mod monitor;
 pub mod smart;

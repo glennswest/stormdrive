@@ -126,6 +126,7 @@ impl Damper {
 
 pub async fn run(state: Arc<AppState>) {
     let mut damper = Damper::default();
+    let mut fleet = crate::fleet::FleetState::default();
     let disc_int = state.config.discovery.interval_secs;
     let mon_int = state.config.monitor.interval_secs;
     let mut last_disc: Option<std::time::Instant> = None;
@@ -141,6 +142,12 @@ pub async fn run(state: Arc<AppState>) {
         }
         if let Err(e) = tick(&state, &mut damper, disc_due, mon_due).await {
             tracing::error!("monitor tick failed: {e:#}");
+        }
+        // The stormblock loop: labels, health, drains, auto-add. After the
+        // tick so it acts on this round's conclusions.
+        if disc_due || mon_due {
+            crate::fleet::tick(&state, &mut fleet).await;
+            state.persist().await;
         }
         tokio::time::sleep(Duration::from_secs(disc_int.min(mon_int).max(1))).await;
     }
@@ -355,6 +362,9 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         health: HealthReport::default(),
                         first_seen: now,
                         last_seen: now,
+                        pushed_labels: Vec::new(),
+                        pushed_health: None,
+                        drain: None,
                     },
                 );
             }

@@ -117,6 +117,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // method+path with no body, so every action needs a body-free form.
         .route("/api/v1/drives/{id}/locate/{state}", post(locate_by_path))
         .route("/api/v1/drives/{id}/fleet", post(fleet_action))
+        .route("/api/v1/drives/{id}/drain", get(get_drain).post(start_drain).delete(cancel_drain))
         .route("/api/v1/drives/{id}/fleet/{action}", post(fleet_by_path))
         .route("/api/v1/drives/{id}/designation", post(set_designation))
         .route("/api/v1/drives/{id}/designation/{value}", post(designation_by_path))
@@ -225,6 +226,9 @@ struct FleetBody {
     /// join only: override the tier derived from the drive kind.
     #[serde(default)]
     tier: Option<String>,
+    /// leave only: move everything off first, and leave once empty.
+    #[serde(default)]
+    drain: bool,
     /// leave only: skip the slab-in-use guard.
     #[serde(default)]
     force: bool,
@@ -248,66 +252,63 @@ async fn fleet_action(
             if let Some(why) = drive.fleet_join_blocker() {
                 return Err(ApiError::conflict(format!("{}: {why}", drive.name)));
             }
-            // Idempotent open: skip the add when stormblock already lists it.
-            let listed = s
-                .stormblock
-                .list_drives()
-                .await
-                .map_err(|e| ApiError::upstream(format!("stormblock unreachable: {e:#}")))?;
-            let already = listed
-                .iter()
-                .any(|sd| sd.get("path").and_then(|v| v.as_str()) == Some(drive.path.as_str()));
-            if !already {
-                s.stormblock
-                    .add_drive(&drive.path)
-                    .await
-                    .map_err(|e| ApiError::upstream(format!("add drive: {e:#}")))?;
-            }
-            let mut slab_tier = None;
-            if body.format_slab {
-                let tier = body
-                    .tier
-                    .unwrap_or_else(|| s.stormblock.tier_for(drive.kind));
-                s.stormblock
-                    .format_slab(&drive.path, &tier)
-                    .await
-                    .map_err(|e| ApiError::upstream(format!("format slab: {e:#}")))?;
-                slab_tier = Some(tier);
-            }
-            {
-                let mut inv = s.inventory.write().await;
-                if let Some(d) = inv.drives.get_mut(&did) {
-                    d.membership = Membership::Fleet;
-                }
-            }
+            let labels = drive.stormblock_labels();
+            let slab_tier = crate::fleet::join(
+                &s,
+                did,
+                &drive.name,
+                &drive.path,
+                &labels,
+                drive.kind,
+                body.format_slab,
+                body.tier.clone(),
+            )
+            .await
+            .map_err(|e| ApiError::upstream(format!("join: {e:#}")))?;
             s.events.write().await.push(
                 Some(did),
                 Severity::Info,
                 "fleet",
                 match &slab_tier {
-                    Some(t) => format!("{}: joined the fleet, slab formatted ({t})", drive.name),
-                    None => format!("{}: joined the fleet (no slab formatted)", drive.name),
+                    Some(t) => format!("{}: joined the fleet, slab formatted ({t}), labels {labels:?}", drive.name),
+                    None => format!("{}: joined the fleet (no slab formatted), labels {labels:?}", drive.name),
                 },
             );
             s.persist().await;
-            Ok(Json(json!({ "membership": "fleet", "slab_tier": slab_tier })))
+            Ok(Json(json!({ "membership": "fleet", "slab_tier": slab_tier, "labels": labels })))
         }
         "leave" => {
             if drive.membership != Membership::Fleet {
                 return Err(ApiError::conflict(format!("{}: not in the fleet", drive.name)));
             }
             if !body.force {
-                // Best-effort slab guard until stormblock#70 gives a real
-                // slab↔drive association and a drain.
-                let slabs = s.stormblock.list_slabs().await.unwrap_or_default();
-                let has_slab = slabs.iter().any(|sl| {
-                    ["device_path", "path", "device"]
-                        .iter()
-                        .any(|k| sl.get(*k).and_then(|v| v.as_str()) == Some(drive.path.as_str()))
+                // A slab with anything on it means data lives here. Asked to
+                // drain, the drive leaves by itself once it is empty; not
+                // asked, this refuses rather than strand the data.
+                let slabs = s
+                    .stormblock
+                    .drive_slabs(&drive.path)
+                    .await
+                    .map_err(|e| ApiError::upstream(format!("stormblock unreachable: {e:#}")))?;
+                let occupied = slabs.iter().any(|sl| {
+                    let total = sl.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let free = sl.get("free_slots").and_then(|v| v.as_u64()).unwrap_or(0);
+                    total > free
                 });
-                if has_slab {
+                if occupied {
+                    if body.drain {
+                        let rec = crate::fleet::start_drain(&s, did, "leave", true)
+                            .await
+                            .map_err(|e| ApiError::upstream(format!("drain: {e:#}")))?;
+                        return Ok(Json(json!({
+                            "membership": "fleet",
+                            "draining": true,
+                            "drain": rec,
+                            "note": "the drive leaves the fleet on its own once the drain reports empty",
+                        })));
+                    }
                     return Err(ApiError::conflict(format!(
-                        "{}: a slab lives on this drive — drain it first (stormblock#70) or pass force",
+                        "{}: data lives on this drive — leave with \"drain\": true to move it off first, or pass force",
                         drive.name
                     )));
                 }
@@ -337,6 +338,50 @@ async fn fleet_action(
     }
 }
 
+/// `POST /api/v1/drives/{id}/drain` — move everything off a fleet drive.
+/// `?leave=true` retires it once empty (out of the fleet, locate LED on).
+async fn start_drain(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    if !s.stormblock.enabled() {
+        return Err(ApiError::bad_request("stormblock integration is disabled"));
+    }
+    let leave = q.get("leave").is_some_and(|v| v == "true" || v == "1");
+    let rec = crate::fleet::start_drain(&s, did, "operator", leave)
+        .await
+        .map_err(|e| ApiError::upstream(format!("drain: {e:#}")))?;
+    Ok(Json(json!({ "id": did, "drain": rec, "then_leave": leave })))
+}
+
+/// `GET /api/v1/drives/{id}/drain` — what we know about the drain.
+async fn get_drain(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    let inv = s.inventory.read().await;
+    let d = inv.drives.get(&did).expect("resolved id present");
+    match &d.drain {
+        Some(rec) => Ok(Json(json!({ "id": did, "activity": d.activity, "drain": rec }))),
+        None => Err(ApiError::not_found(format!("{}: no drain has been asked for", d.name))),
+    }
+}
+
+/// `DELETE /api/v1/drives/{id}/drain` — stop it; what moved stays moved.
+async fn cancel_drain(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    crate::fleet::cancel_drain(&s, did)
+        .await
+        .map_err(|e| ApiError::upstream(format!("cancel drain: {e:#}")))?;
+    Ok(Json(json!({ "id": did, "cancelled": true })))
+}
+
 #[derive(Deserialize)]
 struct DesignationBody {
     designation: Designation,
@@ -362,17 +407,31 @@ async fn set_designation(
         "designation",
         format!("{name}: {from:?} → {:?} (operator)", body.designation),
     );
-    if body.designation == Designation::Failed && membership == Membership::Fleet {
-        log.push(
-            Some(did),
-            Severity::Warning,
-            "designation",
-            format!("{name}: marked failed while in the fleet — needs a drain (stormblock#70) before removal"),
-        );
-    }
     drop(log);
+    let mut drain = None;
+    if body.designation == Designation::Failed && membership == Membership::Fleet && s.stormblock.enabled() {
+        // Operator says failed: the engine stops trusting it now, and it is
+        // drained and retired without waiting for a health poll to agree.
+        let path = s.inventory.read().await.drives.get(&did).map(|d| d.path.clone()).unwrap_or_default();
+        if let Err(e) = s.stormblock.report_health(&path, "failed", Some("operator designation"), false).await {
+            tracing::warn!(drive = %name, "failed designation not reported to stormblock: {e:#}");
+        } else if let Some(d) = s.inventory.write().await.drives.get_mut(&did) {
+            d.pushed_health = Some("failed".into());
+        }
+        if s.config.stormblock.drain_on_failing {
+            match crate::fleet::start_drain(&s, did, "operator", true).await {
+                Ok(rec) => drain = Some(rec),
+                Err(e) => s.events.write().await.push(
+                    Some(did),
+                    Severity::Error,
+                    "drain",
+                    format!("{name}: marked failed but the drain did not start: {e:#}"),
+                ),
+            }
+        }
+    }
     s.persist().await;
-    Ok(Json(json!({ "id": did, "from": from, "to": body.designation })))
+    Ok(Json(json!({ "id": did, "from": from, "to": body.designation, "drain": drain })))
 }
 
 #[derive(Deserialize)]

@@ -266,36 +266,54 @@ demand. Health mapping: any Failed/Missing-Active → `error`; any
 Failing/Warning/Draining → `warn`; otherwise `ok`. Metrics: drives total,
 active, warnings, hottest °C, worst wear %.
 
-## StormBlock integration (`stormblock.rs`)
+## StormBlock integration (`stormblock.rs`, `fleet.rs`)
 
-What works against stormblock today:
-- **Register**: `POST /api/v1/drives {path}` then
-  `POST /api/v1/slabs {device_path, tier}` with tier derived from kind
-  (NvmeSsd→hot, SasSsd/SataSsd→warm, HDD→cool; overridable per-drive).
-  Auto-add is a config flag, **off by default** — phase 4 turns the loop on.
-- **Cross-check**: `GET /api/v1/drives` + `/api/v1/slabs/pool` to reconcile
-  Active state and to see pressure.
-- **Withdraw**: `DELETE /api/v1/drives/{id}` — noting the in-use guard bug
-  filed against stormblock; stormdrive checks slab presence itself first.
+stormblock v11 closed the loop (stormblock#70, #71); this side closed in
+stormdrive 0.5.0. `stormblock.rs` is the client, `fleet.rs` the policy the
+monitor tick runs after every discovery/health round:
 
-What needs stormblock work (issue filed): a drive-scoped **drain** —
-"evacuate every slab on this device over HTTP, report progress, tell me when
-it's empty" — plus accepting a stable drive identity + location labels at
-registration. Until that lands, the failure flow stops at *notify*:
-stormdrive marks the drive Failing/Draining, raises events, flips the stormd
-card to warn/error, and a human (or a script against stormblock's CLI
-`migrate`) does the move. The moment the API exists, `sequence.rs` gets a
-`Drain` op and the loop closes.
+- **Register with labels + identity.** `POST /api/v1/drives {path, labels,
+  uuid}` — `labels` are the location as `Location::labels()` resolves it
+  (`shelf`, `bay`, `hba`, `pcie_slot`), `uuid` is our stable `DriveId`. They
+  become the failure domain of every slab on the drive, so a volume with
+  `mirror:2@shelf` keeps its legs out of one enclosure. Labels are re-pushed
+  (`PUT …/labels`) whenever the resolved location differs from what was last
+  sent (`Drive.pushed_labels`).
+- **Slabs by identity.** `GET /api/v1/drives/{id}/slabs` replaces the
+  path-matching guess: a drive with an occupied slab cannot `leave` without
+  a drain or `force`.
+- **Health push.** On a change of our conclusion for a fleet drive,
+  `POST …/health {state}`: Failing/Failed → stormblock quarantines the
+  drive's slabs and every redundant volume stops reading that leg *before*
+  an I/O fails; Good/Warning → `healthy`, which lifts the quarantine
+  (`Drive.pushed_health`; `stormblock.push_health`).
+- **Drain → retire.** A fleet drive that goes Failing/Failed, or is
+  designated Failed by an operator, or is asked to `leave` with `"drain":
+  true`, gets `POST …/drain`; the tick polls `GET …/drain` and records it on
+  the drive (`Drive.drain`, activity `Draining`). When stormblock says
+  `empty`, the drive `DELETE`s out of the fleet, the locate LED comes on and
+  an event says *safe to pull*. `stuck` is an error event and the drive
+  stays quarantined. `stormblock.drain_on_failing` turns the automatic
+  half off; `POST /api/v1/drives/{id}/drain[?leave=true]` is the manual one.
+- **Auto-add** (`stormblock.auto_add`, off by default): a qualified
+  out-of-fleet drive with no designation and a known health is registered
+  with its labels and given a slab (`auto_format_slab`, tier from
+  `tier_map`/kind). A failed attempt waits ten minutes before retrying.
 
-**Migration flow (target state):**
+**Migration flow (as it runs now):**
 ```
-Failing detected ──▶ state=Draining ──▶ stormblock drain(drive)
-      │                                     │ per-slab evacuate, progress polled
-      │                                     ▼
-      │              slabs empty ──▶ DELETE stormblock drive ──▶ state=Retired
+Failing detected ──▶ POST health {failing} ──▶ POST drain ──▶ poll GET drain
+      │                (slabs quarantined,          │ per-leg moves, progress
+      │                 legs distrusted)            ▼
+      │                                     empty ──▶ DELETE drive ──▶ Out, locate LED on
       ▼
- locate LED on ──▶ tech swaps drive ──▶ hotplug add ──▶ qualify ──▶ register
+ tech swaps drive ──▶ hotplug add ──▶ qualify ──▶ auto-add (labels, uuid, slab)
 ```
+
+The engine never decides any of this; it only executes what this daemon
+tells it. `push_health` reports with `drain: false` on purpose — the drain
+is our decision, taken by `drain_on_failing`, not something a health report
+starts behind our back.
 
 ## Config (`/etc/stormdrive/stormdrive.toml`)
 
