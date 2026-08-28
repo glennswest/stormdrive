@@ -421,12 +421,14 @@ async fn set_designation(
         if s.config.stormblock.drain_on_failing {
             match crate::fleet::start_drain(&s, did, "operator", true).await {
                 Ok(rec) => drain = Some(rec),
-                Err(e) => s.events.write().await.push(
-                    Some(did),
-                    Severity::Error,
-                    "drain",
-                    format!("{name}: marked failed but the drain did not start: {e:#}"),
-                ),
+                Err(e) => {
+                    s.events.write().await.push(
+                        Some(did),
+                        Severity::Error,
+                        "drain",
+                        format!("{name}: marked failed but the drain did not start: {e:#}"),
+                    );
+                }
             }
         }
     }
@@ -647,6 +649,7 @@ async fn fleet_by_path(
             action,
             format_slab: false,
             tier: None,
+            drain: false,
             force: false,
         }),
     )

@@ -286,6 +286,9 @@ mod tests {
             },
             first_seen: SystemTime::now(),
             last_seen: SystemTime::now(),
+            pushed_labels: Vec::new(),
+            pushed_health: None,
+            drain: None,
         }
     }
 
