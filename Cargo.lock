@@ -1255,7 +1255,9 @@ version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
  "clap",
+ "futures-util",
  "libc",
  "reqwest",
  "serde",
