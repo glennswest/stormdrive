@@ -31,6 +31,11 @@ use crate::stormblock::DrainStatus;
 /// How long a failed auto-add is left alone before it is tried again.
 const AUTO_ADD_RETRY: Duration = Duration::from_secs(600);
 
+/// A drive as the label push sees it: id, name, path, labels, identity.
+type LabelJob = (DriveId, String, String, Vec<(String, String)>, uuid::Uuid);
+/// A drive as auto-add sees it: id, name, path, labels, kind.
+type AddJob = (DriveId, String, String, Vec<(String, String)>, crate::drive::DriveKind);
+
 /// Per-tick state the policy keeps between runs.
 #[derive(Default)]
 pub struct FleetState {
@@ -56,7 +61,7 @@ pub async fn tick(state: &Arc<AppState>, fs: &mut FleetState) {
 /// Push location labels + identity for every fleet drive whose labels
 /// changed since stormblock last heard them.
 async fn sync_labels(state: &Arc<AppState>) {
-    let due: Vec<(DriveId, String, String, Vec<(String, String)>, uuid::Uuid)> = {
+    let due: Vec<LabelJob> = {
         let inv = state.inventory.read().await;
         inv.drives
             .values()
@@ -333,7 +338,7 @@ async fn retire(state: &Arc<AppState>, id: DriveId) {
 /// identity, format a slab on it. A drive that failed is left alone for a
 /// while rather than hammered every tick.
 async fn auto_add(state: &Arc<AppState>, fs: &mut FleetState) {
-    let candidates: Vec<(DriveId, String, String, Vec<(String, String)>, crate::drive::DriveKind)> = {
+    let candidates: Vec<AddJob> = {
         let inv = state.inventory.read().await;
         inv.drives
             .values()

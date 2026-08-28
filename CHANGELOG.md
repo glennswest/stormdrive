@@ -1,26 +1,8 @@
 # Changelog
 
-## [v0.4.0] — 2026-08-26
-
-### Added
-- stormview integration — `GET /api/v1/components` + `/ws/components`
-  (full-snapshot pushes) serving drives and shelves as ComponentSummary
-  entries with relations (shelf has_many drives) and real actions;
-  parameter-less action routes for renderers (`/locate/{on|off}`,
-  `/fleet/{join|leave}`, `/designation/{value}`, `/test/{kind}`) so
-  stormd/stormsh/stormconsole buttons make things happen
-
-### Documentation
-- Position in the distributed hierarchy: physical chain
-  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay;
-  logical overlay is multicluster-of-multiclusters with tiering across
-  clusters; stormblock is an execution engine, the cross-node control
-  plane is stormstorage (live at github.com/glennswest/stormstorage);
-  shared label vocabulary pinned; testbed recorded (2.5" high / 3.5"
-  medium / PVE backup); stormblock#72 filed, amended, and re-scoped to
-  engine primitives
-
 ## [Unreleased]
+
+## [v0.5.0] — 2026-08-28
 
 ### 2026-08-28
 - **feat:** Close the stormblock loop (stormblock#70/#71, engine v11).
@@ -123,3 +105,24 @@
   API on :9092, stormd summary card, stormblock integration + migration
   flow)
 - Project bootstrap: CLAUDE.md work plan, README
+
+## [v0.4.0] — 2026-08-26
+
+### Added
+- stormview integration — `GET /api/v1/components` + `/ws/components`
+  (full-snapshot pushes) serving drives and shelves as ComponentSummary
+  entries with relations (shelf has_many drives) and real actions;
+  parameter-less action routes for renderers (`/locate/{on|off}`,
+  `/fleet/{join|leave}`, `/designation/{value}`, `/test/{kind}`) so
+  stormd/stormsh/stormconsole buttons make things happen
+
+### Documentation
+- Position in the distributed hierarchy: physical chain
+  site ⊃ building ⊃ floor/room ⊃ row ⊃ rack ⊃ node ⊃ hba ⊃ shelf ⊃ bay;
+  logical overlay is multicluster-of-multiclusters with tiering across
+  clusters; stormblock is an execution engine, the cross-node control
+  plane is stormstorage (live at github.com/glennswest/stormstorage);
+  shared label vocabulary pinned; testbed recorded (2.5" high / 3.5"
+  medium / PVE backup); stormblock#72 filed, amended, and re-scoped to
+  engine primitives
+

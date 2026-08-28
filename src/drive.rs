@@ -474,4 +474,51 @@ mod tests {
         assert_eq!(bare.key(), Some("1:0:8:0".into()));
         assert_eq!(bare.display(), "1:0:8:0");
     }
+
+    /// The engine hears Failing/Failed; a warm or worn-but-working drive is
+    /// still `healthy` to placement.
+    #[test]
+    fn stormblock_health_word_only_changes_placement_for_failing_and_failed() {
+        let mut d = base_drive();
+        for (st, want) in [
+            (HealthStatus::Unknown, "healthy"),
+            (HealthStatus::Good, "healthy"),
+            (HealthStatus::Warning, "healthy"),
+            (HealthStatus::Failing, "failing"),
+            (HealthStatus::Failed, "failed"),
+        ] {
+            d.health.status = Some(st);
+            assert_eq!(d.stormblock_health(), want, "{st:?}");
+        }
+    }
+
+    /// Labels sent to stormblock are the resolved location, in the engine's
+    /// rung vocabulary.
+    #[test]
+    fn stormblock_labels_are_the_location_chain() {
+        let mut d = base_drive();
+        d.location.bay = Some(7);
+        d.location.controller = Some(Controller { scsi_host: Some("host3".into()), ..Default::default() });
+        let labels = d.stormblock_labels();
+        assert!(labels.contains(&("bay".to_string(), "7".to_string())));
+        assert!(labels.contains(&("hba".to_string(), "host3".to_string())));
+        assert!(d.pushed_labels.is_empty(), "nothing pushed until the loop runs");
+    }
+
+    /// A drain record round-trips through the inventory file.
+    #[test]
+    fn drain_record_persists() {
+        let mut d = base_drive();
+        d.drain = Some(DrainRecord { state: "running".into(), moved: 3, failed: 0, remaining: 9, errors: vec![], reason: "health".into(), then_leave: true });
+        let json = serde_json::to_string(&d).unwrap();
+        let back: Drive = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.drain, d.drain);
+        // An inventory written before these fields existed still loads.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v.as_object_mut().unwrap().remove("drain");
+        v.as_object_mut().unwrap().remove("pushed_labels");
+        v.as_object_mut().unwrap().remove("pushed_health");
+        let old: Drive = serde_json::from_value(v).unwrap();
+        assert!(old.drain.is_none() && old.pushed_labels.is_empty());
+    }
 }
