@@ -260,13 +260,12 @@ async fn patch_drive(
                 return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("drain: {e:#}"));
             }
         }
-        Some(false) => {
-            if drive.activity == Activity::Draining {
-                if let Err(e) = crate::fleet::cancel_drain(&s, did).await {
-                    return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("cancel drain: {e:#}"));
-                }
+        Some(false) if drive.activity == Activity::Draining => {
+            if let Err(e) = crate::fleet::cancel_drain(&s, did).await {
+                return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("cancel drain: {e:#}"));
             }
         }
+        Some(false) => {}
         None => {}
     }
 
