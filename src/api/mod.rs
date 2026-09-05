@@ -4,6 +4,7 @@
 use crate::config::Config;
 use crate::drive::{Activity, Designation, DriveId, HealthStatus, Membership};
 use crate::drivetest::{TestHandle, TestKind, TestState};
+use crate::format::FormatHandle;
 use crate::events::{EventLog, Severity};
 use crate::inventory::Inventory;
 use crate::stormblock::StormBlockClient;
@@ -29,6 +30,10 @@ pub struct AppState {
     pub events: RwLock<EventLog>,
     pub stormblock: StormBlockClient,
     pub tests: RwLock<HashMap<DriveId, Arc<TestHandle>>>,
+    /// Sector-size reformats, one per drive, kept after they finish.
+    pub formats: RwLock<HashMap<DriveId, Arc<FormatHandle>>>,
+    /// Latest SES scan: every shelf the node can talk to, by logical id.
+    pub shelves: RwLock<crate::topology::Shelves>,
     pub inventory_path: Option<PathBuf>,
     pub node_name: String,
 }
@@ -126,6 +131,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}/test", get(get_test).post(start_test))
         .route("/api/v1/drives/{id}/test/cancel", post(cancel_test))
         .route("/api/v1/drives/{id}/test/{kind}", post(test_by_path))
+        // Sector-size reformat (FORMAT UNIT): one drive, many drives, or a
+        // whole shelf's worth of 520-byte drives.
+        .route("/api/v1/drives/{id}/format", get(get_format).post(format_drive))
+        .route("/api/v1/drives/{id}/format/{block_size}", post(format_drive_by_path))
+        .route("/api/v1/format", get(list_formats).post(format_many))
+        .route("/api/v1/shelves", get(list_shelves))
+        .route("/api/v1/shelves/{key}", get(get_shelf))
+        .route("/api/v1/shelves/{key}/locate", post(shelf_locate))
+        .route("/api/v1/shelves/{key}/locate/{state}", post(shelf_locate_by_path))
+        .route("/api/v1/shelves/{key}/format", post(format_shelf))
+        .route("/api/v1/shelves/{key}/format/{block_size}", post(format_shelf_by_path))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
@@ -157,6 +173,7 @@ async fn resolve_id(s: &AppState, handle: &str) -> Result<DriveId, ApiError> {
 async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let inv = s.inventory.read().await;
     let tests = s.tests.read().await;
+    let formats = s.formats.read().await;
     let mut drives: Vec<serde_json::Value> = Vec::new();
     let mut sorted: Vec<_> = inv.drives.values().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -166,6 +183,11 @@ async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
             let run = h.run.lock().unwrap();
             v["test"] = serde_json::to_value(&*run).unwrap_or_default();
         }
+        if let Some(h) = formats.get(&d.id) {
+            let run = h.run.lock().unwrap();
+            v["format_run"] = serde_json::to_value(&*run).unwrap_or_default();
+        }
+        v["needs_reformat"] = json!(d.needs_reformat());
         drives.push(v);
     }
     Json(json!({ "drives": drives }))
@@ -204,16 +226,17 @@ async fn set_locate(
     Path(id): Path<String>,
     Json(body): Json<LocateBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let name = {
+    let (name, loc) = {
         let inv = s.inventory.read().await;
-        inv.resolve(&id)
-            .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?
-            .name
-            .clone()
+        let d = inv
+            .resolve(&id)
+            .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
+        (d.name.clone(), d.location.clone())
     };
+    let shelves = s.shelves.read().await.clone();
     let on = body.on;
     let n2 = name.clone();
-    tokio::task::spawn_blocking(move || crate::topology::set_locate(&n2, on))
+    tokio::task::spawn_blocking(move || crate::topology::set_locate(&n2, &loc, &shelves, on))
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?
         .map_err(|e| ApiError::bad_request(format!("{name}: {e}")))?;
@@ -518,6 +541,7 @@ async fn cancel_test(
 async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use std::collections::BTreeMap;
     let inv = s.inventory.read().await;
+    let ses = s.shelves.read().await.clone();
 
     fn drive_leaf(d: &crate::drive::Drive) -> serde_json::Value {
         json!({
@@ -533,6 +557,9 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             "activity": d.activity,
             "health": d.health.status(),
             "paths": d.paths,
+            "block_size": d.block_size,
+            "usable": d.usable,
+            "needs_reformat": d.needs_reformat(),
         })
     }
 
@@ -583,8 +610,19 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         .into_iter()
         .map(|(key, (ctrl, shelves, direct))| {
             let shelves: Vec<serde_json::Value> = shelves
-                .into_values()
-                .map(|(sh, drives)| json!({ "shelf": sh, "drives": drives }))
+                .into_iter()
+                .map(|(key, (sh, drives))| {
+                    let ses_summary = ses.get(&key).map(|r| {
+                        json!({
+                            "status": r.worst(),
+                            "max_temperature_c": r.max_temperature_c(),
+                            "power_supplies": { "ok": r.count(crate::ses::ET_POWER_SUPPLY).0, "total": r.count(crate::ses::ET_POWER_SUPPLY).1 },
+                            "fans": { "ok": r.count(crate::ses::ET_COOLING).0, "total": r.count(crate::ses::ET_COOLING).1 },
+                            "paths": r.esps.len(),
+                        })
+                    });
+                    json!({ "key": key, "shelf": sh, "ses": ses_summary, "drives": drives })
+                })
                 .collect();
             json!({ "key": key, "controller": ctrl, "shelves": shelves, "direct": direct })
         })
@@ -621,6 +659,311 @@ async fn ws_components(
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     })
+}
+
+// --------------------------------------------------------------- shelves
+
+fn shelf_json(r: &crate::ses::ShelfReport, drives: &[serde_json::Value]) -> serde_json::Value {
+    let (psu_ok, psu_n) = r.count(crate::ses::ET_POWER_SUPPLY);
+    let (fan_ok, fan_n) = r.count(crate::ses::ET_COOLING);
+    let (slot_ok, slot_n) = {
+        let a = r.count(crate::ses::ET_ARRAY_DEVICE_SLOT);
+        let b = r.count(crate::ses::ET_DEVICE_SLOT);
+        (a.0 + b.0, a.1 + b.1)
+    };
+    json!({
+        "key": r.key,
+        "shelf": r.shelf,
+        "display": r.shelf.display(),
+        "esps": r.esps,
+        "paths": r.esps.len(),
+        "status": r.worst(),
+        "critical": r.critical,
+        "noncritical": r.noncritical,
+        "unrecoverable": r.unrecoverable,
+        "generation": r.generation,
+        "max_temperature_c": r.max_temperature_c(),
+        "power_supplies": { "ok": psu_ok, "total": psu_n },
+        "fans": { "ok": fan_ok, "total": fan_n },
+        "slots": { "ok": slot_ok, "total": slot_n },
+        "elements": r.elements,
+        "slot_addresses": r.slots,
+        "drives": drives,
+        "collected_at": r.collected_at,
+    })
+}
+
+/// Drives that sit in this shelf, as short leaves (bay order).
+async fn shelf_drives(s: &AppState, key: &str) -> Vec<serde_json::Value> {
+    let inv = s.inventory.read().await;
+    let mut ds: Vec<&crate::drive::Drive> = inv
+        .drives
+        .values()
+        .filter(|d| d.location.shelf.as_ref().and_then(|sh| sh.key()).as_deref() == Some(key))
+        .collect();
+    ds.sort_by(|a, b| (a.location.bay, &a.name).cmp(&(b.location.bay, &b.name)));
+    ds.iter()
+        .map(|d| {
+            json!({
+                "id": d.id, "name": d.name, "bay": d.location.bay, "model": d.model, "serial": d.serial,
+                "block_size": d.block_size, "usable": d.usable, "needs_reformat": d.needs_reformat(),
+                "capacity_bytes": d.capacity_bytes, "membership": d.membership, "designation": d.designation,
+                "activity": d.activity, "health": d.health.status(),
+            })
+        })
+        .collect()
+}
+
+async fn list_shelves(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let shelves = s.shelves.read().await.clone();
+    let mut out = Vec::new();
+    for (key, r) in &shelves {
+        let drives = shelf_drives(&s, key).await;
+        out.push(shelf_json(r, &drives));
+    }
+    Json(json!({ "shelves": out }))
+}
+
+/// Resolve a shelf handle: logical id, serial, sysfs id, or ESP SCSI id.
+async fn resolve_shelf(s: &AppState, handle: &str) -> Result<crate::ses::ShelfReport, ApiError> {
+    let shelves = s.shelves.read().await;
+    let h = crate::ses::normalize_sas(handle);
+    shelves
+        .values()
+        .find(|r| {
+            r.key == h
+                || r.key == handle
+                || r.shelf.serial.as_deref() == Some(handle)
+                || r.shelf.id.as_deref() == Some(handle)
+                || r.esps.iter().any(|e| e.scsi_id == handle)
+        })
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("shelf {handle:?}")))
+}
+
+async fn get_shelf(
+    State(s): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_shelf(&s, &key).await?;
+    let drives = shelf_drives(&s, &r.key).await;
+    Ok(Json(shelf_json(&r, &drives)))
+}
+
+#[derive(Deserialize)]
+struct ShelfLocateBody {
+    on: bool,
+    /// A bay in this shelf instead of the shelf's own IDENT.
+    #[serde(default)]
+    bay: Option<u32>,
+}
+
+async fn shelf_locate(
+    State(s): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Json(body): Json<ShelfLocateBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_shelf(&s, &key).await?;
+    let (on, bay) = (body.on, body.bay);
+    let r2 = r.clone();
+    tokio::task::spawn_blocking(move || crate::ses::set_ident(&r2, bay, on))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    s.events.write().await.push(
+        None,
+        Severity::Info,
+        "shelf",
+        match bay {
+            Some(b) => format!("shelf {}: bay {b} locate {}", r.shelf.display(), if on { "on" } else { "off" }),
+            None => format!("shelf {}: locate {}", r.shelf.display(), if on { "on" } else { "off" }),
+        },
+    );
+    Ok(Json(json!({ "key": r.key, "bay": bay, "locate": on })))
+}
+
+async fn shelf_locate_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((key, state)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let on = match state.as_str() {
+        "on" => true,
+        "off" => false,
+        other => return Err(ApiError::bad_request(format!("locate {other:?}: use on|off"))),
+    };
+    shelf_locate(State(s), Path(key), Json(ShelfLocateBody { on, bay: None })).await
+}
+
+// ---------------------------------------------------------------- format
+
+#[derive(Deserialize)]
+struct FormatBody {
+    /// 512 or 4096.
+    #[serde(default = "default_block_size")]
+    block_size: u32,
+}
+
+fn default_block_size() -> u32 {
+    4096
+}
+
+#[derive(Deserialize)]
+struct FormatManyBody {
+    /// Drive handles: id, name, path, serial or wwid.
+    drives: Vec<String>,
+    #[serde(default = "default_block_size")]
+    block_size: u32,
+}
+
+#[derive(Deserialize)]
+struct FormatShelfBody {
+    #[serde(default = "default_block_size")]
+    block_size: u32,
+    /// Every out-of-fleet drive in the shelf, not only those the kernel
+    /// cannot use.
+    #[serde(default)]
+    all: bool,
+}
+
+/// Validate every drive first, start none if any is blocked: an operator
+/// asking for 24 drives gets 24 or a reason, never 17 and a surprise.
+async fn start_formats(
+    s: &Arc<AppState>,
+    ids: Vec<DriveId>,
+    block_size: u32,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !crate::format::valid_target(block_size) {
+        return Err(ApiError::bad_request(format!("block_size {block_size}: use 512 or 4096")));
+    }
+    if ids.is_empty() {
+        return Err(ApiError::bad_request("no drives to format"));
+    }
+    let mut drives = Vec::new();
+    let mut blocked = Vec::new();
+    {
+        let inv = s.inventory.read().await;
+        for id in &ids {
+            let Some(d) = inv.drives.get(id) else {
+                blocked.push(json!({ "id": id, "reason": "unknown drive" }));
+                continue;
+            };
+            if let Some(why) = d.format_blocker() {
+                blocked.push(json!({ "id": id, "name": d.name, "reason": why }));
+                continue;
+            }
+            if crate::discovery::is_mounted(&d.name) {
+                blocked.push(json!({ "id": id, "name": d.name, "reason": "has mounted partitions" }));
+                continue;
+            }
+            drives.push(d.clone());
+        }
+    }
+    if !blocked.is_empty() {
+        return Err(ApiError {
+            status: StatusCode::CONFLICT,
+            code: "conflict",
+            message: format!(
+                "not started: {}",
+                blocked
+                    .iter()
+                    .map(|b| format!(
+                        "{} ({})",
+                        b["name"].as_str().unwrap_or_else(|| b["id"].as_str().unwrap_or("?")),
+                        b["reason"].as_str().unwrap_or("")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        });
+    }
+    let mut started = Vec::new();
+    for d in drives {
+        let h = crate::format::start(s.clone(), d, block_size).await;
+        let run = h.run.lock().unwrap().clone();
+        started.push(serde_json::to_value(run).unwrap_or_default());
+    }
+    Ok(Json(json!({ "block_size": block_size, "started": started })))
+}
+
+async fn format_drive(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<FormatBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    start_formats(&s, vec![did], body.block_size).await
+}
+
+async fn format_drive_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((id, bs)): Path<(String, u32)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    format_drive(State(s), Path(id), Json(FormatBody { block_size: bs })).await
+}
+
+async fn format_many(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<FormatManyBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let mut ids = Vec::new();
+    for h in &body.drives {
+        let id = resolve_id(&s, h).await?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    start_formats(&s, ids, body.block_size).await
+}
+
+async fn format_shelf(
+    State(s): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Json(body): Json<FormatShelfBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_shelf(&s, &key).await?;
+    let ids: Vec<DriveId> = {
+        let inv = s.inventory.read().await;
+        inv.drives
+            .values()
+            .filter(|d| d.location.shelf.as_ref().and_then(|sh| sh.key()).as_deref() == Some(r.key.as_str()))
+            .filter(|d| d.membership == Membership::Out)
+            .filter(|d| body.all || d.needs_reformat() || d.block_size != body.block_size && !d.usable)
+            .map(|d| d.id)
+            .collect()
+    };
+    if ids.is_empty() {
+        return Err(ApiError::conflict(format!(
+            "shelf {}: no out-of-fleet drives need a reformat (pass \"all\": true to format every out-of-fleet drive)",
+            r.shelf.display()
+        )));
+    }
+    start_formats(&s, ids, body.block_size).await
+}
+
+async fn format_shelf_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((key, bs)): Path<(String, u32)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    format_shelf(State(s), Path(key), Json(FormatShelfBody { block_size: bs, all: false })).await
+}
+
+async fn get_format(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    let formats = s.formats.read().await;
+    let run = formats.get(&did).map(|h| h.run.lock().unwrap().clone());
+    let record = s.inventory.read().await.drives.get(&did).and_then(|d| d.format.clone());
+    Ok(Json(json!({ "run": run, "last": record })))
+}
+
+async fn list_formats(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let formats = s.formats.read().await;
+    let mut runs: Vec<crate::format::FormatRun> = formats.values().map(|h| h.run.lock().unwrap().clone()).collect();
+    runs.sort_by(|a, b| a.name.cmp(&b.name));
+    let running = runs.iter().filter(|r| r.state == crate::format::FormatState::Running).count();
+    Json(json!({ "running": running, "formats": runs }))
 }
 
 // --- Parameter-less action wrappers (stormview renderers POST with no body) ---
@@ -700,6 +1043,7 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let mut fleet = 0u32;
     let mut spares = 0u32;
     let mut testing = 0u32;
+    let mut unusable = 0u32;
     let mut warn = 0u32;
     let mut bad = 0u32;
     let mut hottest: Option<i32> = None;
@@ -715,10 +1059,13 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             _ => {}
         }
         match d.activity {
-            Activity::Testing => testing += 1,
+            Activity::Testing | Activity::Formatting => testing += 1,
             Activity::Missing => bad += 1,
             Activity::Draining => warn += 1,
             Activity::Idle => {}
+        }
+        if !d.usable && d.activity == Activity::Idle {
+            unusable += 1;
         }
         match d.health.status() {
             HealthStatus::Warning => warn += 1,
@@ -732,9 +1079,16 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             worst_wear = Some(worst_wear.map_or(w, |x| x.max(w)));
         }
     }
-    let health = if bad > 0 {
+    let shelves = s.shelves.read().await;
+    let shelf_bad = shelves.values().filter(|r| r.worst().is_bad()).count() as u32;
+    for r in shelves.values() {
+        if let Some(t) = r.max_temperature_c() {
+            hottest = Some(hottest.map_or(t, |h| h.max(t)));
+        }
+    }
+    let health = if bad > 0 || shelf_bad > 0 {
         "error"
-    } else if warn > 0 {
+    } else if warn > 0 || unusable > 0 {
         "warn"
     } else if total == 0 {
         "idle"
@@ -744,7 +1098,17 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let detail = if total == 0 {
         "no drives discovered".to_string()
     } else {
-        format!("{total} drives, {fleet} fleet, {spares} spare, {testing} testing, {warn} warn, {bad} bad")
+        let mut d = format!("{total} drives, {fleet} fleet, {spares} spare, {testing} busy, {warn} warn, {bad} bad");
+        if unusable > 0 {
+            d.push_str(&format!(", {unusable} need reformat"));
+        }
+        if !shelves.is_empty() {
+            d.push_str(&format!(", {} shelves", shelves.len()));
+            if shelf_bad > 0 {
+                d.push_str(&format!(" ({shelf_bad} degraded)"));
+            }
+        }
+        d
     };
     let mut metrics = vec![
         json!({ "label": "Drives", "value": total.to_string() }),
@@ -758,6 +1122,16 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             "label": "Attention",
             "value": (warn + bad).to_string(),
             "tone": if bad > 0 { "error" } else { "warn" },
+        }));
+    }
+    if unusable > 0 {
+        metrics.push(json!({ "label": "Reformat", "value": unusable.to_string(), "tone": "warn" }));
+    }
+    if !shelves.is_empty() {
+        metrics.push(json!({
+            "label": "Shelves",
+            "value": shelves.len().to_string(),
+            "tone": if shelf_bad > 0 { "error" } else { "muted" },
         }));
     }
     if let Some(t) = hottest {

@@ -68,6 +68,11 @@ fn drive_component(d: &Drive) -> ComponentSummary {
             detail.push(format!("{} bay {b}", sh.display()));
         }
     }
+    if d.needs_reformat() {
+        detail.push(format!("{} B sectors · unusable · reformat", d.block_size));
+    } else if d.block_size != 512 {
+        detail.push(format!("{} B sectors", d.block_size));
+    }
     if d.activity != Activity::Idle {
         detail.push(format!("{:?}", d.activity).to_lowercase());
     }
@@ -88,6 +93,9 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     }
     if d.paths.len() > 1 {
         metrics.push(Metric::new("paths", d.paths.len().to_string()).tone("accent"));
+    }
+    if d.needs_reformat() {
+        metrics.push(Metric::new("sector", d.block_size.to_string()).unit("B").tone("warn"));
     }
 
     let mut actions = Vec::new();
@@ -127,6 +135,14 @@ fn drive_component(d: &Drive) -> ComponentSummary {
             true,
         ));
     }
+    actions.push(act(
+        "format-4k",
+        if d.needs_reformat() { "Reformat 4K" } else { "Format 4K" },
+        "POST",
+        format!("{base}/format/4096"),
+        d.format_blocker().is_none() && present,
+        true,
+    ));
     actions.push(act(
         "mark-spare",
         "Mark spare",
@@ -173,8 +189,19 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     }
 }
 
+fn ses_health(st: crate::ses::ElementStatus) -> Health {
+    use crate::ses::ElementStatus as E;
+    match st {
+        E::Ok => Health::Ok,
+        E::Noncritical => Health::Warn,
+        E::Critical | E::Unrecoverable => Health::Error,
+        _ => Health::Unknown,
+    }
+}
+
 /// Assemble the full feed: system rollup, shelves, drives.
 pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
+    let ses = state.shelves.read().await.clone();
     let inv = state.inventory.read().await;
     let mut drives: Vec<&Drive> = inv.drives.values().collect();
     drives.sort_by(|a, b| a.name.cmp(&b.name));
@@ -225,8 +252,15 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
         link: None,
     });
 
+    // Shelves the SES scan knows but no drive points at yet still show.
+    for (key, r) in &ses {
+        shelves
+            .entry(key.clone())
+            .or_insert_with(|| (r.shelf.display(), Vec::new()));
+    }
+
     for (key, (display, members)) in &shelves {
-        let worst = members
+        let drive_worst = members
             .iter()
             .map(|d| health_of(d))
             .fold(Health::Ok, |acc, h| match (acc, h) {
@@ -234,14 +268,62 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
                 (Health::Warn, _) | (_, Health::Warn) => Health::Warn,
                 (a, _) => a,
             });
+        let rep = ses.get(key);
+        let health = match rep.map(|r| ses_health(r.worst())) {
+            Some(Health::Error) => Health::Error,
+            Some(Health::Warn) => {
+                if drive_worst == Health::Error { Health::Error } else { Health::Warn }
+            }
+            _ => drive_worst,
+        };
+        let needs = members.iter().filter(|d| d.needs_reformat()).count();
+        let mut detail = vec![format!("{} drives", members.len())];
+        let mut metrics = vec![Metric::new("drives", members.len().to_string())];
+        let mut actions = Vec::new();
+        if let Some(r) = rep {
+            use crate::ses::{ET_COOLING, ET_POWER_SUPPLY};
+            let (psu_ok, psu_n) = r.count(ET_POWER_SUPPLY);
+            let (fan_ok, fan_n) = r.count(ET_COOLING);
+            detail.push(format!("{:?}", r.worst()).to_lowercase());
+            if r.esps.len() > 1 {
+                detail.push(format!("{} paths", r.esps.len()));
+            }
+            if psu_n > 0 {
+                let m = Metric::new("psu", format!("{psu_ok}/{psu_n}"));
+                metrics.push(if psu_ok < psu_n { m.tone("error") } else { m });
+            }
+            if fan_n > 0 {
+                let m = Metric::new("fans", format!("{fan_ok}/{fan_n}"));
+                metrics.push(if fan_ok < fan_n { m.tone("error") } else { m });
+            }
+            if let Some(t) = r.max_temperature_c() {
+                let m = Metric::new("temp", t.to_string()).unit("°C");
+                metrics.push(if t >= 45 { m.tone("warn") } else { m });
+            }
+            let base = format!("/api/v1/shelves/{key}");
+            actions.push(act("locate-on", "Locate shelf", "POST", format!("{base}/locate/on"), true, false));
+            actions.push(act("locate-off", "Shelf LED off", "POST", format!("{base}/locate/off"), true, false));
+            actions.push(act(
+                "format-4k",
+                "Reformat 520s → 4K",
+                "POST",
+                format!("{base}/format/4096"),
+                needs > 0,
+                true,
+            ));
+        }
+        if needs > 0 {
+            detail.push(format!("{needs} need reformat"));
+            metrics.push(Metric::new("reformat", needs.to_string()).tone("warn"));
+        }
         out.push(ComponentSummary {
             id: format!("shelf:{key}"),
             kind: "shelf".into(),
             label: display.clone(),
-            health: worst,
-            detail: format!("{} drives", members.len()),
-            metrics: vec![Metric::new("drives", members.len().to_string())],
-            actions: Vec::new(),
+            health,
+            detail: detail.join(" · "),
+            metrics,
+            actions,
             relations: vec![Relation::has_many(
                 "drives",
                 members.iter().map(|d| format!("drive:{}", d.id)).collect(),
@@ -275,6 +357,9 @@ mod tests {
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,
+            physical_block_size: 512,
+            usable: true,
+            format: None,
             location: Location::default(),
             membership: Membership::Out,
             designation: Designation::None,
@@ -315,6 +400,21 @@ mod tests {
         assert!(c.actions.iter().all(|a| a.id != "fleet-join"));
         let destr = c.actions.iter().find(|a| a.id == "test-destructive").unwrap();
         assert!(!destr.enabled, "no destructive tests in the fleet");
+    }
+
+    #[test]
+    fn unusable_drive_offers_reformat_and_nothing_destructive_else() {
+        let mut d = drive();
+        d.block_size = 520;
+        d.usable = false;
+        let c = drive_component(&d);
+        assert!(c.detail.contains("520 B sectors"));
+        let f = c.actions.iter().find(|a| a.id == "format-4k").unwrap();
+        assert!(f.enabled && f.danger);
+        assert!(f.path.ends_with("/format/4096"));
+        assert!(!c.actions.iter().find(|a| a.id == "fleet-join").unwrap().enabled);
+        assert!(!c.actions.iter().find(|a| a.id == "test-destructive").unwrap().enabled);
+        assert!(c.metrics.iter().any(|m| m.label == "sector"));
     }
 
     #[test]

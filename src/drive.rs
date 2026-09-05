@@ -91,20 +91,32 @@ pub struct Shelf {
     pub model: Option<String>,
     pub serial: Option<String>,
     pub sas_address: Option<String>,
+    /// SES enclosure logical identifier (page 0x01), lower-case hex — the
+    /// shelf's own WWN-like id, identical through every IOM. mpt3sas
+    /// prints it as "enclosure logical id" and exposes it as
+    /// `enclosure_identifier` on the drive's sas_device.
+    #[serde(default)]
+    pub logical_id: Option<String>,
 }
 
 impl Shelf {
-    /// The stable key for grouping: serial when known, else the sysfs id.
+    /// The stable key for grouping: the enclosure logical id, else the
+    /// serial, else the sysfs id. On NetApp shelves the SES device's VPD
+    /// serial is the IOM's, so the logical id is the one that is truly
+    /// per-shelf.
     pub fn key(&self) -> Option<String> {
-        self.serial.clone().or_else(|| self.id.clone())
+        self.logical_id
+            .clone()
+            .or_else(|| self.serial.clone())
+            .or_else(|| self.id.clone())
     }
 
     pub fn display(&self) -> String {
-        match (&self.model, &self.serial, &self.id) {
-            (Some(m), Some(s), _) => format!("{m} {s}"),
-            (Some(m), None, Some(i)) => format!("{m} {i}"),
-            (Some(m), None, None) => m.clone(),
-            (None, _, Some(i)) => i.clone(),
+        let tail = self.key();
+        match (&self.model, tail) {
+            (Some(m), Some(k)) => format!("{m} {k}"),
+            (Some(m), None) => m.clone(),
+            (None, Some(k)) => k,
             _ => "shelf".into(),
         }
     }
@@ -187,6 +199,8 @@ pub enum Activity {
     Testing,
     /// Being evacuated ahead of removal (needs stormblock#70 to automate).
     Draining,
+    /// A FORMAT UNIT is running (sector-size change, see format.rs).
+    Formatting,
     /// Inventory remembers it; the node cannot see it.
     Missing,
 }
@@ -239,7 +253,19 @@ pub struct Drive {
     pub firmware: String,
     pub wwid: Option<String>,
     pub capacity_bytes: u64,
+    /// Logical block length as the drive reports it (READ CAPACITY), not
+    /// as the kernel exposes it — 520 on a NetApp-formatted drive.
     pub block_size: u32,
+    #[serde(default)]
+    pub physical_block_size: u32,
+    /// The kernel accepted the sector size and exposes the capacity. False
+    /// for 520/528-byte drives: the block node exists with 0 blocks and no
+    /// I/O is possible until a reformat.
+    #[serde(default = "default_true")]
+    pub usable: bool,
+    /// The last sector-size reformat of this drive, persisted.
+    #[serde(default)]
+    pub format: Option<FormatRecord>,
     #[serde(default)]
     pub location: Location,
     #[serde(default)]
@@ -263,6 +289,26 @@ pub struct Drive {
     /// A drain in progress or finished, as stormblock last reported it.
     #[serde(default)]
     pub drain: Option<DrainRecord>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Sector sizes Linux and stormblock can use.
+pub const USABLE_BLOCK_SIZES: [u32; 2] = [512, 4096];
+
+/// The last FORMAT UNIT we ran on a drive.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatRecord {
+    pub from_block_size: u32,
+    pub to_block_size: u32,
+    /// `running`, `done`, `failed`.
+    pub state: String,
+    pub started: Option<SystemTime>,
+    pub finished: Option<SystemTime>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// What we know about a drain of this drive.
@@ -317,6 +363,12 @@ impl Drive {
         if self.health.status() >= HealthStatus::Failing {
             return Some(format!("health is {:?}", self.health.status()));
         }
+        if !self.usable {
+            return Some(format!(
+                "kernel cannot use {}-byte sectors — reformat to 4096 first",
+                self.block_size
+            ));
+        }
         None
     }
 
@@ -328,6 +380,40 @@ impl Drive {
         }
         if self.activity != Activity::Idle {
             return Some(format!("activity is {:?}", self.activity));
+        }
+        if !self.usable {
+            return Some(format!(
+                "kernel cannot use {}-byte sectors — reformat first",
+                self.block_size
+            ));
+        }
+        None
+    }
+
+    /// The kernel refuses this sector size; a reformat to 512/4096 is the
+    /// only way in.
+    pub fn needs_reformat(&self) -> bool {
+        !USABLE_BLOCK_SIZES.contains(&self.block_size) || !self.usable
+    }
+
+    /// Why a sector-size reformat cannot start now. Reformatting is the
+    /// most destructive thing this daemon does: out of the fleet, idle,
+    /// present, and not the operator's reserved drive.
+    pub fn format_blocker(&self) -> Option<String> {
+        if self.membership == Membership::Fleet {
+            return Some("in the fleet — leave (drain) first".into());
+        }
+        if self.activity == Activity::Formatting {
+            return Some("a format is already running".into());
+        }
+        if self.activity != Activity::Idle {
+            return Some(format!("activity is {:?}", self.activity));
+        }
+        if self.designation == Designation::Reserved {
+            return Some("designated reserved".into());
+        }
+        if self.kind == DriveKind::NvmeSsd {
+            return Some("NVMe: use namespace format (not implemented)".into());
         }
         None
     }
@@ -384,6 +470,9 @@ mod tests {
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,
+            physical_block_size: 512,
+            usable: true,
+            format: None,
             location: Location::default(),
             membership: Membership::Out,
             designation: Designation::None,
@@ -395,6 +484,59 @@ mod tests {
             pushed_health: None,
             drain: None,
         }
+    }
+
+    #[test]
+    fn unusable_sector_size_blocks_join_and_destructive_but_not_format() {
+        let mut d = base_drive();
+        d.block_size = 520;
+        d.usable = false;
+        assert!(d.needs_reformat());
+        assert!(d.fleet_join_blocker().unwrap().contains("520"));
+        assert!(d.destructive_test_blocker().is_some());
+        assert!(d.format_blocker().is_none(), "the whole point: a 520 drive can be formatted");
+        d.block_size = 4096;
+        d.usable = true;
+        assert!(!d.needs_reformat());
+        assert!(d.format_blocker().is_none(), "a 512/4096 drive may still be reformatted");
+    }
+
+    #[test]
+    fn format_blockers() {
+        let mut d = base_drive();
+        d.membership = Membership::Fleet;
+        assert!(d.format_blocker().is_some());
+        let mut d = base_drive();
+        d.activity = Activity::Formatting;
+        assert!(d.format_blocker().unwrap().contains("already"));
+        let mut d = base_drive();
+        d.activity = Activity::Missing;
+        assert!(d.format_blocker().is_some());
+        let mut d = base_drive();
+        d.designation = Designation::Reserved;
+        assert!(d.format_blocker().is_some());
+        d.designation = Designation::Failed;
+        assert!(d.format_blocker().is_none(), "an operator-failed drive may be reformatted (out of fleet)");
+        let mut d = base_drive();
+        d.kind = DriveKind::NvmeSsd;
+        assert!(d.format_blocker().is_some());
+    }
+
+    /// An inventory written before the sector-format fields existed loads
+    /// with usable=true, so a known-good 512 drive is not suddenly
+    /// flagged.
+    #[test]
+    fn old_inventory_defaults_usable() {
+        let d = base_drive();
+        let mut v = serde_json::to_value(&d).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("physical_block_size");
+        o.remove("usable");
+        o.remove("format");
+        let back: Drive = serde_json::from_value(v).unwrap();
+        assert!(back.usable);
+        assert_eq!(back.physical_block_size, 0);
+        assert!(!back.needs_reformat());
     }
 
     #[test]
@@ -458,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn shelf_key_prefers_serial_and_display_reads_well() {
+    fn shelf_key_prefers_logical_id_then_serial_and_display_reads_well() {
         let sh = Shelf {
             id: Some("1:0:8:0".into()),
             serial: Some("SN9".into()),
@@ -467,6 +609,12 @@ mod tests {
         };
         assert_eq!(sh.key(), Some("SN9".into()));
         assert_eq!(sh.display(), "DS4246 SN9");
+        let with_id = Shelf {
+            logical_id: Some("500a09800e359135".into()),
+            ..sh.clone()
+        };
+        assert_eq!(with_id.key(), Some("500a09800e359135".into()), "logical id beats the IOM serial");
+        assert_eq!(with_id.display(), "DS4246 500a09800e359135");
         let bare = Shelf {
             id: Some("1:0:8:0".into()),
             ..Default::default()

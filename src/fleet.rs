@@ -313,8 +313,12 @@ async fn retire(state: &Arc<AppState>, id: DriveId) {
                     d.pushed_health = None;
                 }
             }
-            if let Err(e) = crate::topology::set_locate(&name, true) {
-                tracing::debug!(drive = %name, "locate LED not set: {e}");
+            {
+                let shelves = state.shelves.read().await.clone();
+                let loc = state.inventory.read().await.drives.get(&id).map(|d| d.location.clone()).unwrap_or_default();
+                if let Err(e) = crate::topology::set_locate(&name, &loc, &shelves, true) {
+                    tracing::debug!(drive = %name, "locate LED not set: {e}");
+                }
             }
             state.events.write().await.push(
                 Some(id),

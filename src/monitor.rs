@@ -9,6 +9,7 @@ use crate::drive::{Activity, DriveId, DriveKind, HealthReport, HealthStatus, Mem
 use crate::events::Severity;
 use crate::inventory::TrendSample;
 use crate::smart::{self, crit, Sample};
+use crate::ses;
 use crate::{api::AppState, discovery, topology};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -160,6 +161,10 @@ async fn tick(
     collect: bool,
 ) -> anyhow::Result<()> {
     if discover {
+        // Shelves first: drive location resolution names the shelf from
+        // this scan when only a logical id is visible.
+        let shelves = tokio::task::spawn_blocking(ses::scan).await?;
+        merge_shelves(state, shelves).await;
         let cfg = state.config.discovery.clone();
         let observed = tokio::task::spawn_blocking(move || discovery::scan(&cfg)).await?;
         merge_observed(state, observed).await;
@@ -285,8 +290,71 @@ pub fn group_observed(
     out
 }
 
+/// Replace the shelf table with this scan's, logging what changed: a
+/// shelf appearing/disappearing, its overall status moving, an element
+/// going bad or recovering.
+async fn merge_shelves(state: &Arc<AppState>, fresh: topology::Shelves) {
+    let mut events: Vec<(Severity, String)> = Vec::new();
+    {
+        let old = state.shelves.read().await;
+        for (key, rep) in &fresh {
+            match old.get(key) {
+                None => events.push((
+                    Severity::Info,
+                    format!(
+                        "shelf {}: discovered ({} ESP path{}, {} slots)",
+                        rep.shelf.display(),
+                        rep.esps.len(),
+                        if rep.esps.len() == 1 { "" } else { "s" },
+                        rep.slots.len().max(rep.count(ses::ET_ARRAY_DEVICE_SLOT).1)
+                    ),
+                )),
+                Some(prev) => {
+                    let (was, now) = (prev.worst(), rep.worst());
+                    if was != now {
+                        let sev = if now.is_bad() { Severity::Warning } else { Severity::Info };
+                        events.push((sev, format!("shelf {}: {:?} → {:?}", rep.shelf.display(), was, now)));
+                    }
+                    for e in rep.elements.iter().filter(|e| !e.overall) {
+                        let before = prev
+                            .elements
+                            .iter()
+                            .find(|p| p.element_type == e.element_type && p.index == e.index && !p.overall);
+                        let Some(b) = before else { continue };
+                        if b.status.is_bad() != e.status.is_bad() {
+                            let label = e.name.clone().unwrap_or_else(|| format!("{} {}", e.type_name, e.index));
+                            events.push((
+                                if e.status.is_bad() { Severity::Error } else { Severity::Info },
+                                format!(
+                                    "shelf {}: {label} {:?}{}",
+                                    rep.shelf.display(),
+                                    e.status,
+                                    if e.flags.is_empty() { String::new() } else { format!(" ({})", e.flags.join(", ")) }
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        for (key, rep) in old.iter() {
+            if !fresh.contains_key(key) {
+                events.push((Severity::Warning, format!("shelf {}: no longer reachable", rep.shelf.display())));
+            }
+        }
+    }
+    *state.shelves.write().await = fresh;
+    if !events.is_empty() {
+        let mut log = state.events.write().await;
+        for (sev, msg) in events {
+            log.push(None, sev, "shelf", msg);
+        }
+    }
+}
+
 async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed>) {
     let now = SystemTime::now();
+    let shelves = state.shelves.read().await.clone();
     let mut inv = state.inventory.write().await;
     let mut seen: Vec<DriveId> = Vec::new();
     let mut events = Vec::new();
@@ -305,14 +373,33 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                     ));
                     // A path change usually means recabling or a re-bay —
                     // the old location is not to be trusted.
-                    d.location = topology::locate(&primary.name);
+                    d.location = topology::locate(&primary.name, &shelves);
+                } else if d.location.shelf.is_none() || d.location.bay.is_none() {
+                    // Not placed yet (the shelf scan may have come up
+                    // after the drive did): keep trying.
+                    d.location = topology::locate(&primary.name, &shelves);
                 }
                 d.path = primary.path.clone();
                 d.name = primary.name.clone();
                 d.paths = paths;
                 d.firmware = primary.firmware.clone();
-                d.capacity_bytes = primary.capacity_bytes;
-                d.block_size = primary.block_size;
+                if d.activity != Activity::Formatting {
+                    // Mid-format the drive answers NOT READY and sysfs says
+                    // 0 blocks; the format job owns these fields until it
+                    // is done.
+                    if primary.block_size != d.block_size && d.block_size != 0 {
+                        events.push((
+                            Some(id),
+                            Severity::Info,
+                            "discovered",
+                            format!("{}: sector size now {} (was {})", d.name, primary.block_size, d.block_size),
+                        ));
+                    }
+                    d.capacity_bytes = primary.capacity_bytes;
+                    d.block_size = primary.block_size;
+                    d.physical_block_size = primary.physical_block_size;
+                    d.usable = primary.usable;
+                }
                 d.last_seen = now;
                 if d.activity == Activity::Missing {
                     d.activity = Activity::Idle;
@@ -326,18 +413,23 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
             }
             None => {
                 let name = primary.name.clone();
-                let location = topology::locate(&name);
+                let location = topology::locate(&name, &shelves);
                 let multipath = if paths.len() > 1 {
                     format!(" ({} paths)", paths.len())
                 } else {
                     String::new()
                 };
+                let sector = if primary.usable {
+                    String::new()
+                } else {
+                    format!(" — {}-byte sectors, unusable until reformatted", primary.block_size)
+                };
                 events.push((
                     Some(id),
-                    Severity::Info,
+                    if primary.usable { Severity::Info } else { Severity::Warning },
                     "discovered",
                     format!(
-                        "{name}: new drive {} {} ({} bytes){multipath}",
+                        "{name}: new drive {} {} ({} bytes){multipath}{sector}",
                         primary.model, primary.serial, primary.capacity_bytes
                     ),
                 ));
@@ -355,6 +447,9 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         wwid: primary.wwid.clone(),
                         capacity_bytes: primary.capacity_bytes,
                         block_size: primary.block_size,
+                        physical_block_size: primary.physical_block_size,
+                        usable: primary.usable,
+                        format: None,
                         location,
                         membership: Membership::Out,
                         designation: Default::default(),
@@ -519,6 +614,8 @@ mod tests {
             wwid: Some(wwid.into()),
             capacity_bytes: 420 << 30,
             block_size: 512,
+            physical_block_size: 512,
+            usable: true,
         };
         // sdq and sda are the same physical drive through two IOMs.
         let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);

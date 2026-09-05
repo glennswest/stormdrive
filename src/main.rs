@@ -66,6 +66,8 @@ async fn main() -> anyhow::Result<()> {
         events: RwLock::new(EventLog::new(4096)),
         stormblock,
         tests: RwLock::new(std::collections::HashMap::new()),
+        formats: RwLock::new(std::collections::HashMap::new()),
+        shelves: RwLock::new(std::collections::BTreeMap::new()),
         inventory_path,
         node_name,
     });

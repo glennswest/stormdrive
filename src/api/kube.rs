@@ -124,6 +124,9 @@ fn drive_object(d: &Drive, node: &str) -> Value {
             "wwid": d.wwid,
             "capacityBytes": d.capacity_bytes,
             "blockSize": d.block_size,
+            "physicalBlockSize": d.physical_block_size,
+            "usable": d.usable,
+            "needsReformat": d.needs_reformat(),
             "location": d.location,
             "membership": d.membership,
             "activity": d.activity,
@@ -270,7 +273,8 @@ async fn patch_drive(
     }
 
     if let Some(on) = spec.locate {
-        if let Err(e) = crate::topology::set_locate(&drive.name, on) {
+        let shelves = s.shelves.read().await.clone();
+        if let Err(e) = crate::topology::set_locate(&drive.name, &drive.location, &shelves, on) {
             return status_error(StatusCode::CONFLICT, "Conflict", format!("locate LED: {e}"));
         }
     }
@@ -282,8 +286,19 @@ async fn patch_drive(
 // ------------------------------------------------------------ enclosures
 
 async fn all_enclosures(s: &AppState) -> Vec<Value> {
+    let ses = s.shelves.read().await.clone();
     let inv = s.inventory.read().await;
     let mut shelves: BTreeMap<String, (Value, Vec<Value>, Vec<String>)> = BTreeMap::new();
+    for (key, r) in &ses {
+        let sh = &r.shelf;
+        shelves.entry(key.clone()).or_insert_with(|| {
+            (
+                json!({ "id": sh.id, "vendor": sh.vendor, "model": sh.model, "serial": sh.serial, "sasAddress": sh.sas_address, "logicalId": sh.logical_id, "display": sh.display() }),
+                Vec::new(),
+                Vec::new(),
+            )
+        });
+    }
     let mut sorted: Vec<&Drive> = inv.drives.values().collect();
     sorted.sort_by(|a, b| (a.location.bay, &a.name).cmp(&(b.location.bay, &b.name)));
     for d in sorted {
@@ -291,7 +306,7 @@ async fn all_enclosures(s: &AppState) -> Vec<Value> {
         let Some(key) = sh.key() else { continue };
         let entry = shelves.entry(key).or_insert_with(|| {
             (
-                json!({ "id": sh.id, "vendor": sh.vendor, "model": sh.model, "serial": sh.serial, "sasAddress": sh.sas_address, "display": sh.display() }),
+                json!({ "id": sh.id, "vendor": sh.vendor, "model": sh.model, "serial": sh.serial, "sasAddress": sh.sas_address, "logicalId": sh.logical_id, "display": sh.display() }),
                 Vec::new(),
                 Vec::new(),
             )
@@ -299,6 +314,7 @@ async fn all_enclosures(s: &AppState) -> Vec<Value> {
         entry.1.push(json!({
             "drive": d.id.0.to_string(), "name": d.name, "bay": d.location.bay,
             "health": d.health.status(), "membership": d.membership, "kind": d.kind,
+            "blockSize": d.block_size, "usable": d.usable, "needsReformat": d.needs_reformat(),
         }));
         if let Some(c) = &d.location.controller {
             if let Some(h) = &c.scsi_host {
@@ -320,6 +336,28 @@ async fn all_enclosures(s: &AppState) -> Vec<Value> {
                 .filter_map(|d| d["health"].as_str().map(|h| h.to_string()))
                 .max()
                 .unwrap_or_else(|| "unknown".into());
+            let enclosure = ses.get(&key).map(|r| {
+                use crate::ses::{ET_COOLING, ET_POWER_SUPPLY, ET_TEMPERATURE};
+                let elems: Vec<Value> = r
+                    .elements
+                    .iter()
+                    .filter(|e| !e.overall)
+                    .filter(|e| matches!(e.element_type, ET_COOLING | ET_POWER_SUPPLY | ET_TEMPERATURE))
+                    .map(|e| json!({
+                        "type": e.type_name, "index": e.index, "name": e.name, "status": e.status,
+                        "temperatureC": e.temperature_c, "rpm": e.rpm, "flags": e.flags,
+                    }))
+                    .collect();
+                json!({
+                    "status": r.worst(),
+                    "paths": r.esps.len(),
+                    "maxTemperatureC": r.max_temperature_c(),
+                    "powerSupplies": { "ok": r.count(ET_POWER_SUPPLY).0, "total": r.count(ET_POWER_SUPPLY).1 },
+                    "fans": { "ok": r.count(ET_COOLING).0, "total": r.count(ET_COOLING).1 },
+                    "elements": elems,
+                })
+            });
+            let needs = drives.iter().filter(|d| d["needsReformat"] == json!(true)).count();
             json!({
                 "apiVersion": api_version(),
                 "kind": "Enclosure",
@@ -331,6 +369,8 @@ async fn all_enclosures(s: &AppState) -> Vec<Value> {
                     "driveCount": drives.len(),
                     "drives": drives,
                     "worstHealth": worst,
+                    "needsReformat": needs,
+                    "enclosure": enclosure,
                 },
             })
         })
@@ -473,6 +513,9 @@ mod tests {
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,
+            physical_block_size: 512,
+            usable: true,
+            format: None,
             location: Location {
                 controller: Some(Controller { scsi_host: Some("host3".into()), ..Default::default() }),
                 shelf: Some(Shelf { serial: Some("SHELF1".into()), ..Default::default() }),

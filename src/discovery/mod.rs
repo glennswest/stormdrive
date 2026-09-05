@@ -18,7 +18,18 @@ pub struct Observed {
     pub firmware: String,
     pub wwid: Option<String>,
     pub capacity_bytes: u64,
+    /// Logical block length the drive reports (READ CAPACITY(16) when we
+    /// can ask; sysfs otherwise).
     pub block_size: u32,
+    pub physical_block_size: u32,
+    /// The kernel exposes a non-zero capacity — I/O through /dev works.
+    /// False for the sector sizes sd refuses (520, 528, …).
+    pub usable: bool,
+}
+
+/// Is a sector size one the kernel will drive?
+pub fn kernel_usable_block_size(bs: u32) -> bool {
+    matches!(bs, 512 | 1024 | 2048 | 4096)
 }
 
 /// Kernel names that are never physical drives (or are somebody else's
@@ -131,13 +142,50 @@ mod linux {
             let sectors: u64 = read_trim(&base.join("size"))
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
+            let dev = base.join("device");
             if sectors == 0 {
-                continue; // empty card reader slots etc.
+                // A 0-block device is either an empty removable slot (card
+                // reader, USB floppy) — skip — or a real SCSI disk whose
+                // sector size sd refused ("Unsupported sector size 520").
+                // Those must be seen: the reformat is how they become
+                // drives.
+                let removable = read_trim(&base.join("removable")).as_deref() == Some("1");
+                let is_scsi_disk = read_trim(&dev.join("type")).as_deref() == Some("0");
+                if removable || !is_scsi_disk {
+                    continue;
+                }
             }
-            let block_size: u32 = read_trim(&base.join("queue/logical_block_size"))
+            let sysfs_lbs: u32 = read_trim(&base.join("queue/logical_block_size"))
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(512);
-            let dev = base.join("device");
+            let sysfs_pbs: u32 = read_trim(&base.join("queue/physical_block_size"))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(sysfs_lbs);
+            // Ask the drive itself when we can: for a 520-byte drive the
+            // kernel's logical_block_size is a 512 it fell back to, and
+            // physical_block_size is the only hint. READ CAPACITY(16) is
+            // the truth; it fails (NOT READY) mid-format, and then sysfs
+            // stands in.
+            let asked = if name.starts_with("sd") {
+                crate::scsi::sg_path_for_block(&name)
+                    .or_else(|| Some(format!("/dev/{name}")))
+                    .and_then(|p| crate::scsi::Device::open(&p).ok())
+                    .and_then(|d| d.read_capacity16().ok())
+            } else {
+                None
+            };
+            let (block_size, physical_block_size, capacity_bytes) = match asked {
+                Some(c) if c.block_len > 0 => (c.block_len, c.physical_block_len(), c.bytes()),
+                _ => (
+                    if sectors == 0 && !kernel_usable_block_size(sysfs_pbs) {
+                        sysfs_pbs
+                    } else {
+                        sysfs_lbs
+                    },
+                    sysfs_pbs,
+                    sectors * 512,
+                ),
+            };
             let model = read_trim(&dev.join("model")).unwrap_or_default();
             let serial = read_trim(&dev.join("serial"))
                 .or_else(|| read_trim(&base.join("serial")))
@@ -153,8 +201,10 @@ mod linux {
                 serial,
                 firmware,
                 wwid,
-                capacity_bytes: sectors * 512,
+                capacity_bytes,
                 block_size,
+                physical_block_size,
+                usable: sectors > 0,
                 name,
             });
         }
@@ -205,6 +255,14 @@ mod tests {
         c.include = vec!["nvme*".into()];
         assert!(name_eligible(&c, "nvme0n1"));
         assert!(!name_eligible(&c, "sda"));
+    }
+
+    #[test]
+    fn kernel_sector_sizes() {
+        assert!(kernel_usable_block_size(512));
+        assert!(kernel_usable_block_size(4096));
+        assert!(!kernel_usable_block_size(520));
+        assert!(!kernel_usable_block_size(528));
     }
 
     #[test]
