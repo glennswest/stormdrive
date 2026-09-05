@@ -13,12 +13,14 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--fg);font:13px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;padding:16px}
 h1{font-size:16px;margin-bottom:2px}
+h2{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
 .sub{color:var(--muted);font-size:12px;margin-bottom:14px}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
 th,td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);vertical-align:middle}
 th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 tr:last-child td{border-bottom:none}
-.chip{display:inline-block;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600}
+tr.sel td{background:rgba(139,233,253,.06)}
+.chip{display:inline-block;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;white-space:nowrap}
 .c-ok{background:rgba(80,250,123,.15);color:var(--ok)}
 .c-warn{background:rgba(241,250,140,.15);color:var(--warnc)}
 .c-err{background:rgba(255,85,85,.18);color:var(--err)}
@@ -32,24 +34,49 @@ button:disabled{opacity:.4;cursor:default}
 .dim{color:var(--muted)}
 .bar{height:5px;background:#1d2140;border-radius:3px;overflow:hidden;min-width:70px}
 .bar>i{display:block;height:100%;background:var(--accent)}
+.bar.warn>i{background:var(--warnc)}
 #events{margin-top:16px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:220px;overflow-y:auto}
-#events h2{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
 .ev{font-size:12px;padding:2px 0;border-bottom:1px solid rgba(42,45,69,.5)}
 .ev:last-child{border-bottom:none}
 .ev .t{color:var(--muted);margin-right:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px}
-td .row{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.row{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
 #err{color:var(--err);font-size:12px;margin:8px 0;display:none}
 .wrap{overflow-x:auto}
+#shelves{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:10px;margin-bottom:14px}
+.shelf{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.shelf .hd{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.shelf .hd b{font-size:13px}
+.shelf .stats{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0;font-size:12px}
+.shelf .stats span b{color:var(--fg);font-weight:600}
+.shelf .elems{margin-top:8px;font-size:11px;color:var(--muted);display:none;max-height:160px;overflow-y:auto}
+.shelf.open .elems{display:block}
+.shelf .elems div{padding:1px 0}
+.toolbar{display:flex;gap:8px;align-items:center;margin:0 0 8px;flex-wrap:wrap}
+.toolbar .dim{margin-left:auto}
+input[type=checkbox]{accent-color:var(--accent);cursor:pointer}
 </style>
 </head>
 <body>
 <h1>StormDrive</h1>
 <div class="sub" id="node">…</div>
 <div id="err"></div>
+
+<h2>Shelves</h2>
+<div id="shelves"><div class="dim">no shelves</div></div>
+
+<h2>Drives</h2>
+<div class="toolbar">
+  <button onclick="selectNeeding()">Select all needing reformat</button>
+  <button onclick="clearSel()">Clear</button>
+  <button class="danger" id="fmtsel" onclick="formatSelected(4096)" disabled>Format selected → 4096</button>
+  <button class="danger" id="fmtsel512" onclick="formatSelected(512)" disabled>→ 512</button>
+  <span class="dim" id="selinfo"></span>
+</div>
 <div class="wrap">
 <table>
 <thead><tr>
-  <th>Drive</th><th>Model / Serial</th><th>Kind</th><th>Size</th><th>Location</th>
+  <th><input type="checkbox" id="selall" onchange="toggleAll(this.checked)"></th>
+  <th>Drive</th><th>Model / Serial</th><th>Kind</th><th>Size</th><th>Sector</th><th>Location</th>
   <th>Health</th><th>Fleet</th><th>Designation</th><th>Activity</th><th>Actions</th>
 </tr></thead>
 <tbody id="rows"></tbody>
@@ -63,6 +90,9 @@ td .row{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
 const m = location.pathname.match(/^(\/ui\/(?:proxy|ext)\/[^\/]+\/)/);
 const API = m ? m[1] : '/';
 const $ = id => document.getElementById(id);
+const sel = new Set();          // selected drive ids
+const openShelves = new Set();  // expanded shelf keys
+let lastDrives = [];
 
 function human(b){
   if(!b) return '0';
@@ -70,7 +100,8 @@ function human(b){
   while(b>=1024 && i<u.length-1){b/=1024;i++}
   return b.toFixed(b>=100||i===0?0:1)+' '+u[i];
 }
-function chip(text, cls){return `<span class="chip ${cls}">${text}</span>`}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function chip(text, cls){return `<span class="chip ${cls}">${esc(text)}</span>`}
 function healthChip(h){
   const s=(h&&h.status)||'unknown';
   const cls={good:'c-ok',warning:'c-warn',failing:'c-err',failed:'c-err',unknown:'c-mut'}[s]||'c-mut';
@@ -78,13 +109,19 @@ function healthChip(h){
   if(h&&h.temperature_c!=null) extra.push(h.temperature_c+'°C');
   if(h&&h.wear_pct!=null) extra.push('wear '+h.wear_pct+'%');
   const title=(h&&h.messages&&h.messages.length)?h.messages.join('\n'):'';
-  return `<span title="${title.replace(/"/g,'&quot;')}">${chip(s,cls)} <span class="dim">${extra.join(' · ')}</span></span>`;
+  return `<span title="${esc(title)}">${chip(s,cls)} <span class="dim">${extra.join(' · ')}</span></span>`;
+}
+function sectorChip(d){
+  if(d.needs_reformat) return chip(d.block_size+' · unusable','c-warn');
+  if(d.block_size===4096) return chip('4K','c-ok');
+  if(d.block_size===512) return chip('512','c-mut');
+  return chip(d.block_size,'c-mut');
 }
 function locStr(l){
   if(!l) return '';
   const parts=[];
   if(l.shelf){
-    const sh=[l.shelf.model, l.shelf.serial||l.shelf.id].filter(Boolean).join(' ');
+    const sh=[l.shelf.model, shortKey(l.shelf.logical_id||l.shelf.serial||l.shelf.id)].filter(Boolean).join(' ');
     if(sh) parts.push(sh);
   }
   if(l.bay!=null) parts.push('bay '+l.bay);
@@ -93,6 +130,7 @@ function locStr(l){
   if(l.controller&&l.controller.scsi_host) parts.push(l.controller.scsi_host);
   return parts.join(' · ');
 }
+function shortKey(k){ return k&&k.length>10 ? '…'+k.slice(-6) : (k||''); }
 
 async function api(path, opts){
   const r = await fetch(API+path, opts);
@@ -108,10 +146,10 @@ function post(path, body){
                     body: JSON.stringify(body||{})});
 }
 function fail(e){ $('err').style.display='block'; $('err').textContent=e.message||String(e);
-                  setTimeout(()=>{$('err').style.display='none'},6000); }
+                  setTimeout(()=>{$('err').style.display='none'},8000); }
 function act(p){ return p.then(refresh).catch(e=>{fail(e);refresh();}); }
 
-// Actions (global for onclick handlers)
+// ---- drive actions (global for onclick handlers)
 window.joinFleet = (id,name)=>{
   const fmt = confirm(`Join ${name} to the fleet and FORMAT A SLAB on it?\n\nOK = format slab (destroys data on ${name})\nCancel = choose`);
   if(fmt) return act(post(`api/v1/drives/${id}/fleet`,{action:'join',format_slab:true}));
@@ -133,8 +171,89 @@ window.runTest=(id,name,kind)=>{
 };
 window.cancelTest=id=>act(post(`api/v1/drives/${id}/test/cancel`));
 window.setLocate=(id,on)=>act(post(`api/v1/drives/${id}/locate`,{on}));
+window.formatOne=(id,name,from,bs)=>{
+  if(!confirm(`REFORMAT ${name} from ${from} to ${bs}-byte sectors?\n\nThis is FORMAT UNIT: every byte on the drive is destroyed and it takes 1–3 hours on a large HDD. There is no cancel.`)) return;
+  act(post(`api/v1/drives/${id}/format`,{block_size:bs}));
+};
+
+// ---- selection + batch format
+function updateSelInfo(){
+  const n=sel.size;
+  $('selinfo').textContent = n? `${n} selected` : '';
+  $('fmtsel').disabled = n===0; $('fmtsel512').disabled = n===0;
+}
+window.toggleSel=(id,on)=>{ if(on) sel.add(id); else sel.delete(id); updateSelInfo(); render(); };
+window.toggleAll=on=>{ sel.clear(); if(on) lastDrives.filter(formattable).forEach(d=>sel.add(d.id)); updateSelInfo(); render(); };
+window.selectNeeding=()=>{ sel.clear(); lastDrives.filter(d=>d.needs_reformat&&formattable(d)).forEach(d=>sel.add(d.id)); updateSelInfo(); render(); };
+window.clearSel=()=>{ sel.clear(); $('selall').checked=false; updateSelInfo(); render(); };
+function formattable(d){ return d.membership!=='fleet' && d.activity==='idle' && d.designation!=='reserved' && d.kind!=='nvme_ssd'; }
+window.formatSelected=bs=>{
+  const ids=[...sel]; if(!ids.length) return;
+  const names=lastDrives.filter(d=>sel.has(d.id)).map(d=>d.name).join(', ');
+  if(!confirm(`REFORMAT ${ids.length} drive(s) to ${bs}-byte sectors:\n${names}\n\nFORMAT UNIT destroys everything on them. All run in parallel; 1–3 hours each. No cancel. Continue?`)) return;
+  act(post('api/v1/format',{drives:ids,block_size:bs}).then(()=>{sel.clear();updateSelInfo();}));
+};
+
+// ---- shelf actions
+window.shelfLocate=(key,on)=>act(post(`api/v1/shelves/${key}/locate`,{on}));
+window.shelfFormat=(key,display,n)=>{
+  if(!confirm(`REFORMAT the ${n} out-of-fleet drive(s) in ${display} that the kernel cannot use, to 4096-byte sectors?\n\nFORMAT UNIT destroys everything on them. 1–3 hours, all in parallel, no cancel.`)) return;
+  act(post(`api/v1/shelves/${key}/format`,{block_size:4096}));
+};
+window.toggleShelf=key=>{ if(openShelves.has(key)) openShelves.delete(key); else openShelves.add(key); render(); };
+
+function statusChip(s){
+  const cls={ok:'c-ok',noncritical:'c-warn',critical:'c-err',unrecoverable:'c-err',not_installed:'c-mut',unknown:'c-mut'}[s]||'c-mut';
+  return chip((s||'unknown').replace('_',' '),cls);
+}
+function shelfCard(s){
+  const needs=(s.drives||[]).filter(d=>d.needs_reformat&&d.membership!=='fleet').length;
+  const fleet=(s.drives||[]).filter(d=>d.membership==='fleet').length;
+  const elems=(s.elements||[]).filter(e=>!e.overall && e.status!=='not_installed' && e.status!=='unsupported');
+  const interesting=elems.filter(e=>['temperature','cooling','power supply','voltage','current','esc electronics','enclosure'].includes(e.type_name));
+  const el=interesting.map(e=>{
+    let v='';
+    if(e.temperature_c!=null) v=e.temperature_c+'°C';
+    else if(e.rpm!=null) v=e.rpm+' rpm';
+    else if(e.volts!=null) v=e.volts.toFixed(2)+' V';
+    else if(e.amps!=null) v=e.amps.toFixed(2)+' A';
+    const flags=(e.flags||[]).join(', ');
+    return `<div>${statusChip(e.status)} ${esc(e.name||(e.type_name+' '+e.index))} <span class="mono">${v}</span> <span class="dim">${esc(flags)}</span>${e.ident?' 💡':''}</div>`;
+  }).join('') || '<div>no element detail</div>';
+  const shelfEl=(s.elements||[]).find(e=>e.type_name==='enclosure'&&!e.overall);
+  const ps=s.power_supplies||{ok:0,total:0}, fans=s.fans||{ok:0,total:0};
+  return `<div class="shelf ${openShelves.has(s.key)?'open':''}">
+    <div class="hd">
+      <div><b>${esc(s.shelf.vendor||'')} ${esc(s.shelf.model||'shelf')}</b>
+        <span class="dim mono"> ${esc(s.key)}</span>${shelfEl&&shelfEl.ident?' 💡':''}</div>
+      <div>${statusChip(s.status)} ${s.paths>1?chip(s.paths+' paths','c-acc'):chip('1 path','c-mut')}</div>
+    </div>
+    <div class="stats">
+      <span>drives <b>${(s.drives||[]).length}</b></span>
+      <span>fleet <b>${fleet}</b></span>
+      <span>PSU <b class="${ps.ok<ps.total?'c-err':''}">${ps.ok}/${ps.total}</b></span>
+      <span>fans <b class="${fans.ok<fans.total?'c-err':''}">${fans.ok}/${fans.total}</b></span>
+      <span>temp <b>${s.max_temperature_c!=null?s.max_temperature_c+'°C':'–'}</b></span>
+      ${needs?`<span>${chip(needs+' need reformat','c-warn')}</span>`:''}
+    </div>
+    <div class="row">
+      <button title="shelf locate LED" onclick="shelfLocate('${esc(s.key)}',true)">💡 Locate</button>
+      <button onclick="shelfLocate('${esc(s.key)}',false)">◦ Off</button>
+      <button class="danger" ${needs?'':'disabled'} onclick="shelfFormat('${esc(s.key)}','${esc(s.display)}',${needs})">Reformat ${needs||''} → 4K</button>
+      <button onclick="toggleShelf('${esc(s.key)}')">${openShelves.has(s.key)?'Hide':'Elements'} (${interesting.length})</button>
+    </div>
+    <div class="elems">${el}</div>
+  </div>`;
+}
 
 function activityCell(d){
+  if(d.activity==='formatting'){
+    const r=d.format_run||{};
+    const pct=r.progress_pct;
+    return `<div class="row">${chip('format → '+(r.to_block_size||'?'),'c-warn')}
+      <span class="bar warn"><i style="width:${pct==null?0:pct}%"></i></span>
+      <span class="dim">${pct==null?esc(r.phase||''):pct+'% '+esc(r.phase||'')}</span></div>`;
+  }
   if(d.activity==='testing'&&d.test){
     const pct=d.test.bytes_total?Math.floor(100*d.test.bytes_done/d.test.bytes_total):0;
     return `<div class="row">${chip(d.test.kind,'c-acc')}
@@ -146,7 +265,11 @@ function activityCell(d){
   let last='';
   if(d.test&&d.test.state!=='running'){
     const cls={passed:'c-ok',failed:'c-err',cancelled:'c-mut'}[d.test.state]||'c-mut';
-    last=' '+chip(d.test.kind+' '+d.test.state,cls);
+    last+=' '+chip(d.test.kind+' '+d.test.state,cls);
+  }
+  if(d.format&&d.format.state!=='running'){
+    const cls=d.format.state==='done'?'c-ok':'c-err';
+    last+=' '+`<span title="${esc(d.format.error||'')}">${chip('format '+d.format.to_block_size+' '+d.format.state,cls)}</span>`;
   }
   return chip('idle','c-mut')+last;
 }
@@ -154,14 +277,19 @@ function actionsCell(d){
   const b=[];
   const idle = d.activity==='idle';
   if(d.membership==='fleet')
-    b.push(`<button onclick="leaveFleet('${d.id}','${d.name}')">Leave fleet</button>`);
-  else if(idle && d.designation!=='failed' && d.designation!=='reserved')
-    b.push(`<button onclick="joinFleet('${d.id}','${d.name}')">Join fleet</button>`);
-  if(idle && d.activity!=='missing'){
-    b.push(`<button onclick="runTest('${d.id}','${d.name}','smoke')">Smoke</button>`);
-    b.push(`<button onclick="runTest('${d.id}','${d.name}','read_scan')">Scan</button>`);
+    b.push(`<button onclick="leaveFleet('${d.id}','${esc(d.name)}')">Leave fleet</button>`);
+  else if(idle && d.usable && d.designation!=='failed' && d.designation!=='reserved')
+    b.push(`<button onclick="joinFleet('${d.id}','${esc(d.name)}')">Join fleet</button>`);
+  if(idle && d.usable){
+    b.push(`<button onclick="runTest('${d.id}','${esc(d.name)}','smoke')">Smoke</button>`);
+    b.push(`<button onclick="runTest('${d.id}','${esc(d.name)}','read_scan')">Scan</button>`);
     if(d.membership!=='fleet')
-      b.push(`<button class="danger" onclick="runTest('${d.id}','${d.name}','destructive_sample')">Destructive</button>`);
+      b.push(`<button class="danger" onclick="runTest('${d.id}','${esc(d.name)}','destructive_sample')">Destructive</button>`);
+  }
+  if(formattable(d)){
+    const label = d.needs_reformat ? 'Reformat 4K' : (d.block_size===4096 ? 'Format 512' : 'Format 4K');
+    const to = d.needs_reformat ? 4096 : (d.block_size===4096 ? 512 : 4096);
+    b.push(`<button class="danger" title="FORMAT UNIT to ${to}-byte sectors" onclick="formatOne('${d.id}','${esc(d.name)}',${d.block_size},${to})">${label}</button>`);
   }
   if(d.location&&d.location.bay!=null){
     b.push(`<button title="locate LED" onclick="setLocate('${d.id}',true)">💡</button>`);
@@ -175,28 +303,43 @@ function desigCell(d){
   return `<select onchange="setDesig('${d.id}',this.value)">${opts}</select>`;
 }
 
+let lastShelves=[], lastEvents=[], lastHealth={};
+function render(){
+  $('shelves').innerHTML = lastShelves.map(shelfCard).join('') || '<div class="dim">no shelves (no SES enclosure reachable)</div>';
+  $('rows').innerHTML = lastDrives.map(d=>`<tr class="${sel.has(d.id)?'sel':''}">
+    <td><input type="checkbox" ${sel.has(d.id)?'checked':''} ${formattable(d)?'':'disabled'} onchange="toggleSel('${d.id}',this.checked)"></td>
+    <td class="mono">${esc(d.name)}${d.paths&&d.paths.length>1?' '+chip(d.paths.length+' paths','c-acc'):''}</td>
+    <td>${esc(d.model||'?')}<br><span class="dim mono">${esc(d.serial||'')}</span></td>
+    <td>${esc((d.kind||'').replace('_',' '))}</td>
+    <td>${human(d.capacity_bytes)}</td>
+    <td>${sectorChip(d)}</td>
+    <td class="dim">${esc(locStr(d.location))}</td>
+    <td>${healthChip(d.health)}</td>
+    <td>${d.membership==='fleet'?chip('fleet','c-acc'):chip('out','c-mut')}</td>
+    <td>${desigCell(d)}</td>
+    <td>${activityCell(d)}</td>
+    <td>${actionsCell(d)}</td>
+  </tr>`).join('') || '<tr><td colspan="12" class="dim">no drives discovered</td></tr>';
+  $('evlist').innerHTML = lastEvents.slice(-40).reverse().map(e=>{
+    const t = e.time&&e.time.secs_since_epoch ? new Date(e.time.secs_since_epoch*1000).toLocaleTimeString() : '';
+    const cls={info:'',warning:'c-warn',error:'c-err'}[e.severity]||'';
+    return `<div class="ev"><span class="t">${t}</span><span class="${cls?'chip '+cls:''}">${e.severity}</span> ${esc(e.message)}</div>`;
+  }).join('') || '<div class="dim">no events</div>';
+}
+
 async function refresh(){
   try{
-    const [h,dr,ev] = await Promise.all([
-      api('api/v1/health'), api('api/v1/drives'), api('api/v1/events')]);
-    $('node').textContent = `${h.node} · v${h.version} · ${dr.drives.length} drives`;
-    $('rows').innerHTML = dr.drives.map(d=>`<tr>
-      <td class="mono">${d.name}${d.paths&&d.paths.length>1?' '+chip(d.paths.length+' paths','c-acc'):''}</td>
-      <td>${d.model||'?'}<br><span class="dim mono">${d.serial||''}</span></td>
-      <td>${(d.kind||'').replace('_',' ')}</td>
-      <td>${human(d.capacity_bytes)}</td>
-      <td class="dim">${locStr(d.location)}</td>
-      <td>${healthChip(d.health)}</td>
-      <td>${d.membership==='fleet'?chip('fleet','c-acc'):chip('out','c-mut')}</td>
-      <td>${desigCell(d)}</td>
-      <td>${activityCell(d)}</td>
-      <td>${actionsCell(d)}</td>
-    </tr>`).join('') || '<tr><td colspan="10" class="dim">no drives discovered</td></tr>';
-    $('evlist').innerHTML = ev.events.slice(-30).reverse().map(e=>{
-      const t = e.time&&e.time.secs_since_epoch ? new Date(e.time.secs_since_epoch*1000).toLocaleTimeString() : '';
-      const cls={info:'',warning:'c-warn',error:'c-err'}[e.severity]||'';
-      return `<div class="ev"><span class="t">${t}</span><span class="${cls?'chip '+cls:''}">${e.severity}</span> ${e.message}</div>`;
-    }).join('') || '<div class="dim">no events</div>';
+    const [h,dr,sh,ev] = await Promise.all([
+      api('api/v1/health'), api('api/v1/drives'), api('api/v1/shelves'), api('api/v1/events')]);
+    lastHealth=h; lastDrives=dr.drives; lastShelves=sh.shelves; lastEvents=ev.events;
+    const needs=lastDrives.filter(d=>d.needs_reformat).length;
+    const fmt=lastDrives.filter(d=>d.activity==='formatting').length;
+    $('node').textContent = `${h.node} · v${h.version} · ${dr.drives.length} drives · ${sh.shelves.length} shelves`
+      + (needs?` · ${needs} need reformat`:'') + (fmt?` · ${fmt} formatting`:'');
+    // Drop selections that are no longer formattable.
+    for(const id of [...sel]) if(!lastDrives.some(d=>d.id===id&&formattable(d))) sel.delete(id);
+    updateSelInfo();
+    render();
   }catch(e){ fail(e); }
 }
 refresh();
