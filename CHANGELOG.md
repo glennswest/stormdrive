@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [v0.7.0] — 2026-09-05
+
+### 2026-09-05
+- **feat:** Raw SCSI over SG_IO (`scsi.rs`): READ CAPACITY(16),
+  INQUIRY/VPD, MODE SENSE/SELECT, FORMAT UNIT, TEST UNIT READY with
+  progress, RECEIVE/SEND DIAGNOSTIC; fixed + descriptor sense decoding.
+- **feat:** NetApp shelf management (`ses.rs`): SES-2 configuration /
+  status / descriptor / additional-status pages → `ShelfReport` with
+  power supplies, fans, temperatures, voltages, currents, slots and the
+  bay ↔ SAS-address map; dual-IOM shelves merged by enclosure logical id;
+  shelf and bay IDENT (locate) through the SES control page. Refreshed
+  every discovery tick; events on shelf appearance, status change,
+  element failure/recovery. `GET /api/v1/shelves[/{key}]`,
+  `POST /api/v1/shelves/{key}/locate`.
+- **feat:** 520-byte (NetApp-formatted) drives are discovered even though
+  the kernel attaches them with 0 blocks: READ CAPACITY(16) is the source
+  of `block_size`/capacity; `Drive` gains `physical_block_size`, `usable`,
+  `format` and `needs_reformat`; join/destructive tests are refused on
+  unusable drives.
+- **feat:** Sector-size reformat (`format.rs`): MODE SELECT block length +
+  FORMAT UNIT (IMMED, progress via TUR sense; blocking fallback), kernel
+  rescan / re-add and verification; out-of-fleet + idle + unmounted only;
+  many drives in parallel with all-or-nothing validation.
+  `POST /api/v1/drives/{id}/format`, `POST /api/v1/format {drives,
+  block_size}`, `POST /api/v1/shelves/{key}/format`, `GET /api/v1/format`.
+- **feat:** Location without the `ses` module: bay and shelf from
+  mpt3sas `sas_device` `bay_identifier`/`enclosure_identifier`; locate LED
+  falls back to SES control. `Shelf.logical_id` is now the shelf key.
+- **feat:** UI: shelves panel (status, paths, PSU/fans/temp, element
+  detail, locate, "Reformat → 4K"), sector column with an unusable badge,
+  per-drive Format button, multi-select + "Format selected"; formatting
+  progress in the activity column. Components feed, kube `Enclosure`,
+  topology and the summary card carry shelf status and reformat counts.
+
 ## [v0.6.0] — 2026-08-28
 
 ### 2026-08-28

@@ -192,7 +192,63 @@ path failover is actually needed.
   `slot*/` dirs with `device` symlinks to the SCSI device; map block dev →
   (enclosure id, bay). Locate/fault LEDs are writable `locate`/`fault`
   attrs on the slot dir — `POST /api/v1/drives/{id}/locate {on}` is a
-  sysfs write, no SES passthrough needed for phase 1.
+  sysfs write when the `ses` module is bound.
+- Without the `ses` module (stormcos images may not carry it), mpt3sas
+  still fills `/sys/class/sas_device/end_device-*/{enclosure_identifier,
+  bay_identifier}` from the expander's SMP discover; that gives the
+  shelf's logical id and the bay, and the SES scan (below) names the
+  shelf. Locate then goes through the SES control page ourselves.
+- Shelf key is the **enclosure logical id** (page 0x01 / mpt3sas
+  `enclosure_identifier`), the same through every IOM. The SES device's
+  VPD 0x80 serial is the IOM's serial on NetApp shelves, so it is only a
+  fallback key.
+
+### Raw SCSI (`scsi.rs`) and shelves (`ses.rs`)
+The kernel wraps what it needs for I/O and nothing else. Three things
+here need commands sd never issues, so `scsi.rs` speaks SG_IO directly
+(`/dev/sgN` when the sg driver exposes it, the block node otherwise):
+READ CAPACITY(16), MODE SENSE/SELECT, FORMAT UNIT, TEST UNIT READY,
+INQUIRY/VPD, RECEIVE/SEND DIAGNOSTIC. Sense decoding (fixed and
+descriptor formats, including the sense-key-specific progress indication
+a formatting drive reports) is portable and unit-tested.
+
+`ses.rs` reads the SES-2 pages from every SCSI type-13 device —
+configuration (0x01: logical id, vendor/product, element type table),
+enclosure status (0x02: PSU/fan/temperature/voltage/current/slot
+elements), element descriptors (0x07: names), additional element status
+(0x0A: which SAS address sits in which bay) — and assembles a
+`ShelfReport` per shelf, merging the two IOMs of a dual-path shelf by
+logical id. It is refreshed every discovery tick, kept in `AppState`,
+and feeds `/api/v1/shelves`, the topology tree, the components feed, the
+kube `Enclosure`, the summary card and the UI's shelf panel. Events fire
+when a shelf appears/disappears, its overall status moves, or an element
+goes bad or recovers. Control is limited to IDENT (bay and shelf locate
+LEDs) built from a fresh status page so the generation code matches and
+no other request bit rides along.
+
+### Sector-size reformat (`format.rs`)
+NetApp-formatted drives arrive at 520 (or 528) bytes per sector. Linux
+refuses them — `sd: Unsupported sector size 520` — and the block node
+attaches with 0 blocks, so nothing above the SCSI layer can touch them.
+Discovery keeps them anyway (`usable: false`, `block_size` from READ
+CAPACITY, `needs_reformat`), and the format job turns them into drives:
+
+1. MODE SELECT(10) with a block descriptor carrying the new block length
+   and a block count of 0 ("all"); MODE SELECT(6) if (10) is refused.
+2. FORMAT UNIT, FMTDATA + IMMED, no defect list (FOV=0: drive defaults).
+   Blocking form with a day-long timeout if the drive refuses IMMED.
+3. TEST UNIT READY every 5 s: NOT READY 04/04 with a progress
+   indication until done; 31/xx = failed.
+4. `device/rescan` on every path, READ CAPACITY to verify, and a
+   delete + targeted host scan when sd still reports 0 blocks.
+
+Guards: out of the fleet, idle, present, not reserved, no mounted
+partitions; NVMe is refused (namespace format is a different command).
+Many drives run in parallel — the drive does the work, the host polls.
+A batch request validates every drive before starting any. There is no
+cancel. The result is persisted on the drive (`format`) and reported
+as an event; the drive is `usable` again once the kernel re-reads it.
+
 - NVMe: controller BDF from the sysfs device path; physical slot from
   `/sys/bus/pci/slots/*/address` matching.
 - SAS addresses and expander chain from `/sys/class/sas_device` /
@@ -250,6 +306,16 @@ POST /api/v1/drives/{id}/designation   {"designation":"none|reserved|spare|faile
 POST /api/v1/drives/{id}/test          {"kind":"smoke|read_scan|destructive_sample"}
 GET  /api/v1/drives/{id}/test          current/last run (progress, errors)
 POST /api/v1/drives/{id}/test/cancel
+POST /api/v1/drives/{id}/format        {"block_size": 512|4096} → FORMAT UNIT
+GET  /api/v1/drives/{id}/format        current run + last result
+POST /api/v1/format                    {"drives":[handles], "block_size"} —
+                                       all-or-nothing validation, then parallel
+GET  /api/v1/format                    every format run on this node
+GET  /api/v1/shelves                   SES shelves: identity, status, elements
+GET  /api/v1/shelves/{key}             key = logical id | serial | sysfs id
+POST /api/v1/shelves/{key}/locate      {"on": bool, "bay"?: n} → SES IDENT
+POST /api/v1/shelves/{key}/format      {"block_size", "all"?} — every
+                                       out-of-fleet drive that needs it
 GET  /api/v1/topology                  controller → shelf → drive tree
 GET  /api/v1/events?since=<seq>
 GET  /api/v1/summary                   stormd RemoteSummary card

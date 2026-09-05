@@ -41,6 +41,13 @@ stormdrive --config /etc/stormdrive/stormdrive.toml
 curl -s http://localhost:9092/api/v1/drives | python3 -m json.tool
 curl -s http://localhost:9092/api/v1/summary
 curl -s -X POST http://localhost:9092/api/v1/drives/<id>/locate -d '{"on":true}'
+
+# NetApp shelves: identity, PSU/fan/temperature elements, slot map
+curl -s http://localhost:9092/api/v1/shelves | python3 -m json.tool
+# 520-byte drives (kernel: "Unsupported sector size") → 4096, one or many
+curl -s -X POST http://localhost:9092/api/v1/drives/sdb/format -d '{"block_size":4096}'
+curl -s -X POST http://localhost:9092/api/v1/format -d '{"drives":["sdb","sdc","sdd"],"block_size":4096}'
+curl -s -X POST http://localhost:9092/api/v1/shelves/<logical-id>/format -d '{"block_size":4096}'
 ```
 
 ## Documentation
@@ -53,5 +60,7 @@ curl -s -X POST http://localhost:9092/api/v1/drives/<id>/locate -d '{"on":true}'
 
 ## Status
 
-v0.1.0 — bootstrap. Design complete; Phase 1 (discovery + inventory) in
-progress. See the work plan in [CLAUDE.md](CLAUDE.md).
+v0.7.0 — discovery, health, fleet hand-off to stormblock, drive tests,
+NetApp shelf management (SES status, locate LEDs, dual-IOM merge) and
+sector-size reformat (520 → 4096 via FORMAT UNIT, batch, with progress).
+See the work plan in [CLAUDE.md](CLAUDE.md).

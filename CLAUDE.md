@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.6.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.7.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -247,26 +247,33 @@ already at 512. Discovery skipped size-0 devices, so the 520s were
 invisible. Three asks: shelf info, manage the shelves, reformat 1..n drives
 to 4096.
 
-- [ ] `scsi.rs`: SG_IO plumbing + sense decoding (portable parsers, tests)
-- [ ] Discovery sees unusable-sector drives: READ CAPACITY(16) is the
+- [x] `scsi.rs`: SG_IO plumbing + sense decoding (portable parsers, tests)
+- [x] Discovery sees unusable-sector drives: READ CAPACITY(16) is the
       truth for `block_size`/capacity; `Drive.usable` (kernel exposes
       capacity), `physical_block_size`, `needs_reformat()`
-- [ ] `ses.rs`: enclosure enumeration (`/sys/class/enclosure` when the
+- [x] `ses.rs`: enclosure enumeration (`/sys/class/enclosure` when the
       ses module is bound; otherwise SCSI type-13 devices via sg), page
       parsers, `ShelfReport`; bay via mpt3sas `bay_identifier` /
       `enclosure_identifier` when sysfs enclosure slots are absent
-- [ ] `format.rs`: batch reformat job — MODE SELECT(10) block descriptor
+- [x] `format.rs`: batch reformat job — MODE SELECT(10) block descriptor
       (fallback MODE SELECT(6)), FORMAT UNIT FMTDATA+IMMED, poll TUR for
       progress (sense 02/04/04 + SKSV progress), rescan the sd device,
       verify the new geometry; out-of-fleet + unmounted only; one per drive
-- [ ] API: `GET /api/v1/shelves`, `GET /api/v1/shelves/{key}`,
+- [x] API: `GET /api/v1/shelves`, `GET /api/v1/shelves/{key}`,
       `POST /api/v1/shelves/{key}/locate`, `POST /api/v1/shelves/{key}/format`
       (every drive in the shelf that needs it), `POST /api/v1/drives/{id}/format`,
       `POST /api/v1/format {drives:[…], block_size}`, `GET /api/v1/format`
-- [ ] UI: sector column with "520 · reformat" badge, Format button,
+- [x] UI: sector column with "520 · reformat" badge, Format button,
       select-many + "Format selected", shelves panel (PSU/fan/temp)
-- [ ] components feed + kube Enclosure status carry shelf elements
-- [ ] docs, changelog, v0.7.0; live pass on stormblock1
+- [x] components feed + kube Enclosure status carry shelf elements
+- [x] docs, changelog, v0.7.0 (73 tests, clippy clean, smoke-tested on
+      dev: READ CAPACITY over sg, format validation, UI)
+- [ ] Live pass on stormblock1 (needs the node's address from Glenn):
+      SES pages from the DS22412 IOM12, bay map via page 0x0A vs mpt3sas
+      bay_identifier, a real 520→4096 format on one Seagate ST1200MM0098,
+      then the shelf-wide batch
+- [ ] Phase 1e-fw: firmware update (Glenn 2026-09-05: "can we also update
+      firmware?") — see Phase 5, pulled forward
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
