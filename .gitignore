@@ -17,7 +17,13 @@ credentials/
 Thumbs.db
 
 # Build artifacts
-target/
+# No trailing slash: on the build box `target` is a *symlink* to
+# /build/cargo/stormdrive, because nothing that regenerates lives on the SSD.
+# `target/` matches a directory and not a symlink, so the link showed up as an
+# untracked file and the goldens build refused to run — it will not build an
+# image from a tree with uncommitted changes, since the commit it records
+# would then be a claim rather than a fact.
+target
 dist/
 node_modules/
 
