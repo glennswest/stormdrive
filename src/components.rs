@@ -73,8 +73,15 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     } else if d.block_size != 512 {
         detail.push(format!("{} B sectors", d.block_size));
     }
-    if d.activity != Activity::Idle {
-        detail.push(format!("{:?}", d.activity).to_lowercase());
+    match d.activity {
+        Activity::Idle => {}
+        Activity::UpdatingFirmware => detail.push("updating firmware".into()),
+        a => detail.push(format!("{a:?}").to_lowercase()),
+    }
+    if let Some(f) = &d.firmware_update {
+        if f.reset_required && f.state == "done" {
+            detail.push("firmware pending reset".into());
+        }
     }
 
     let mut metrics = Vec::new();
@@ -360,6 +367,7 @@ mod tests {
             physical_block_size: 512,
             usable: true,
             format: None,
+            firmware_update: None,
             location: Location::default(),
             membership: Membership::Out,
             designation: Designation::None,

@@ -64,19 +64,32 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer}
 <h2>Shelves</h2>
 <div id="shelves"><div class="dim">no shelves</div></div>
 
+<h2>Firmware images</h2>
+<div class="toolbar" id="images">
+  <span class="dim">no images</span>
+</div>
+<div class="toolbar">
+  <input type="file" id="fwfile">
+  <button onclick="uploadImage()">Upload image</button>
+  <span class="dim" id="upinfo"></span>
+</div>
+
 <h2>Drives</h2>
 <div class="toolbar">
   <button onclick="selectNeeding()">Select all needing reformat</button>
   <button onclick="clearSel()">Clear</button>
   <button class="danger" id="fmtsel" onclick="formatSelected(4096)" disabled>Format selected → 4096</button>
   <button class="danger" id="fmtsel512" onclick="formatSelected(512)" disabled>→ 512</button>
+  <span style="border-left:1px solid var(--border);height:18px"></span>
+  <select id="fwimg"><option value="">firmware image…</option></select>
+  <button class="danger" id="fwsel" onclick="firmwareSelected()" disabled>Update firmware on selected</button>
   <span class="dim" id="selinfo"></span>
 </div>
 <div class="wrap">
 <table>
 <thead><tr>
   <th><input type="checkbox" id="selall" onchange="toggleAll(this.checked)"></th>
-  <th>Drive</th><th>Model / Serial</th><th>Kind</th><th>Size</th><th>Sector</th><th>Location</th>
+  <th>Drive</th><th>Model / Serial</th><th>Kind</th><th>FW</th><th>Size</th><th>Sector</th><th>Location</th>
   <th>Health</th><th>Fleet</th><th>Designation</th><th>Activity</th><th>Actions</th>
 </tr></thead>
 <tbody id="rows"></tbody>
@@ -181,12 +194,50 @@ function updateSelInfo(){
   const n=sel.size;
   $('selinfo').textContent = n? `${n} selected` : '';
   $('fmtsel').disabled = n===0; $('fmtsel512').disabled = n===0;
+  $('fwsel').disabled = n===0 || !$('fwimg').value;
+}
+$('fwimg').addEventListener('change', updateSelInfo);
+
+// ---- firmware
+let lastImages=[];
+window.uploadImage=async()=>{
+  const f=$('fwfile').files[0]; if(!f){ fail(new Error('choose a file first')); return; }
+  const name=f.name.replace(/[^A-Za-z0-9._+-]/g,'_');
+  $('upinfo').textContent=`uploading ${name} (${human(f.size)})…`;
+  try{
+    const r=await fetch(API+`api/v1/firmware/images/${encodeURIComponent(name)}`,{method:'PUT',body:f,headers:{'Content-Type':'application/octet-stream'}});
+    if(!r.ok){ let msg=r.status+' '+r.statusText; try{const j=await r.json(); if(j.error) msg=j.error;}catch(e){} throw new Error(msg); }
+    const j=await r.json(); $('upinfo').textContent=`stored ${j.name} · sha256 ${j.sha256.slice(0,12)}…`;
+    $('fwfile').value='';
+  }catch(e){ $('upinfo').textContent=''; fail(e); }
+  refresh();
+};
+window.deleteImage=name=>{ if(confirm(`Delete image ${name} from the store?`)) act(api(`api/v1/firmware/images/${encodeURIComponent(name)}`,{method:'DELETE'})); };
+window.firmwareOne=(id,name,fw)=>{
+  const img=$('fwimg').value;
+  if(!img){ fail(new Error('pick a firmware image in the toolbar first')); return; }
+  if(!confirm(`Update firmware on ${name} (running ${fw}) with image ${img}?\n\nThe drive resets once to activate. In-fleet drives are updated one at a time.`)) return;
+  act(post(`api/v1/drives/${id}/firmware`,{image:img}));
+};
+window.firmwareSelected=()=>{
+  const ids=[...sel]; const img=$('fwimg').value; if(!ids.length||!img) return;
+  const names=lastDrives.filter(d=>sel.has(d.id)).map(d=>d.name+' ('+d.firmware+')').join(', ');
+  if(!confirm(`Update firmware on ${ids.length} drive(s) with image ${img}:\n${names}\n\nOut-of-fleet drives run in parallel; fleet drives one at a time. Continue?`)) return;
+  act(post('api/v1/firmware',{drives:ids,image:img}).then(()=>{sel.clear();updateSelInfo();}));
+};
+function renderImages(){
+  $('images').innerHTML = lastImages.map(i=>`<span class="chip c-acc" title="sha256 ${esc(i.sha256)}">${esc(i.name)} · ${human(i.size)}</span><button title="delete" onclick="deleteImage('${esc(i.name)}')">✕</button>`).join(' ')
+    || '<span class="dim">no images — upload a vendor .lod/.bin below</span>';
+  const cur=$('fwimg').value;
+  $('fwimg').innerHTML = '<option value="">firmware image…</option>' + lastImages.map(i=>`<option value="${esc(i.name)}" ${i.name===cur?'selected':''}>${esc(i.name)}</option>`).join('');
 }
 window.toggleSel=(id,on)=>{ if(on) sel.add(id); else sel.delete(id); updateSelInfo(); render(); };
-window.toggleAll=on=>{ sel.clear(); if(on) lastDrives.filter(formattable).forEach(d=>sel.add(d.id)); updateSelInfo(); render(); };
+window.toggleAll=on=>{ sel.clear(); if(on) lastDrives.filter(selectable).forEach(d=>sel.add(d.id)); updateSelInfo(); render(); };
 window.selectNeeding=()=>{ sel.clear(); lastDrives.filter(d=>d.needs_reformat&&formattable(d)).forEach(d=>sel.add(d.id)); updateSelInfo(); render(); };
 window.clearSel=()=>{ sel.clear(); $('selall').checked=false; updateSelInfo(); render(); };
 function formattable(d){ return d.membership!=='fleet' && d.activity==='idle' && d.designation!=='reserved' && d.kind!=='nvme_ssd'; }
+function fwable(d){ return d.activity==='idle' && !['failing','failed'].includes(d.health&&d.health.status); }
+function selectable(d){ return formattable(d) || fwable(d); }
 window.formatSelected=bs=>{
   const ids=[...sel]; if(!ids.length) return;
   const names=lastDrives.filter(d=>sel.has(d.id)).map(d=>d.name).join(', ');
@@ -247,6 +298,13 @@ function shelfCard(s){
 }
 
 function activityCell(d){
+  if(d.activity==='updating_firmware'){
+    const r=d.firmware_run||{};
+    const pct=r.bytes_total?Math.floor(100*r.bytes_done/r.bytes_total):0;
+    return `<div class="row">${chip('firmware '+esc(r.image||''),'c-warn')}
+      <span class="bar warn"><i style="width:${pct}%"></i></span>
+      <span class="dim">${esc(r.phase||'')}${r.phase==='download'?' '+pct+'%':''}</span></div>`;
+  }
   if(d.activity==='formatting'){
     const r=d.format_run||{};
     const pct=r.progress_pct;
@@ -271,6 +329,10 @@ function activityCell(d){
     const cls=d.format.state==='done'?'c-ok':'c-err';
     last+=' '+`<span title="${esc(d.format.error||'')}">${chip('format '+d.format.to_block_size+' '+d.format.state,cls)}</span>`;
   }
+  if(d.firmware_update&&d.firmware_update.state!=='running'){
+    const f=d.firmware_update; const cls=f.state==='done'?(f.reset_required?'c-warn':'c-ok'):'c-err';
+    last+=' '+`<span title="${esc(f.error||f.image||'')}">${chip('fw '+(f.to_version||'')+(f.reset_required?' (reset pending)':' '+f.state),cls)}</span>`;
+  }
   return chip('idle','c-mut')+last;
 }
 function actionsCell(d){
@@ -286,6 +348,8 @@ function actionsCell(d){
     if(d.membership!=='fleet')
       b.push(`<button class="danger" onclick="runTest('${d.id}','${esc(d.name)}','destructive_sample')">Destructive</button>`);
   }
+  if(fwable(d))
+    b.push(`<button class="danger" title="update firmware with the image chosen in the toolbar" onclick="firmwareOne('${d.id}','${esc(d.name)}','${esc(d.firmware)}')">FW</button>`);
   if(formattable(d)){
     const label = d.needs_reformat ? 'Reformat 4K' : (d.block_size===4096 ? 'Format 512' : 'Format 4K');
     const to = d.needs_reformat ? 4096 : (d.block_size===4096 ? 512 : 4096);
@@ -307,10 +371,11 @@ let lastShelves=[], lastEvents=[], lastHealth={};
 function render(){
   $('shelves').innerHTML = lastShelves.map(shelfCard).join('') || '<div class="dim">no shelves (no SES enclosure reachable)</div>';
   $('rows').innerHTML = lastDrives.map(d=>`<tr class="${sel.has(d.id)?'sel':''}">
-    <td><input type="checkbox" ${sel.has(d.id)?'checked':''} ${formattable(d)?'':'disabled'} onchange="toggleSel('${d.id}',this.checked)"></td>
+    <td><input type="checkbox" ${sel.has(d.id)?'checked':''} ${selectable(d)?'':'disabled'} onchange="toggleSel('${d.id}',this.checked)"></td>
     <td class="mono">${esc(d.name)}${d.paths&&d.paths.length>1?' '+chip(d.paths.length+' paths','c-acc'):''}</td>
     <td>${esc(d.model||'?')}<br><span class="dim mono">${esc(d.serial||'')}</span></td>
     <td>${esc((d.kind||'').replace('_',' '))}</td>
+    <td class="mono">${esc(d.firmware||'')}</td>
     <td>${human(d.capacity_bytes)}</td>
     <td>${sectorChip(d)}</td>
     <td class="dim">${esc(locStr(d.location))}</td>
@@ -319,7 +384,8 @@ function render(){
     <td>${desigCell(d)}</td>
     <td>${activityCell(d)}</td>
     <td>${actionsCell(d)}</td>
-  </tr>`).join('') || '<tr><td colspan="12" class="dim">no drives discovered</td></tr>';
+  </tr>`).join('') || '<tr><td colspan="13" class="dim">no drives discovered</td></tr>';
+  renderImages();
   $('evlist').innerHTML = lastEvents.slice(-40).reverse().map(e=>{
     const t = e.time&&e.time.secs_since_epoch ? new Date(e.time.secs_since_epoch*1000).toLocaleTimeString() : '';
     const cls={info:'',warning:'c-warn',error:'c-err'}[e.severity]||'';
@@ -329,15 +395,16 @@ function render(){
 
 async function refresh(){
   try{
-    const [h,dr,sh,ev] = await Promise.all([
-      api('api/v1/health'), api('api/v1/drives'), api('api/v1/shelves'), api('api/v1/events')]);
-    lastHealth=h; lastDrives=dr.drives; lastShelves=sh.shelves; lastEvents=ev.events;
+    const [h,dr,sh,ev,im] = await Promise.all([
+      api('api/v1/health'), api('api/v1/drives'), api('api/v1/shelves'), api('api/v1/events'),
+      api('api/v1/firmware/images').catch(()=>({images:[]}))]);
+    lastHealth=h; lastDrives=dr.drives; lastShelves=sh.shelves; lastEvents=ev.events; lastImages=im.images||[];
     const needs=lastDrives.filter(d=>d.needs_reformat).length;
     const fmt=lastDrives.filter(d=>d.activity==='formatting').length;
     $('node').textContent = `${h.node} · v${h.version} · ${dr.drives.length} drives · ${sh.shelves.length} shelves`
       + (needs?` · ${needs} need reformat`:'') + (fmt?` · ${fmt} formatting`:'');
     // Drop selections that are no longer formattable.
-    for(const id of [...sel]) if(!lastDrives.some(d=>d.id===id&&formattable(d))) sel.delete(id);
+    for(const id of [...sel]) if(!lastDrives.some(d=>d.id===id&&selectable(d))) sel.delete(id);
     updateSelInfo();
     render();
   }catch(e){ fail(e); }

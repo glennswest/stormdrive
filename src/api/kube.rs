@@ -516,6 +516,7 @@ mod tests {
             physical_block_size: 512,
             usable: true,
             format: None,
+            firmware_update: None,
             location: Location {
                 controller: Some(Controller { scsi_host: Some("host3".into()), ..Default::default() }),
                 shelf: Some(Shelf { serial: Some("SHELF1".into()), ..Default::default() }),

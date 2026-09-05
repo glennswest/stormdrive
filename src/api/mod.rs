@@ -4,6 +4,7 @@
 use crate::config::Config;
 use crate::drive::{Activity, Designation, DriveId, HealthStatus, Membership};
 use crate::drivetest::{TestHandle, TestKind, TestState};
+use crate::firmware::FwHandle;
 use crate::format::FormatHandle;
 use crate::events::{EventLog, Severity};
 use crate::inventory::Inventory;
@@ -32,6 +33,10 @@ pub struct AppState {
     pub tests: RwLock<HashMap<DriveId, Arc<TestHandle>>>,
     /// Sector-size reformats, one per drive, kept after they finish.
     pub formats: RwLock<HashMap<DriveId, Arc<FormatHandle>>>,
+    /// Firmware updates, one per drive, kept after they finish.
+    pub firmware: RwLock<HashMap<DriveId, Arc<FwHandle>>>,
+    /// Fleet drives update firmware one at a time.
+    pub fleet_firmware_lock: tokio::sync::Mutex<()>,
     /// Latest SES scan: every shelf the node can talk to, by logical id.
     pub shelves: RwLock<crate::topology::Shelves>,
     pub inventory_path: Option<PathBuf>,
@@ -136,6 +141,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}/format", get(get_format).post(format_drive))
         .route("/api/v1/drives/{id}/format/{block_size}", post(format_drive_by_path))
         .route("/api/v1/format", get(list_formats).post(format_many))
+        // Firmware: image store + updates (one, many, or by model).
+        .route("/api/v1/firmware", get(list_firmware).post(firmware_many))
+        .route("/api/v1/firmware/images", get(list_images))
+        .route(
+            "/api/v1/firmware/images/{name}",
+            axum::routing::put(put_image).delete(delete_image).get(get_image),
+        )
+        .route("/api/v1/drives/{id}/firmware", get(get_firmware).post(firmware_drive))
         .route("/api/v1/shelves", get(list_shelves))
         .route("/api/v1/shelves/{key}", get(get_shelf))
         .route("/api/v1/shelves/{key}/locate", post(shelf_locate))
@@ -147,6 +160,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/summary", get(summary))
         // Kubernetes-shaped resources, served by this daemon (stormblock#80).
         .merge(kube::router())
+        .layer(axum::extract::DefaultBodyLimit::max(
+            state.config.firmware.max_image_mib as usize * 1024 * 1024 + 4096,
+        ))
         .with_state(state)
 }
 
@@ -174,6 +190,7 @@ async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
     let inv = s.inventory.read().await;
     let tests = s.tests.read().await;
     let formats = s.formats.read().await;
+    let fws = s.firmware.read().await;
     let mut drives: Vec<serde_json::Value> = Vec::new();
     let mut sorted: Vec<_> = inv.drives.values().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -186,6 +203,10 @@ async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
         if let Some(h) = formats.get(&d.id) {
             let run = h.run.lock().unwrap();
             v["format_run"] = serde_json::to_value(&*run).unwrap_or_default();
+        }
+        if let Some(h) = fws.get(&d.id) {
+            let run = h.run.lock().unwrap();
+            v["firmware_run"] = serde_json::to_value(&*run).unwrap_or_default();
         }
         v["needs_reformat"] = json!(d.needs_reformat());
         drives.push(v);
@@ -966,6 +987,224 @@ async fn list_formats(State(s): State<Arc<AppState>>) -> Json<serde_json::Value>
     Json(json!({ "running": running, "formats": runs }))
 }
 
+// -------------------------------------------------------------- firmware
+
+fn image_dir(s: &AppState) -> Result<PathBuf, ApiError> {
+    crate::firmware::image_dir(s.config.data_dir.as_deref())
+        .ok_or_else(|| ApiError::bad_request("no data_dir configured — the firmware image store needs one"))
+}
+
+async fn list_images(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
+    let dir = image_dir(&s)?;
+    let imgs = tokio::task::spawn_blocking(move || crate::firmware::list_images(&dir))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(json!({ "images": imgs })))
+}
+
+async fn get_image(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let dir = image_dir(&s)?;
+    let imgs = tokio::task::spawn_blocking(move || crate::firmware::list_images(&dir))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    imgs.into_iter()
+        .find(|i| i.name == name)
+        .map(|i| Json(serde_json::to_value(i).unwrap_or_default()))
+        .ok_or_else(|| ApiError::not_found(format!("image {name:?}")))
+}
+
+/// Raw upload: `PUT /api/v1/firmware/images/<name>` with the file as the
+/// body. Written to a temp file and renamed, so a half-upload never
+/// becomes an image.
+async fn put_image(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !crate::firmware::valid_image_name(&name) {
+        return Err(ApiError::bad_request(format!("image name {name:?}: letters, digits, . _ - + only")));
+    }
+    if body.is_empty() {
+        return Err(ApiError::bad_request("empty image"));
+    }
+    let dir = image_dir(&s)?;
+    let data = body.to_vec();
+    let n2 = name.clone();
+    let img = tokio::task::spawn_blocking(move || -> std::io::Result<crate::firmware::Image> {
+        std::fs::create_dir_all(&dir)?;
+        let tmp = dir.join(format!(".{n2}.upload"));
+        std::fs::write(&tmp, &data)?;
+        std::fs::rename(&tmp, dir.join(&n2))?;
+        Ok(crate::firmware::Image {
+            name: n2,
+            size: data.len() as u64,
+            sha256: crate::firmware::sha256_hex(&data),
+            modified: Some(std::time::SystemTime::now()),
+        })
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?
+    .map_err(|e| ApiError::internal(format!("store image: {e}")))?;
+    s.events.write().await.push(
+        None,
+        Severity::Info,
+        "firmware",
+        format!("image {} stored ({} bytes, sha256 {}…)", img.name, img.size, &img.sha256[..12]),
+    );
+    Ok(Json(serde_json::to_value(img).unwrap_or_default()))
+}
+
+async fn delete_image(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !crate::firmware::valid_image_name(&name) {
+        return Err(ApiError::bad_request(format!("image name {name:?}")));
+    }
+    let dir = image_dir(&s)?;
+    let p = dir.join(&name);
+    if !p.is_file() {
+        return Err(ApiError::not_found(format!("image {name:?}")));
+    }
+    std::fs::remove_file(&p).map_err(|e| ApiError::internal(format!("remove: {e}")))?;
+    Ok(Json(json!({ "deleted": name })))
+}
+
+#[derive(Deserialize)]
+struct FirmwareBody {
+    image: String,
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Deserialize)]
+struct FirmwareManyBody {
+    image: String,
+    /// Drive handles (id, name, path, serial, wwid) …
+    #[serde(default)]
+    drives: Vec<String>,
+    /// … and/or every drive of this model (exact match on the INQUIRY
+    /// product / NVMe model string).
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    force: bool,
+}
+
+/// Validate every drive and read the image once; start none if any is
+/// blocked. Fleet drives queue on the node-wide lock inside the engine.
+async fn start_firmware(
+    s: &Arc<AppState>,
+    ids: Vec<DriveId>,
+    image_name: String,
+    force: bool,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !crate::firmware::valid_image_name(&image_name) {
+        return Err(ApiError::bad_request(format!("image name {image_name:?}")));
+    }
+    if ids.is_empty() {
+        return Err(ApiError::bad_request("no drives to update"));
+    }
+    let dir = image_dir(s)?;
+    let path = dir.join(&image_name);
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|_| ApiError::not_found(format!("image {image_name:?} is not in the store")))?;
+    if data.is_empty() {
+        return Err(ApiError::bad_request(format!("image {image_name:?} is empty")));
+    }
+    let image = Arc::new(data);
+    let mut drives = Vec::new();
+    let mut blocked = Vec::new();
+    {
+        let inv = s.inventory.read().await;
+        for id in &ids {
+            let Some(d) = inv.drives.get(id) else {
+                blocked.push(format!("{id} (unknown drive)"));
+                continue;
+            };
+            if let Some(why) = d.firmware_blocker(force) {
+                blocked.push(format!("{} ({why})", d.name));
+                continue;
+            }
+            drives.push(d.clone());
+        }
+    }
+    if !blocked.is_empty() {
+        return Err(ApiError::conflict(format!("not started: {}", blocked.join("; "))));
+    }
+    let mut started = Vec::new();
+    for d in drives {
+        let h = crate::firmware::start(s.clone(), d, image_name.clone(), image.clone()).await;
+        let run = h.run.lock().unwrap().clone();
+        started.push(serde_json::to_value(run).unwrap_or_default());
+    }
+    Ok(Json(json!({ "image": image_name, "started": started })))
+}
+
+async fn firmware_drive(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<FirmwareBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    start_firmware(&s, vec![did], body.image, body.force).await
+}
+
+async fn firmware_many(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<FirmwareManyBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let mut ids = Vec::new();
+    for h in &body.drives {
+        let id = resolve_id(&s, h).await?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if let Some(model) = &body.model {
+        let inv = s.inventory.read().await;
+        for d in inv.drives.values() {
+            if d.model.trim() == model.trim() && !ids.contains(&d.id) {
+                ids.push(d.id);
+            }
+        }
+        if ids.is_empty() {
+            return Err(ApiError::not_found(format!("no drives of model {model:?}")));
+        }
+    }
+    start_firmware(&s, ids, body.image, body.force).await
+}
+
+async fn get_firmware(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    let fws = s.firmware.read().await;
+    let run = fws.get(&did).map(|h| h.run.lock().unwrap().clone());
+    let (version, last) = {
+        let inv = s.inventory.read().await;
+        let d = inv.drives.get(&did);
+        (d.map(|d| d.firmware.clone()), d.and_then(|d| d.firmware_update.clone()))
+    };
+    Ok(Json(json!({ "firmware": version, "run": run, "last": last })))
+}
+
+async fn list_firmware(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let fws = s.firmware.read().await;
+    let mut runs: Vec<crate::firmware::FwRun> = fws.values().map(|h| h.run.lock().unwrap().clone()).collect();
+    runs.sort_by(|a, b| a.name.cmp(&b.name));
+    let active = runs
+        .iter()
+        .filter(|r| matches!(r.state, crate::firmware::FwState::Running | crate::firmware::FwState::Queued))
+        .count();
+    Json(json!({ "active": active, "updates": runs }))
+}
+
 // --- Parameter-less action wrappers (stormview renderers POST with no body) ---
 
 async fn locate_by_path(
@@ -1059,7 +1298,7 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             _ => {}
         }
         match d.activity {
-            Activity::Testing | Activity::Formatting => testing += 1,
+            Activity::Testing | Activity::Formatting | Activity::UpdatingFirmware => testing += 1,
             Activity::Missing => bad += 1,
             Activity::Draining => warn += 1,
             Activity::Idle => {}

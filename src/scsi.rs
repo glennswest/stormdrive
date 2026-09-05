@@ -349,6 +349,27 @@ pub mod cdb {
         let [hi, lo] = len.to_be_bytes();
         [0x1d, 0x10, 0, hi, lo, 0]
     }
+    /// WRITE BUFFER: `mode` (0x05 whole image + save, 0x07 offsets + save,
+    /// 0x0e offsets + save + defer, 0x0f activate deferred), buffer id 0.
+    pub fn write_buffer(mode: u8, offset: u32, len: u32) -> [u8; 10] {
+        let o = offset.to_be_bytes();
+        let l = len.to_be_bytes();
+        [0x3b, mode & 0x1f, 0, o[1], o[2], o[3], l[1], l[2], l[3], 0]
+    }
+    /// READ BUFFER mode 0x03 (descriptor): offset boundary + capacity.
+    pub fn read_buffer_descriptor() -> [u8; 10] {
+        [0x3c, 0x03, 0, 0, 0, 0, 0, 0, 4, 0]
+    }
+}
+
+/// READ BUFFER descriptor: (offset boundary in bytes, buffer capacity).
+pub fn parse_read_buffer_descriptor(raw: &[u8]) -> Option<(u32, u32)> {
+    if raw.len() < 4 {
+        return None;
+    }
+    let boundary = if raw[0] == 0 || raw[0] > 24 { 0 } else { 1u32 << raw[0] };
+    let cap = u32::from_be_bytes([0, raw[1], raw[2], raw[3]]);
+    Some((boundary, cap))
 }
 
 // ------------------------------------------------------------- Device
@@ -576,6 +597,20 @@ impl Device {
         self.io(&cdb::send_diagnostic(d.len() as u16), Dir::ToDevice, &mut d, T_SHORT)
             .map(|_| ())
     }
+
+    /// One WRITE BUFFER chunk (or the data-less activate, mode 0x0f).
+    pub fn write_buffer(&self, mode: u8, offset: u32, data: &[u8], timeout_ms: u32) -> Result<()> {
+        let mut d = data.to_vec();
+        let dir = if d.is_empty() { Dir::None } else { Dir::ToDevice };
+        self.io(&cdb::write_buffer(mode, offset, d.len() as u32), dir, &mut d, timeout_ms)
+            .map(|_| ())
+    }
+
+    pub fn read_buffer_descriptor(&self) -> Result<(u32, u32)> {
+        let mut buf = [0u8; 4];
+        let n = self.io(&cdb::read_buffer_descriptor(), Dir::FromDevice, &mut buf, T_SHORT)?;
+        parse_read_buffer_descriptor(&buf[..n]).ok_or(Error::Short(n))
+    }
 }
 
 /// The /dev/sgN node for a block device, when the sg driver exposes one.
@@ -729,6 +764,19 @@ mod tests {
         assert_eq!(format_unit_param(true), [0, 0x02, 0, 0]);
         assert_eq!(format_unit_param(false), [0, 0, 0, 0]);
         assert_eq!(cdb::format_unit()[1] & 0x10, 0x10, "FMTDATA");
+    }
+
+    #[test]
+    fn write_buffer_cdb_and_descriptor() {
+        let c = cdb::write_buffer(0x0e, 0x012345, 0x8000);
+        assert_eq!(c[0], 0x3b);
+        assert_eq!(c[1], 0x0e);
+        assert_eq!(&c[3..6], &[0x01, 0x23, 0x45]);
+        assert_eq!(&c[6..9], &[0x00, 0x80, 0x00]);
+        assert_eq!(cdb::write_buffer(0x0f, 0, 0)[1], 0x0f);
+        assert_eq!(parse_read_buffer_descriptor(&[0x0f, 0x10, 0, 0]), Some((32768, 0x100000)));
+        assert_eq!(parse_read_buffer_descriptor(&[0, 0, 0x40, 0]), Some((0, 0x4000)));
+        assert_eq!(parse_read_buffer_descriptor(&[1]), None);
     }
 
     #[test]

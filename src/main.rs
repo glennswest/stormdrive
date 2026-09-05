@@ -67,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
         stormblock,
         tests: RwLock::new(std::collections::HashMap::new()),
         formats: RwLock::new(std::collections::HashMap::new()),
+        firmware: RwLock::new(std::collections::HashMap::new()),
+        fleet_firmware_lock: tokio::sync::Mutex::new(()),
         shelves: RwLock::new(std::collections::BTreeMap::new()),
         inventory_path,
         node_name,

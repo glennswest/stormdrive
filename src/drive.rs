@@ -201,6 +201,8 @@ pub enum Activity {
     Draining,
     /// A FORMAT UNIT is running (sector-size change, see format.rs).
     Formatting,
+    /// A firmware image is being downloaded/activated (firmware.rs).
+    UpdatingFirmware,
     /// Inventory remembers it; the node cannot see it.
     Missing,
 }
@@ -266,6 +268,9 @@ pub struct Drive {
     /// The last sector-size reformat of this drive, persisted.
     #[serde(default)]
     pub format: Option<FormatRecord>,
+    /// The last firmware update of this drive, persisted.
+    #[serde(default)]
+    pub firmware_update: Option<FirmwareRecord>,
     #[serde(default)]
     pub location: Location,
     #[serde(default)]
@@ -309,6 +314,24 @@ pub struct FormatRecord {
     pub finished: Option<SystemTime>,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+/// The last firmware update we ran on a drive.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirmwareRecord {
+    pub image: String,
+    pub from_version: String,
+    pub to_version: Option<String>,
+    /// `running`, `done`, `failed`.
+    pub state: String,
+    pub started: Option<SystemTime>,
+    pub finished: Option<SystemTime>,
+    #[serde(default)]
+    pub error: Option<String>,
+    /// The image is committed but takes effect at the next reset/power
+    /// cycle (NVMe CA=1, or a drive that reports so).
+    #[serde(default)]
+    pub reset_required: bool,
 }
 
 /// What we know about a drain of this drive.
@@ -396,6 +419,23 @@ impl Drive {
         !USABLE_BLOCK_SIZES.contains(&self.block_size) || !self.usable
     }
 
+    /// Why a firmware update cannot start now. In-fleet drives are allowed
+    /// (deferred activation, the drive resets once) but the caller
+    /// serialises them; a Failing/Failed drive is not worth the risk
+    /// unless the operator forces it.
+    pub fn firmware_blocker(&self, force: bool) -> Option<String> {
+        if self.activity == Activity::UpdatingFirmware {
+            return Some("a firmware update is already running".into());
+        }
+        if self.activity != Activity::Idle {
+            return Some(format!("activity is {:?}", self.activity));
+        }
+        if !force && self.health.status() >= HealthStatus::Failing {
+            return Some(format!("health is {:?} (pass force to override)", self.health.status()));
+        }
+        None
+    }
+
     /// Why a sector-size reformat cannot start now. Reformatting is the
     /// most destructive thing this daemon does: out of the fleet, idle,
     /// present, and not the operator's reserved drive.
@@ -473,6 +513,7 @@ mod tests {
             physical_block_size: 512,
             usable: true,
             format: None,
+            firmware_update: None,
             location: Location::default(),
             membership: Membership::Out,
             designation: Designation::None,
@@ -499,6 +540,22 @@ mod tests {
         d.usable = true;
         assert!(!d.needs_reformat());
         assert!(d.format_blocker().is_none(), "a 512/4096 drive may still be reformatted");
+    }
+
+    #[test]
+    fn firmware_blockers() {
+        let mut d = base_drive();
+        assert!(d.firmware_blocker(false).is_none());
+        d.membership = Membership::Fleet;
+        assert!(d.firmware_blocker(false).is_none(), "fleet drives may be updated (serialised by the engine)");
+        d.health.status = Some(HealthStatus::Failing);
+        assert!(d.firmware_blocker(false).is_some());
+        assert!(d.firmware_blocker(true).is_none(), "force overrides the health gate");
+        let mut d = base_drive();
+        d.activity = Activity::Formatting;
+        assert!(d.firmware_blocker(true).is_some());
+        d.activity = Activity::UpdatingFirmware;
+        assert!(d.firmware_blocker(true).unwrap().contains("already"));
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub fn decode_smart_page(page: &[u8; 512]) -> Sample {
 }
 
 #[cfg(target_os = "linux")]
-mod linux {
+pub mod linux {
     use std::os::fd::AsRawFd;
 
     /// struct nvme_admin_cmd from linux/nvme_ioctl.h — 72 bytes.
@@ -65,17 +65,29 @@ mod linux {
     /// c_ulong on glibc but c_int on musl.
     const NVME_IOCTL_ADMIN_CMD: u64 = 0xC048_4E41;
 
-    pub fn fetch_smart_page(path: &str) -> std::io::Result<[u8; 512]> {
-        let f = std::fs::File::open(path)?;
-        let mut page = [0u8; 512];
+    /// One admin command. `Ok(status)`: 0 is success; a non-zero status
+    /// (SCT<<8 | SC) is returned rather than turned into an error so
+    /// callers can treat "firmware activation requires reset" as the
+    /// success it is. Transport/ioctl failures are `Err`.
+    pub fn admin(
+        path: &str,
+        opcode: u8,
+        nsid: u32,
+        cdw10: u32,
+        cdw11: u32,
+        data: &mut [u8],
+        timeout_ms: u32,
+    ) -> std::io::Result<u32> {
+        let f = std::fs::OpenOptions::new().read(true).write(true).open(path)
+            .or_else(|_| std::fs::File::open(path))?;
         let mut cmd = NvmeAdminCmd {
-            opcode: 0x02, // Get Log Page
-            nsid: 0xFFFF_FFFF,
-            addr: page.as_mut_ptr() as u64,
-            data_len: 512,
-            // LID 0x02 | NUMDL (dwords - 1) in bits 16..31
-            cdw10: 0x02 | (((512 / 4 - 1) as u32) << 16),
-            timeout_ms: 5_000,
+            opcode,
+            nsid,
+            addr: if data.is_empty() { 0 } else { data.as_mut_ptr() as u64 },
+            data_len: data.len() as u32,
+            cdw10,
+            cdw11,
+            timeout_ms,
             ..Default::default()
         };
         let ret = unsafe {
@@ -88,8 +100,16 @@ mod linux {
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        if ret > 0 {
-            return Err(std::io::Error::other(format!("nvme status 0x{ret:x}")));
+        Ok(ret as u32)
+    }
+
+    pub fn fetch_smart_page(path: &str) -> std::io::Result<[u8; 512]> {
+        let mut page = [0u8; 512];
+        // LID 0x02 | NUMDL (dwords - 1) in bits 16..31
+        let cdw10 = 0x02 | (((512 / 4 - 1) as u32) << 16);
+        let st = admin(path, 0x02, 0xFFFF_FFFF, cdw10, 0, &mut page, 5_000)?;
+        if st != 0 {
+            return Err(std::io::Error::other(format!("nvme status 0x{st:x}")));
         }
         Ok(page)
     }

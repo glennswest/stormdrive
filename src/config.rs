@@ -15,6 +15,7 @@ pub struct Config {
     pub monitor: MonitorConfig,
     pub stormblock: StormBlockConfig,
     pub api: ApiConfig,
+    pub firmware: FirmwareConfig,
 }
 
 impl Default for Config {
@@ -27,6 +28,27 @@ impl Default for Config {
             monitor: MonitorConfig::default(),
             stormblock: StormBlockConfig::default(),
             api: ApiConfig::default(),
+            firmware: FirmwareConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FirmwareConfig {
+    /// WRITE BUFFER / Firmware Image Download chunk size. 32 KiB is what
+    /// the SAS vendors' own instructions use; the drive's READ BUFFER
+    /// offset boundary rounds it up when larger.
+    pub chunk_kib: u32,
+    /// Largest image accepted by `PUT /api/v1/firmware/images/{name}`.
+    pub max_image_mib: u32,
+}
+
+impl Default for FirmwareConfig {
+    fn default() -> Self {
+        Self {
+            chunk_kib: 32,
+            max_image_mib: 256,
         }
     }
 }

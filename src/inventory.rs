@@ -94,6 +94,7 @@ mod tests {
             physical_block_size: 512,
             usable: true,
             format: None,
+            firmware_update: None,
             location: Location::default(),
             membership: Membership::Out,
             designation: Designation::None,

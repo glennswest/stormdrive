@@ -450,6 +450,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         physical_block_size: primary.physical_block_size,
                         usable: primary.usable,
                         format: None,
+                        firmware_update: None,
                         location,
                         membership: Membership::Out,
                         designation: Default::default(),
