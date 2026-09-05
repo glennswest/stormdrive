@@ -131,7 +131,7 @@ fn drive_component(d: &Drive) -> ComponentSummary {
             "Destructive test",
             "POST",
             format!("{base}/test/destructive_sample"),
-            idle && present && d.membership == Membership::Out,
+            idle && present && d.destructive_test_blocker().is_none(),
             true,
         ));
     }

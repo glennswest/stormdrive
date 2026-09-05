@@ -644,7 +644,7 @@ impl ShelfReport {
         let want = normalize_sas(sas_address);
         self.slots
             .iter()
-            .find(|(_, addrs)| addrs.iter().any(|a| *a == want))
+            .find(|(_, addrs)| addrs.contains(&want))
             .map(|(b, _)| *b)
     }
 }
@@ -685,7 +685,7 @@ pub fn assemble(
     if let Some(a) = add_raw {
         let addrs = parse_additional(a);
         // Individual slot elements in page order, to map ELEMENT INDEX.
-        let mut slot_positions: Vec<usize> = status
+        let slot_positions: Vec<usize> = status
             .elements
             .iter()
             .enumerate()
@@ -727,7 +727,6 @@ pub fn assemble(
                 }
             }
         }
-        slot_positions.clear();
     }
     let first = esps.first();
     let key = cfg
@@ -805,14 +804,17 @@ mod linux {
     /// The /sys/class/enclosure id (e.g. "0:0:17:0") bound to this SES
     /// device, when the ses module is present.
     fn sysfs_enclosure_id(dir: &Path) -> Option<String> {
-        let enc = dir.join("enclosure");
-        for e in std::fs::read_dir(enc).ok()?.flatten() {
-            return Some(e.file_name().to_string_lossy().to_string());
-        }
-        None
+        std::fs::read_dir(dir.join("enclosure"))
+            .ok()?
+            .flatten()
+            .next()
+            .map(|e| e.file_name().to_string_lossy().to_string())
     }
 
-    fn read_pages(sg: &str) -> Option<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>)> {
+    /// (configuration, status, descriptors, additional status)
+    type Pages = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>);
+
+    fn read_pages(sg: &str) -> Option<Pages> {
         let dev = Device::open(sg).ok()?;
         let cfg = dev.receive_diagnostic(PAGE_CONFIG).ok()?;
         let status = dev.receive_diagnostic(PAGE_STATUS).ok()?;
@@ -859,7 +861,7 @@ mod linux {
     /// Set IDENT on a bay (or the enclosure itself when `bay` is None)
     /// through the shelf's first reachable ESP.
     pub fn set_ident(rep: &ShelfReport, bay: Option<u32>, on: bool) -> std::io::Result<()> {
-        let err = |m: String| std::io::Error::new(std::io::ErrorKind::Other, m);
+        let err = std::io::Error::other;
         let (pos, et) = match bay {
             Some(b) => {
                 let p = find_slot_element(&rep.elements, b)
