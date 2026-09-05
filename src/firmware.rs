@@ -291,7 +291,7 @@ fn run_nvme(drive: &Drive, image: &[u8], chunk_kib: u32, handle: &FwHandle) -> R
     handle.phase("activate");
     // CA=3: replace the image in the slot the controller picks and
     // activate without reset. CA=1 when that is refused.
-    let mut reset_required = false;
+    let reset_required;
     let st = admin(&drive.path, 0x10, 0, 3 << 3, 0, &mut [], T_ACTIVATE).map_err(|e| format!("firmware commit: {e}"))?;
     match interpret_commit_status(st) {
         Ok(r) => reset_required = r,
