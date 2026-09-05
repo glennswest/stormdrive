@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.4.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.6.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -86,6 +86,14 @@ src/
   firmware.rs     firmware inventory (update engine: Phase 5)
   thermal.rs      thermal policy (report/alert now; actuation later)
   sequence.rs     maintenance sequencer: one disruptive op at a time, health-gated
+  scsi.rs         raw SCSI over SG_IO: INQUIRY/VPD, READ CAPACITY(16), MODE SENSE/
+                  SELECT, FORMAT UNIT, TEST UNIT READY progress, RECEIVE/SEND
+                  DIAGNOSTIC; sense decoding is portable + unit-tested
+  ses.rs          SES-2 enclosure pages (config 0x01, status 0x02, descriptors
+                  0x07, additional status 0x0A): shelf identity, PSU/fan/temp/
+                  voltage/current/slot elements, shelf + bay IDENT control
+  format.rs       sector-size reformat jobs: MODE SELECT block length + FORMAT
+                  UNIT (IMMED), progress via TUR sense, kernel rescan after
   stormblock.rs   client for stormblock :9090 (add drive w/ labels+uuid, slabs, health, drain)
   fleet.rs        the loop: labels, health push, drains → retire, auto-add
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} — Kubernetes-shaped (stormblock#80)
@@ -228,6 +236,37 @@ Consequences:
 - [x] Renders in stormd's dashboard/SPA, stormsh tiles, and stormconsole's
       stormdrive plugin (stormconsole consumes the feed per its
       architecture doc — no bespoke mapping needed)
+
+### Phase 1e: NetApp shelf management + 520→4096 reformat (2026-09-05) — IN PROGRESS
+
+Glenn fired up the first NetApp shelf on **stormblock1**: LSI SAS3008
+(mpt3sas) → NETAPP DS22412IOM12A (DS224C, IOM12), single path today.
+Drives: SEAGATE ST1200MM0098 at **520-byte sectors** (kernel: "Unsupported
+sector size 520" → sd attaches with 0 blocks) and NETAPP X425_HCBEP1T2A10
+already at 512. Discovery skipped size-0 devices, so the 520s were
+invisible. Three asks: shelf info, manage the shelves, reformat 1..n drives
+to 4096.
+
+- [ ] `scsi.rs`: SG_IO plumbing + sense decoding (portable parsers, tests)
+- [ ] Discovery sees unusable-sector drives: READ CAPACITY(16) is the
+      truth for `block_size`/capacity; `Drive.usable` (kernel exposes
+      capacity), `physical_block_size`, `needs_reformat()`
+- [ ] `ses.rs`: enclosure enumeration (`/sys/class/enclosure` when the
+      ses module is bound; otherwise SCSI type-13 devices via sg), page
+      parsers, `ShelfReport`; bay via mpt3sas `bay_identifier` /
+      `enclosure_identifier` when sysfs enclosure slots are absent
+- [ ] `format.rs`: batch reformat job — MODE SELECT(10) block descriptor
+      (fallback MODE SELECT(6)), FORMAT UNIT FMTDATA+IMMED, poll TUR for
+      progress (sense 02/04/04 + SKSV progress), rescan the sd device,
+      verify the new geometry; out-of-fleet + unmounted only; one per drive
+- [ ] API: `GET /api/v1/shelves`, `GET /api/v1/shelves/{key}`,
+      `POST /api/v1/shelves/{key}/locate`, `POST /api/v1/shelves/{key}/format`
+      (every drive in the shelf that needs it), `POST /api/v1/drives/{id}/format`,
+      `POST /api/v1/format {drives:[…], block_size}`, `GET /api/v1/format`
+- [ ] UI: sector column with "520 · reformat" badge, Format button,
+      select-many + "Format selected", shelves panel (PSU/fan/temp)
+- [ ] components feed + kube Enclosure status carry shelf elements
+- [ ] docs, changelog, v0.7.0; live pass on stormblock1
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
