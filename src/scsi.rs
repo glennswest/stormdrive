@@ -481,7 +481,14 @@ mod linux {
             };
             // SAFETY: hdr points at live buffers for the duration of the
             // call; the kernel only reads/writes within the lengths given.
-            let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), SG_IO, &mut hdr as *mut SgIoHdr) };
+            // `as _`, not a bare constant: glibc types the ioctl request as
+            // c_ulong and musl as c_int, so passing a fixed-width value
+            // compiles against one and not the other. The node's binaries are
+            // musl-static, which is exactly where this broke. The NVMe path in
+            // `smart/nvme.rs` already does the same thing.
+            let rc = unsafe {
+                libc::ioctl(self.file.as_raw_fd(), SG_IO as _, &mut hdr as *mut SgIoHdr)
+            };
             if rc < 0 {
                 return Err(Error::Io(std::io::Error::last_os_error()));
             }

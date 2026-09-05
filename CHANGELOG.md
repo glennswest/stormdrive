@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-09-05
+- **fix:** The SG_IO ioctl now passes its request as `as _` rather than a fixed-width `c_ulong`. glibc types the ioctl request as `c_ulong` and musl as `c_int`, so the literal compiled against one and not the other, and the node's binaries are musl-static — `cargo build --target x86_64-unknown-linux-musl` failed with `expected i32, found u64` and no stormdrive golden was produced, which also silently cost stormconsole its stormdrive panel. The NVMe path in `smart/nvme.rs` already did this correctly.
+
 ## [v0.8.0] — 2026-09-05
 
 ### 2026-09-05
