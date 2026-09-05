@@ -269,12 +269,34 @@ This is what makes "update firmware on 24 drives" safe: one at a time,
 health-gated, abort-on-regression.
 
 ### Firmware (`firmware.rs`)
-- Inventory ships in phase 1 (already collected at discovery).
-- Update engine (phase 5): image store under `<data_dir>/firmware/`,
-  a policy map (model → desired version), NVMe Firmware Image Download
-  (0x11) + Commit (0x10) with slot/action handling, SCSI WRITE BUFFER
-  (mode 0x07 staged / 0x0E activate). Only ever executed through the
-  sequencer; never automatic unless the policy explicitly says so.
+- Inventory: `Drive.firmware` from sysfs at discovery, re-read after an
+  update (INQUIRY for SCSI, `firmware_rev` for NVMe).
+- Image store: `<data_dir>/firmware/<name>`, uploaded raw with
+  `PUT /api/v1/firmware/images/{name}` (temp file + rename; size cap
+  `firmware.max_image_mib`), listed with size and SHA-256, deleted with
+  DELETE. Names are plain file names — no separators.
+- SAS/SATA: WRITE BUFFER mode 0x0E (download microcode with offsets,
+  save, defer) in chunks of `firmware.chunk_kib` rounded up to the
+  drive's READ BUFFER offset boundary, then mode 0x0F (activate
+  deferred). A drive that rejects 0x0E on the first chunk gets mode 0x07
+  (offsets + save, activates after the last chunk). Then: wait for the
+  drive to answer TEST UNIT READY (unit attentions cleared), sysfs
+  rescan, INQUIRY revision compared. SATA drives behind SAS HBAs are
+  reached through the SAT translation of WRITE BUFFER → DOWNLOAD
+  MICROCODE.
+- NVMe: Firmware Image Download (0x11) in 4 KiB-aligned chunks, then
+  Firmware Commit (0x10) CA=3 (activate without reset); a controller
+  that refuses or answers "activation requires reset" is committed with
+  CA=1 and the record carries `reset_required` — the new image runs
+  after the next reset, and `Drive.firmware` is left as-is until then.
+- Policy: never automatic. Out-of-fleet drives update in parallel;
+  fleet drives one at a time behind a node-wide lock; Failing/Failed
+  drives are refused unless `force`. One, many, or every drive of a
+  model (`POST /api/v1/firmware {drives|model, image}`), validated
+  all-or-nothing before any starts. The last update is persisted on the
+  drive (`firmware_update`). This is the sequencer's first customer;
+  redundancy checks against stormblock (is a rebuild running? is the
+  volume already degraded?) are the next gate to add.
 
 ### Thermal (`thermal.rs`)
 - Phase: observe → alert → actuate. Per-drive temps from SMART; enclosure
@@ -311,6 +333,13 @@ GET  /api/v1/drives/{id}/format        current run + last result
 POST /api/v1/format                    {"drives":[handles], "block_size"} —
                                        all-or-nothing validation, then parallel
 GET  /api/v1/format                    every format run on this node
+GET  /api/v1/firmware/images           image store (name, size, sha256)
+PUT  /api/v1/firmware/images/{name}    raw body upload; DELETE removes
+POST /api/v1/drives/{id}/firmware      {"image", "force"?} → WRITE BUFFER /
+                                       NVMe download+commit
+GET  /api/v1/drives/{id}/firmware      version, current run, last result
+POST /api/v1/firmware                  {"drives":[…] and/or "model", "image"}
+GET  /api/v1/firmware                  every update run on this node
 GET  /api/v1/shelves                   SES shelves: identity, status, elements
 GET  /api/v1/shelves/{key}             key = logical id | serial | sysfs id
 POST /api/v1/shelves/{key}/locate      {"on": bool, "bay"?: n} → SES IDENT

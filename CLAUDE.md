@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.7.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.8.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -272,8 +272,13 @@ to 4096.
       SES pages from the DS22412 IOM12, bay map via page 0x0A vs mpt3sas
       bay_identifier, a real 520→4096 format on one Seagate ST1200MM0098,
       then the shelf-wide batch
-- [ ] Phase 1e-fw: firmware update (Glenn 2026-09-05: "can we also update
-      firmware?") — see Phase 5, pulled forward
+- [x] Phase 1e-fw: firmware update (Glenn 2026-09-05: "can we also update
+      firmware?") — Phase 5 pulled forward: image store, WRITE BUFFER
+      0x0E/0x0F (0x07 fallback), NVMe download+commit, one/many/by-model,
+      fleet drives serialised; UI upload + update. v0.8.0 (80 tests,
+      clippy clean, image store smoke-tested on dev). Not yet run against
+      a real drive: needs a vendor image for the ST1200MM0098 / X425 on
+      stormblock1
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
@@ -316,13 +321,16 @@ to 4096.
 - [ ] Not yet exercised against real shelves: the label chain a dual-IOM
       NetApp shelf produces, and a drain under I/O load
 
-### Phase 5: Firmware management
-- [ ] Firmware inventory per drive (already collected in Phase 1)
-- [ ] Image store (<data_dir>/firmware) + policy file
-- [ ] NVMe: Firmware Image Download (0x11) + Commit (0x10)
-- [ ] SCSI: WRITE BUFFER mode 0x07/0x0E
-- [ ] Sequenced rollout through sequence.rs: one drive at a time,
-      health-gated, redundancy-checked via stormblock
+### Phase 5: Firmware management — mostly DONE (v0.8.0, pulled into 1e)
+- [x] Firmware inventory per drive (already collected in Phase 1)
+- [x] Image store (<data_dir>/firmware); policy file (model → desired
+      version, never automatic) still to do
+- [x] NVMe: Firmware Image Download (0x11) + Commit (0x10)
+- [x] SCSI: WRITE BUFFER mode 0x0E/0x0F, 0x07 fallback
+- [x] Fleet drives one at a time, health-gated
+- [ ] Redundancy check via stormblock before a fleet drive resets (no
+      rebuild in flight, volume not already degraded)
+- [ ] Shelf (IOM) firmware via SES download microcode page 0x0E
 
 ### Phase 6: Thermal management
 - [ ] Per-drive + per-enclosure thermal view

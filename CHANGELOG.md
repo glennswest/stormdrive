@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [v0.8.0] — 2026-09-05
+
+### 2026-09-05
+- **feat:** Firmware updates (`firmware.rs`). Image store under
+  `<data_dir>/firmware` — `PUT/GET/DELETE /api/v1/firmware/images/{name}`
+  (raw upload, SHA-256 listed, `firmware.max_image_mib` cap). SAS/SATA:
+  WRITE BUFFER mode 0x0E chunks (`firmware.chunk_kib`, rounded to the
+  drive's READ BUFFER offset boundary) + mode 0x0F activate, mode 0x07
+  fallback; ready-wait, rescan, INQUIRY verify. NVMe: Firmware Image
+  Download + Commit CA=3, CA=1 fallback with `reset_required`.
+  `POST /api/v1/drives/{id}/firmware`, `POST /api/v1/firmware {drives
+  and/or model, image, force}`, `GET /api/v1/firmware`,
+  `GET /api/v1/drives/{id}/firmware`. Out-of-fleet drives in parallel,
+  fleet drives serialised, Failing/Failed refused unless forced;
+  all-or-nothing validation. `Activity::UpdatingFirmware`,
+  `Drive.firmware_update` persisted.
+- **feat:** UI: firmware image panel with upload/delete, FW column,
+  image picker + "Update firmware on selected", per-drive FW button,
+  download/activate progress in the activity column, pending-reset badge.
+- **feat:** NVMe admin passthrough is now a shared helper
+  (`smart::nvme::linux::admin`) returning the status word.
+
 ## [v0.7.0] — 2026-09-05
 
 ### 2026-09-05

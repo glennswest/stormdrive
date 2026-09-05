@@ -291,18 +291,17 @@ fn run_nvme(drive: &Drive, image: &[u8], chunk_kib: u32, handle: &FwHandle) -> R
     handle.phase("activate");
     // CA=3: replace the image in the slot the controller picks and
     // activate without reset. CA=1 when that is refused.
-    let reset_required;
     let st = admin(&drive.path, 0x10, 0, 3 << 3, 0, &mut [], T_ACTIVATE).map_err(|e| format!("firmware commit: {e}"))?;
-    match interpret_commit_status(st) {
-        Ok(r) => reset_required = r,
+    let reset_required = match interpret_commit_status(st) {
+        Ok(r) => r,
         Err(why) => {
             tracing::info!(drive = %drive.name, "commit CA=3 refused ({why}); committing for next reset (CA=1)");
             let st1 = admin(&drive.path, 0x10, 0, 1 << 3, 0, &mut [], T_ACTIVATE)
                 .map_err(|e| format!("firmware commit (CA=1): {e}"))?;
             interpret_commit_status(st1).map_err(|e| format!("firmware commit (CA=1): {e}"))?;
-            reset_required = true;
+            true
         }
-    }
+    };
     handle.phase("verify");
     std::thread::sleep(Duration::from_secs(2));
     let after = std::fs::read_to_string(format!("/sys/block/{}/device/firmware_rev", drive.name))

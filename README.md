@@ -48,6 +48,11 @@ curl -s http://localhost:9092/api/v1/shelves | python3 -m json.tool
 curl -s -X POST http://localhost:9092/api/v1/drives/sdb/format -d '{"block_size":4096}'
 curl -s -X POST http://localhost:9092/api/v1/format -d '{"drives":["sdb","sdc","sdd"],"block_size":4096}'
 curl -s -X POST http://localhost:9092/api/v1/shelves/<logical-id>/format -d '{"block_size":4096}'
+
+# Firmware: upload an image, then update one drive or every drive of a model
+curl -s -X PUT --data-binary @ST1200MM0098-N004.lod http://localhost:9092/api/v1/firmware/images/ST1200MM0098-N004.lod
+curl -s -X POST http://localhost:9092/api/v1/drives/sdb/firmware -d '{"image":"ST1200MM0098-N004.lod"}'
+curl -s -X POST http://localhost:9092/api/v1/firmware -d '{"model":"ST1200MM0098","image":"ST1200MM0098-N004.lod"}'
 ```
 
 ## Documentation
@@ -60,7 +65,9 @@ curl -s -X POST http://localhost:9092/api/v1/shelves/<logical-id>/format -d '{"b
 
 ## Status
 
-v0.7.0 — discovery, health, fleet hand-off to stormblock, drive tests,
-NetApp shelf management (SES status, locate LEDs, dual-IOM merge) and
-sector-size reformat (520 → 4096 via FORMAT UNIT, batch, with progress).
+v0.8.0 — discovery, health, fleet hand-off to stormblock, drive tests,
+NetApp shelf management (SES status, locate LEDs, dual-IOM merge),
+sector-size reformat (520 → 4096 via FORMAT UNIT, batch, with progress)
+and firmware updates (image store; WRITE BUFFER for SAS/SATA, Firmware
+Download + Commit for NVMe; one, many, or by model).
 See the work plan in [CLAUDE.md](CLAUDE.md).
