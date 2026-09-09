@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### 2026-09-09
+- **feat:** The components feed publishes placement as data (#3): every
+  drive with a bay carries a `bay` metric and every drive behind a
+  controller an `hba` metric (PCIe address, else SCSI host), and each
+  shelf carries one `hba` metric per path — each SES processor's SCSI
+  host resolved to the PCIe address its drives report, plus the
+  controllers of its own drives. `detail` is unchanged, so this is
+  additive: a renderer that groups by shelf and orders by bay no longer
+  needs `/bay (\d+)/` over a prose sentence, and "which card are these
+  drives behind" becomes answerable.
+- **docs:** architecture: the components feed is in the route list, with
+  the metric contract for placement.
+
 ### 2026-09-05
 - **fix:** The SG_IO ioctl now passes its request as `as _` rather than a fixed-width `c_ulong`. glibc types the ioctl request as `c_ulong` and musl as `c_int`, so the literal compiled against one and not the other, and the node's binaries are musl-static — `cargo build --target x86_64-unknown-linux-musl` failed with `expected i32, found u64` and no stormdrive golden was produced, which also silently cost stormconsole its stormdrive panel. The NVMe path in `smart/nvme.rs` already did this correctly.
 

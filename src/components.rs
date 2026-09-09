@@ -47,6 +47,12 @@ fn kind_str(k: DriveKind) -> &'static str {
     }
 }
 
+/// How an HBA is named in the feed: its PCIe address when we resolved one
+/// (that is what an operator reads off `lspci`), else the SCSI host.
+fn controller_name(c: &crate::drive::Controller) -> Option<String> {
+    c.pcie_addr.clone().or_else(|| c.scsi_host.clone())
+}
+
 fn drive_component(d: &Drive) -> ComponentSummary {
     let base = format!("/api/v1/drives/{}", d.id);
     let idle = d.activity == Activity::Idle;
@@ -84,7 +90,16 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         }
     }
 
+    // Placement first, and as data: a renderer orders a shelf's drives by
+    // bay and names the card that fails as a unit, without a regex over
+    // `detail` (issue #3).
     let mut metrics = Vec::new();
+    if let Some(b) = d.location.bay {
+        metrics.push(Metric::new("bay", b.to_string()));
+    }
+    if let Some(h) = d.location.controller.as_ref().and_then(controller_name) {
+        metrics.push(Metric::new("hba", h).tone("muted"));
+    }
     if let Some(t) = d.health.temperature_c {
         metrics.push(Metric::new("temp", t.to_string()).unit("°C"));
     }
@@ -206,12 +221,54 @@ fn ses_health(st: crate::ses::ElementStatus) -> Health {
     }
 }
 
+fn push_unique(out: &mut Vec<String>, name: String) {
+    if !out.contains(&name) {
+        out.push(name);
+    }
+}
+
+/// The HBAs a shelf is reached through. One per SES processor path — the
+/// enclosure device's SCSI host names the card that path lands on — plus
+/// the controllers its drives hang off, since a single-IOM shelf whose ses
+/// module is not bound still has drives with a controller. A shelf is what
+/// an operator pulls a card for, so the card is named (issue #3).
+fn shelf_hbas(
+    members: &[&Drive],
+    rep: Option<&crate::ses::ShelfReport>,
+    by_host: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for esp in rep.map(|r| r.esps.as_slice()).unwrap_or_default() {
+        if let Some(n) = esp.scsi_id.split(':').next().filter(|n| !n.is_empty()) {
+            let host = format!("host{n}");
+            push_unique(&mut out, by_host.get(&host).cloned().unwrap_or(host));
+        }
+    }
+    for d in members {
+        if let Some(name) = d.location.controller.as_ref().and_then(controller_name) {
+            push_unique(&mut out, name);
+        }
+    }
+    out
+}
+
 /// Assemble the full feed: system rollup, shelves, drives.
 pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
     let ses = state.shelves.read().await.clone();
     let inv = state.inventory.read().await;
     let mut drives: Vec<&Drive> = inv.drives.values().collect();
     drives.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // scsi_host → the HBA's display name, so an enclosure device's SCSI
+    // host resolves to the same PCIe address the drives report.
+    let mut by_host: BTreeMap<String, String> = BTreeMap::new();
+    for d in &drives {
+        if let Some(c) = &d.location.controller {
+            if let (Some(h), Some(name)) = (&c.scsi_host, controller_name(c)) {
+                by_host.entry(h.clone()).or_insert(name);
+            }
+        }
+    }
 
     let mut out = Vec::new();
     let mut shelves: BTreeMap<String, (String, Vec<&Drive>)> = BTreeMap::new();
@@ -286,6 +343,9 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
         let needs = members.iter().filter(|d| d.needs_reformat()).count();
         let mut detail = vec![format!("{} drives", members.len())];
         let mut metrics = vec![Metric::new("drives", members.len().to_string())];
+        for hba in shelf_hbas(members, rep, &by_host) {
+            metrics.push(Metric::new("hba", hba).tone("muted"));
+        }
         let mut actions = Vec::new();
         if let Some(r) = rep {
             use crate::ses::{ET_COOLING, ET_POWER_SUPPLY};
@@ -446,5 +506,82 @@ mod tests {
             .relations
             .iter()
             .any(|r| r.name == "shelf" && r.targets == vec!["shelf:SN1".to_string()]));
+    }
+
+    #[test]
+    fn placement_is_data_not_prose() {
+        let mut d = drive();
+        d.location.bay = Some(4);
+        d.location.controller = Some(Controller {
+            scsi_host: Some("host7".into()),
+            pcie_addr: Some("0000:03:00.0".into()),
+            driver: Some("mpt3sas".into()),
+        });
+        let c = drive_component(&d);
+        let bay = c.metrics.iter().find(|m| m.label == "bay").unwrap();
+        assert_eq!(bay.value, "4", "a renderer orders by this, not by a regex");
+        let hba = c.metrics.iter().find(|m| m.label == "hba").unwrap();
+        assert_eq!(hba.value, "0000:03:00.0");
+    }
+
+    #[test]
+    fn hba_falls_back_to_the_scsi_host_when_there_is_no_bdf() {
+        let mut d = drive();
+        d.location.controller = Some(Controller {
+            scsi_host: Some("host7".into()),
+            ..Default::default()
+        });
+        let c = drive_component(&d);
+        assert_eq!(c.metrics.iter().find(|m| m.label == "hba").unwrap().value, "host7");
+        assert!(c.metrics.iter().all(|m| m.label != "bay"), "no bay, no metric");
+    }
+
+    fn esp(scsi_id: &str) -> crate::ses::EspPath {
+        crate::ses::EspPath {
+            scsi_id: scsi_id.into(),
+            sg_path: None,
+            sas_address: None,
+            serial: None,
+        }
+    }
+
+    #[test]
+    fn shelf_hbas_name_every_path() {
+        let mut d = drive();
+        d.location.controller = Some(Controller {
+            scsi_host: Some("host7".into()),
+            pcie_addr: Some("0000:03:00.0".into()),
+            driver: Some("mpt3sas".into()),
+        });
+        let members = vec![&d];
+        let by_host = BTreeMap::from([
+            ("host7".to_string(), "0000:03:00.0".to_string()),
+            ("host8".to_string(), "0000:81:00.0".to_string()),
+        ]);
+        let rep = crate::ses::ShelfReport {
+            key: "k".into(),
+            shelf: Shelf::default(),
+            esps: vec![
+                esp("7:0:8:0"),
+                esp("8:0:8:0"),
+            ],
+            generation: 0,
+            critical: false,
+            noncritical: false,
+            unrecoverable: false,
+            info: false,
+            elements: Vec::new(),
+            slots: BTreeMap::new(),
+            collected_at: SystemTime::now(),
+            status_raw: Vec::new(),
+        };
+        // Both IOM paths, named once each — the drive's own controller is
+        // already covered by host7.
+        assert_eq!(
+            shelf_hbas(&members, Some(&rep), &by_host),
+            vec!["0000:03:00.0".to_string(), "0000:81:00.0".to_string()]
+        );
+        // No SES report: the members still name the card they hang off.
+        assert_eq!(shelf_hbas(&members, None, &by_host), vec!["0000:03:00.0".to_string()]);
     }
 }

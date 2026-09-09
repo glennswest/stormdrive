@@ -345,6 +345,8 @@ GET  /api/v1/shelves/{key}             key = logical id | serial | sysfs id
 POST /api/v1/shelves/{key}/locate      {"on": bool, "bay"?: n} → SES IDENT
 POST /api/v1/shelves/{key}/format      {"block_size", "all"?} — every
                                        out-of-fleet drive that needs it
+GET  /api/v1/components                stormview feed: drives + shelves
+GET  /ws/components                    the same feed, pushed on change
 GET  /api/v1/topology                  controller → shelf → drive tree
 GET  /api/v1/events?since=<seq>
 GET  /api/v1/summary                   stormd RemoteSummary card
@@ -354,6 +356,23 @@ Errors use stormblock's `{error, code}` envelope shape for familiarity.
 Auth: same posture as the rest of the ecosystem for now (none on the node
 LAN); token support goes in the config from day one (`api_token`, off by
 default) so it can be turned on without a format change.
+
+### The components feed (`/api/v1/components`, `/ws/components`)
+Every drive and shelf as a stormview `ComponentSummary`, so stormd, stormsh
+and stormconsole render this daemon with no per-UI code: a `belongs_to
+shelf` relation groups drives into shelf grids, and the actions are real
+parameter-less API routes.
+
+Placement is published as **metrics, not prose**. `detail` is a sentence for
+a TUI and is free to change wording; a renderer that has to *place* a drive
+reads the metrics instead:
+
+- drive: `bay` (plain number, what a shelf grid orders by) and `hba` (the
+  controller's PCIe address, else its SCSI host).
+- shelf: one `hba` metric per path — each SES processor's SCSI host resolved
+  to the PCIe address its drives report, plus the controllers of the shelf's
+  own drives. A controller fails as a unit, so "which card are these four
+  drives behind" is answerable from the feed.
 
 ### The stormd card (`/api/v1/summary`)
 Answer within 400 ms (stormd's timeout) from cached state — never collect on
