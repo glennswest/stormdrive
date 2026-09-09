@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.8.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.9.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -236,6 +236,9 @@ Consequences:
 - [x] Renders in stormd's dashboard/SPA, stormsh tiles, and stormconsole's
       stormdrive plugin (stormconsole consumes the feed per its
       architecture doc — no bespoke mapping needed)
+- [x] Placement as data, not prose (#3, v0.9.0): drive `bay` + `hba`
+      metrics, shelf `hba` per path — so a renderer orders a shelf grid by
+      bay and names the card without a regex over `detail`
 
 ### Phase 1e: NetApp shelf management + 520→4096 reformat (2026-09-05) — IN PROGRESS
 

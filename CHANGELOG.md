@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.9.0] — 2026-09-09
+
 ### 2026-09-09
 - **feat:** The components feed publishes placement as data (#3): every
   drive with a bay carries a `bay` metric and every drive behind a
