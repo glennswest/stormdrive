@@ -100,6 +100,43 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     if let Some(h) = d.location.controller.as_ref().and_then(controller_name) {
         metrics.push(Metric::new("hba", h).tone("muted"));
     }
+
+    // Then what the drive *is*.
+    //
+    // This daemon reads model, serial, firmware, wwid and capacity off every
+    // drive it enumerates and published none of them: a consumer got a kind
+    // and a size in prose, so the console could show "sas hdd · 1.8 TB" and
+    // nothing that identifies the object. **The serial is the one that
+    // matters** — it is what goes on an RMA, what the label on the carrier
+    // says, and the only thing that still names the drive after it has been
+    // pulled and the bay is empty. Muted, because identity is what you read
+    // when you have already decided which row to look at.
+    if !d.model.is_empty() {
+        metrics.push(Metric::new("model", d.model.clone()).tone("muted"));
+    }
+    if !d.serial.is_empty() {
+        metrics.push(Metric::new("serial", d.serial.clone()).tone("muted"));
+    }
+    if !d.firmware.is_empty() {
+        metrics.push(Metric::new("firmware", d.firmware.clone()).tone("muted"));
+    }
+    // The capacity as a number beside the prose, so a renderer can sort and
+    // total a shelf without parsing the detail line — the same argument that
+    // moved bay and hba out of it.
+    if d.capacity_bytes > 0 {
+        metrics.push(
+            Metric::new("capacity", stormview::format_bytes(d.capacity_bytes)).tone("muted"),
+        );
+    }
+    // How to address it right now. `id` is stable across boots and `path`
+    // is not, which is exactly why both are worth having: the id to talk to
+    // this daemon, the /dev node to run anything else against it.
+    if !d.path.is_empty() {
+        metrics.push(Metric::new("dev", d.path.clone()).tone("muted"));
+    }
+    if let Some(w) = &d.wwid {
+        metrics.push(Metric::new("wwid", w.clone()).tone("muted"));
+    }
     if let Some(t) = d.health.temperature_c {
         metrics.push(Metric::new("temp", t.to_string()).unit("°C"));
     }
@@ -118,6 +155,36 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     }
     if d.needs_reformat() {
         metrics.push(Metric::new("sector", d.block_size.to_string()).unit("B").tone("warn"));
+    }
+    // Age, in the unit a drive's own SMART counter uses. A spinning disk
+    // with 60 000 hours on it is not failing and is worth knowing about
+    // before it is the one you are replacing at 3 a.m.
+    if let Some(h) = d.health.power_on_hours {
+        let m = Metric::new("hours", h.to_string());
+        // Five years of continuous running. Not a fault — a fact that
+        // changes which drive you choose to replace first.
+        metrics.push(if h >= 43_800 { m.tone("warn") } else { m.tone("muted") });
+    }
+    // What SMART itself says, when it says anything but "fine". Reported
+    // separately from the component's own health because the two can
+    // disagree: a drive that is `Missing` is a red row whose last SMART
+    // read said Good, and collapsing those into one word loses the half
+    // that tells you whether to reseat it or replace it.
+    match d.health.status() {
+        HealthStatus::Unknown | HealthStatus::Good => {}
+        st => {
+            let tone = if matches!(st, HealthStatus::Warning) { "warn" } else { "error" };
+            metrics.push(Metric::new("smart", format!("{st:?}").to_lowercase()).tone(tone));
+        }
+    }
+    // The NVMe critical-warning bitfield, which is the drive telling you in
+    // one byte that its spare is exhausted, it is over temperature, the
+    // media is read-only or the backup power failed. Zero on everything
+    // else, and shown as hex because that is how the spec numbers the bits.
+    if d.health.critical_warning != 0 {
+        metrics.push(
+            Metric::new("warning", format!("0x{:02x}", d.health.critical_warning)).tone("error"),
+        );
     }
 
     let mut actions = Vec::new();
@@ -457,6 +524,90 @@ mod tests {
         let destr = c.actions.iter().find(|a| a.id == "test-destructive").unwrap();
         assert!(destr.danger);
         assert!(destr.enabled, "out-of-fleet idle drive may run destructive");
+    }
+
+    #[test]
+    fn a_drive_says_what_it_is_not_only_where_it_is() {
+        // This daemon reads model, serial, firmware, wwid and capacity off
+        // every drive it enumerates and published none of them: a consumer
+        // got a kind and a size in prose, and nothing that identifies the
+        // physical object.
+        let mut d = drive();
+        d.wwid = Some("naa.5000c500".into());
+        d.health.power_on_hours = Some(1_000);
+        let c = drive_component(&d);
+        let m = |name: &str| c.metrics.iter().find(|m| m.label == name).map(|m| m.value.clone());
+        // The serial above all: it is what goes on an RMA, what the label on
+        // the carrier says, and the only thing that still names the drive
+        // once it has been pulled and the bay is empty.
+        assert_eq!(m("serial").as_deref(), Some("S"));
+        assert_eq!(m("model").as_deref(), Some("M"));
+        assert_eq!(m("firmware").as_deref(), Some("1"));
+        assert_eq!(m("wwid").as_deref(), Some("naa.5000c500"));
+        assert_eq!(m("dev").as_deref(), Some("/dev/sdx"));
+        assert_eq!(m("capacity").as_deref(), Some("1.0 GB"));
+        assert_eq!(m("hours").as_deref(), Some("1000"));
+    }
+
+    #[test]
+    fn an_old_drive_is_flagged_without_being_called_faulty() {
+        // Five years of continuous running is not a fault. It is the fact
+        // that decides which drive you replace first.
+        let mut d = drive();
+        d.health.power_on_hours = Some(50_000);
+        let c = drive_component(&d);
+        let hours = c.metrics.iter().find(|m| m.label == "hours").unwrap();
+        assert_eq!(hours.tone.as_deref(), Some("warn"));
+        assert_eq!(c.health, Health::Ok, "age is not a failure");
+    }
+
+    #[test]
+    fn smart_is_reported_separately_from_the_row_being_red() {
+        // The two can disagree: a Missing drive is a red row whose last
+        // SMART read said Good, and collapsing them loses the half that
+        // says whether to reseat it or replace it.
+        let mut d = drive();
+        d.health.status = Some(HealthStatus::Failing);
+        let c = drive_component(&d);
+        let smart = c.metrics.iter().find(|m| m.label == "smart").expect("a smart metric");
+        assert_eq!(smart.value, "failing");
+        assert_eq!(smart.tone.as_deref(), Some("error"));
+
+        // Good and Unknown say nothing: a column that reads "good" on every
+        // healthy drive is a column nobody looks at.
+        let mut ok = drive();
+        ok.health.status = Some(HealthStatus::Good);
+        assert!(drive_component(&ok).metrics.iter().all(|m| m.label != "smart"));
+    }
+
+    #[test]
+    fn an_nvme_critical_warning_is_shown_as_the_byte_it_is() {
+        // One byte in which the drive says its spare is exhausted, it is
+        // over temperature, the media has gone read-only or backup power
+        // failed. Hex, because that is how the spec numbers the bits.
+        let mut d = drive();
+        d.health.critical_warning = 0x05;
+        let c = drive_component(&d);
+        let w = c.metrics.iter().find(|m| m.label == "warning").unwrap();
+        assert_eq!(w.value, "0x05");
+        assert_eq!(w.tone.as_deref(), Some("error"));
+        // Zero on everything that is not NVMe, and on a healthy NVMe.
+        assert!(drive_component(&drive()).metrics.iter().all(|m| m.label != "warning"));
+    }
+
+    #[test]
+    fn nothing_the_drive_did_not_report_becomes_an_empty_metric() {
+        // A blank serial on a drive behind a controller that will not answer
+        // must not render as `serial:` with nothing after it.
+        let mut d = drive();
+        d.model = String::new();
+        d.serial = String::new();
+        d.firmware = String::new();
+        d.wwid = None;
+        let c = drive_component(&d);
+        for absent in ["model", "serial", "firmware", "wwid", "hours"] {
+            assert!(c.metrics.iter().all(|m| m.label != absent), "{absent} should be absent");
+        }
     }
 
     #[test]

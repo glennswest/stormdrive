@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### 2026-09-20
+- **feat:** the feed says what a drive *is*, not only where it is. This
+  daemon reads model, serial, firmware, wwid and capacity off every drive
+  it enumerates and published none of them — a consumer got a kind and a
+  size in prose (`sas hdd · 1.8 TB`) and nothing that identifies the
+  physical object. Now `model`, `serial`, `firmware`, `wwid`, `dev` and
+  `capacity` ride as metrics, muted, because identity is what you read
+  once you have decided which row to look at. **The serial is the one
+  that matters**: it goes on the RMA, it is what the label on the carrier
+  says, and it is the only thing that still names the drive after it has
+  been pulled and the bay is empty.
+- **feat:** age and SMART, as separate facts. `hours` carries the drive's
+  own power-on counter and turns warn past five years of continuous
+  running — not a fault, the fact that decides which drive you replace
+  first. `smart` carries what SMART itself says, but only when that is
+  something other than good or unknown: a column reading "good" on every
+  healthy drive is a column nobody looks at. It is separate from the
+  component's health on purpose, because the two disagree in the case
+  that matters — a `Missing` drive is a red row whose last SMART read
+  said Good, and collapsing them loses the half that says whether to
+  reseat it or replace it.
+- **feat:** the NVMe `critical_warning` byte is published when it is not
+  zero, in hex, because that is how the spec numbers the bits — spare
+  exhausted, over temperature, media gone read-only, backup power failed.
+- Nothing a drive did not report becomes an empty metric: a blank serial
+  behind a controller that will not answer is absent, not `serial:` with
+  nothing after it. `detail` is unchanged, so this is additive.
+
 ## [v0.9.0] — 2026-09-09
 
 ### 2026-09-09
