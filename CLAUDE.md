@@ -283,6 +283,26 @@ to 4096.
       a real drive: needs a vendor image for the ST1200MM0098 / X425 on
       stormblock1
 
+### #2: first look at a real node (R230, 2026-09-24) — IN PROGRESS
+
+stormdrive 0.9.0 on the Dell R230 (`192.168.30.2:9092`, stormcos 11.3x).
+Verified over HTTP: health, summary, drives, topology, events, components,
+UI all answer; one drive (WDC WD20EFAX-68F, fw 0A82, mpt3sas host0, bay 4)
+with stable id. Found:
+- [ ] **Safety:** sda is the node's system disk (stormcos GPT, stormblock
+      system + data slabs, root on ublk) but reads "out of fleet, not
+      mounted" — Format 4K, destructive test and Join were all offered.
+      stormblock's `/api/v1/drives` is empty (slabs are `drive=file+…`),
+      so reconcile cannot tell. Fix: probe the disk for stormblock slabs
+      (`STRMSLAB` at LBA 0 or at any GPT partition start) → `in_use_by`;
+      block join/format/destructive test; serialise firmware like fleet
+- [ ] SATA behind a SAS HBA classified `sas_hdd` (sas_address exists for
+      SATA end devices) — use the SCSI vendor `ATA`
+- [ ] `ioerr_cnt` published as "media errs" — it counts failed commands
+- [ ] File stormblock issue: system-disk slabs not attributed to a drive
+- [ ] Report on the issue: no firmware images anywhere, no source for
+      them; BIOS/HBA firmware not modelled (drives only)
+
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
 - [ ] Stable identity: WWID → uuid5, fallback model+serial
