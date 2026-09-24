@@ -305,9 +305,10 @@ with stable id. Found:
       ok, drive + shelf components present
 - [x] Report on the issue (comment 5820044394): no firmware images
       anywhere, no source for them; BIOS/HBA firmware not modelled
-- [x] v0.10.0 tagged (f5aa63f). sc-build passed on 244ee47; the run on
-      f5aa63f was killed by VM memory pressure — re-run it, then request
-      the golden (`stormcentral component build stormdrive`)
+- [x] v0.10.0 tagged (f5aa63f). sc-build passed on 244ee47 and on
+      cd6600e (v0.10.0 + docs, 94/94, 2026-09-24)
+- [ ] Golden request (`stormcentral component build stormdrive`) —
+      first attempt refused: stormcentral's GitHub token was rate-limited
 - [ ] Waiting on Glenn: who owns BIOS/HBA firmware (stormipmi via iDRAC
       Redfish? HBA version_fw inventory here is cheap and in scope)
 - [ ] After the 0.10.0 golden reaches the R230: sda shows `in_use_by`,

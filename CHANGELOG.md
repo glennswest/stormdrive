@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-09-24
+- **docs:** work plan — v0.10.0 passes sc-build; golden request pending (#2)
+
 ## [v0.10.0] — 2026-09-24
 
 ### 2026-09-24
