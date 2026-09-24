@@ -307,8 +307,8 @@ with stable id. Found:
       anywhere, no source for them; BIOS/HBA firmware not modelled
 - [x] v0.10.0 tagged (f5aa63f). sc-build passed on 244ee47 and on
       cd6600e (v0.10.0 + docs, 94/94, 2026-09-24)
-- [ ] Golden request (`stormcentral component build stormdrive`) —
-      first attempt refused: stormcentral's GitHub token was rate-limited
+- [x] Golden `golden-stormdrive-b0941b2857a0` (0.10.0 @ 205bf9a, sc-build
+      passed on that commit); release request stormcos#70
 - [ ] Waiting on Glenn: who owns BIOS/HBA firmware (stormipmi via iDRAC
       Redfish? HBA version_fw inventory here is cheap and in scope)
 - [ ] After the 0.10.0 golden reaches the R230: sda shows `in_use_by`,

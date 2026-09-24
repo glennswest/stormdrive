@@ -4,6 +4,7 @@
 
 ### 2026-09-24
 - **docs:** work plan — v0.10.0 passes sc-build; golden request pending (#2)
+- **docs:** work plan — golden-stormdrive-b0941b2857a0 built, release request stormcos#70 (#2)
 
 ## [v0.10.0] — 2026-09-24
 
