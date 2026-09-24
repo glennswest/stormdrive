@@ -399,6 +399,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                     d.block_size = primary.block_size;
                     d.physical_block_size = primary.physical_block_size;
                     d.usable = primary.usable;
+                    d.in_use_by = primary.in_use_by.clone();
                 }
                 d.last_seen = now;
                 if d.activity == Activity::Missing {
@@ -449,6 +450,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         block_size: primary.block_size,
                         physical_block_size: primary.physical_block_size,
                         usable: primary.usable,
+                        in_use_by: primary.in_use_by.clone(),
                         format: None,
                         firmware_update: None,
                         location,
@@ -617,6 +619,7 @@ mod tests {
             block_size: 512,
             physical_block_size: 512,
             usable: true,
+            in_use_by: None,
         };
         // sdq and sda are the same physical drive through two IOMs.
         let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);

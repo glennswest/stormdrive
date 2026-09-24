@@ -300,6 +300,9 @@ async fn fleet_action(
             if let Some(why) = drive.fleet_join_blocker() {
                 return Err(ApiError::conflict(format!("{}: {why}", drive.name)));
             }
+            if let Some(who) = crate::contents::probe(&drive.path) {
+                return Err(ApiError::conflict(format!("{}: holds data for {who}", drive.name)));
+            }
             let labels = drive.stormblock_labels();
             let slab_tier = crate::fleet::join(
                 &s,
@@ -516,6 +519,12 @@ async fn start_test(
         if crate::discovery::is_mounted(&drive.name) {
             return Err(ApiError::conflict(format!(
                 "{}: has mounted partitions — refusing a destructive test",
+                drive.name
+            )));
+        }
+        if let Some(who) = crate::contents::probe(&drive.path) {
+            return Err(ApiError::conflict(format!(
+                "{}: holds data for {who} — refusing a destructive test",
                 drive.name
             )));
         }
@@ -874,6 +883,10 @@ async fn start_formats(
             }
             if crate::discovery::is_mounted(&d.name) {
                 blocked.push(json!({ "id": id, "name": d.name, "reason": "has mounted partitions" }));
+                continue;
+            }
+            if let Some(who) = crate::contents::probe(&d.path) {
+                blocked.push(json!({ "id": id, "name": d.name, "reason": format!("holds data for {who}") }));
                 continue;
             }
             drives.push(d.clone());

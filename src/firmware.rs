@@ -19,7 +19,7 @@
 //! Never automatic.
 
 use crate::api::AppState;
-use crate::drive::{Activity, Drive, DriveId, DriveKind, FirmwareRecord, Membership};
+use crate::drive::{Activity, Drive, DriveId, DriveKind, FirmwareRecord};
 use crate::events::Severity;
 use crate::scsi::{self, Device, Error as ScsiError};
 use serde::Serialize;
@@ -381,8 +381,9 @@ pub async fn start(state: Arc<AppState>, drive: Drive, image_name: String, image
     let st2 = state.clone();
     let chunk_kib = state.config.firmware.chunk_kib;
     tokio::spawn(async move {
-        // One fleet drive at a time; out-of-fleet drives do not queue.
-        let _guard = if drive.membership == Membership::Fleet {
+        // One data-serving drive at a time (fleet, or the system disk);
+        // idle out-of-fleet drives do not queue.
+        let _guard = if drive.serves_data() {
             Some(st2.fleet_firmware_lock.lock().await)
         } else {
             None

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### 2026-09-24
+- **fix:** the node's own system disk was offered for Format 4K, the
+  destructive test and Join fleet (#2). On the R230, sda carries the
+  stormcos GPT with stormblock's system and data slabs and the root
+  filesystem is served from it over ublk — yet it read "out of fleet" and
+  nothing on it was in `/proc/mounts`, which was the only guard. Discovery
+  now reads each drive for stormblock slab headers (whole drive or any GPT
+  partition) and records `in_use_by`; join, format and the destructive
+  test refuse such a drive in the API (re-reading the disk right before
+  starting), the components feed disables those actions and shows an
+  `in use` metric, and the UI hides them. Firmware updates stay allowed —
+  that is the work this node needs — but are serialised like a fleet
+  drive's.
+- **fix:** a SATA drive behind a SAS HBA was classified `sas_hdd`/`sas_ssd`
+  (the HBA gives it a `sas_address`); a SCSI vendor of `ATA` now means SATA.
+- **fix:** for SCSI/SATA drives the feed called sysfs `ioerr_cnt` "media
+  errs"; it counts failed commands of any kind. Labelled `io errs` there;
+  NVMe keeps `media errs`, which is what its log page reports.
+
 ### 2026-09-20
 - **feat:** the feed says what a drive *is*, not only where it is. This
   daemon reads model, serial, firmware, wwid and capacity off every drive

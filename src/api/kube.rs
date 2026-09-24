@@ -515,6 +515,7 @@ mod tests {
             block_size: 512,
             physical_block_size: 512,
             usable: true,
+            in_use_by: None,
             format: None,
             firmware_update: None,
             location: Location {

@@ -7,6 +7,7 @@
 pub mod api;
 pub mod components;
 pub mod config;
+pub mod contents;
 pub mod discovery;
 pub mod drive;
 pub mod drivetest;

@@ -151,13 +151,24 @@ path failover is actually needed.
 ### Discovery (`discovery/`)
 - Full scan on startup and every `discovery.interval_secs`: walk
   `/sys/block`, skip virtual/managed devices (`loop* ram* zram* dm-* md*
-  sr* fd* nbd* ublkb*` — ublkb is stormblock's own export surface), skip the
-  boot drive, apply config include/exclude globs.
+  sr* fd* nbd* ublkb*` — ublkb is stormblock's own export surface), apply
+  config include/exclude globs.
+- **Who holds it** (`contents.rs`): the node's own system disk is *seen*,
+  not skipped — it is the drive whose firmware most needs updating — but it
+  is read for stormblock slabs (`STRMSLAB` at LBA 0, or at the first LBA of
+  any GPT partition) and marked `in_use_by`. On stormcos that is the only
+  reliable signal: the root filesystem is a ublk device stormblock serves
+  from slabs on the disk, so nothing on it is in `/proc/mounts`, stormblock
+  does not open it `O_EXCL`, and its `/api/v1/drives` does not list it.
+  Join, format and the destructive test refuse an `in_use_by` drive (and
+  re-read the disk just before starting); firmware updates are allowed but
+  serialised like a fleet drive's.
 - Per device: size (`size` × 512), `queue/logical_block_size`,
   `queue/rotational`, `device/model`, `device/serial`,
   `device/firmware_rev` (or NVMe equivalents), `wwid`, transport
   classification (nvme vs sd; SAS vs SATA from `device/sas_address`
-  presence / `transport` links).
+  presence — except that a SATA drive behind a SAS HBA has a sas_address
+  too, so a SCSI vendor of `ATA` (the SAT layer) wins).
 - Hotplug: netlink kobject-uevent socket (add/remove of block devices)
   triggers targeted re-scan; the interval scan remains the safety net.
 - A known drive whose node vanishes → `Missing` + event. A Missing drive
@@ -243,7 +254,7 @@ CAPACITY, `needs_reformat`), and the format job turns them into drives:
    delete + targeted host scan when sd still reports 0 blocks.
 
 Guards: out of the fleet, idle, present, not reserved, no mounted
-partitions; NVMe is refused (namespace format is a different command).
+partitions, no stormblock slab on it (`in_use_by`); NVMe is refused (namespace format is a different command).
 Many drives run in parallel — the drive does the work, the host polls.
 A batch request validates every drive before starting any. There is no
 cancel. The result is persisted on the drive (`format`) and reported

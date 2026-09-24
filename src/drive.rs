@@ -265,6 +265,11 @@ pub struct Drive {
     /// I/O is possible until a reformat.
     #[serde(default = "default_true")]
     pub usable: bool,
+    /// Whose data is on the drive, read off its sectors: a stormblock slab
+    /// (the node's own system disk on stormcos). Join, format and the
+    /// destructive test refuse such a drive whatever its membership says.
+    #[serde(default)]
+    pub in_use_by: Option<String>,
     /// The last sector-size reformat of this drive, persisted.
     #[serde(default)]
     pub format: Option<FormatRecord>,
@@ -386,6 +391,9 @@ impl Drive {
         if self.health.status() >= HealthStatus::Failing {
             return Some(format!("health is {:?}", self.health.status()));
         }
+        if let Some(who) = &self.in_use_by {
+            return Some(format!("in use: holds data for {who}"));
+        }
         if !self.usable {
             return Some(format!(
                 "kernel cannot use {}-byte sectors — reformat to 4096 first",
@@ -400,6 +408,9 @@ impl Drive {
     pub fn destructive_test_blocker(&self) -> Option<String> {
         if self.membership == Membership::Fleet {
             return Some("in the fleet — destructive tests need an out-of-fleet drive".into());
+        }
+        if let Some(who) = &self.in_use_by {
+            return Some(format!("in use: holds data for {who}"));
         }
         if self.activity != Activity::Idle {
             return Some(format!("activity is {:?}", self.activity));
@@ -417,6 +428,13 @@ impl Drive {
     /// only way in.
     pub fn needs_reformat(&self) -> bool {
         !USABLE_BLOCK_SIZES.contains(&self.block_size) || !self.usable
+    }
+
+    /// Does a reset of this drive interrupt live data — a fleet drive, or
+    /// one stormblock serves from anyway (the system disk)? Such drives
+    /// take firmware one at a time.
+    pub fn serves_data(&self) -> bool {
+        self.membership == Membership::Fleet || self.in_use_by.is_some()
     }
 
     /// Why a firmware update cannot start now. In-fleet drives are allowed
@@ -442,6 +460,9 @@ impl Drive {
     pub fn format_blocker(&self) -> Option<String> {
         if self.membership == Membership::Fleet {
             return Some("in the fleet — leave (drain) first".into());
+        }
+        if let Some(who) = &self.in_use_by {
+            return Some(format!("in use: holds data for {who}"));
         }
         if self.activity == Activity::Formatting {
             return Some("a format is already running".into());
@@ -512,6 +533,7 @@ mod tests {
             block_size: 512,
             physical_block_size: 512,
             usable: true,
+            in_use_by: None,
             format: None,
             firmware_update: None,
             location: Location::default(),
@@ -632,6 +654,21 @@ mod tests {
         let mut d = base_drive();
         d.activity = Activity::Missing;
         assert!(d.destructive_test_blocker().is_some());
+    }
+
+    /// The R230 (#2): the system disk is out of the fleet and has nothing
+    /// in /proc/mounts, yet stormblock serves the root filesystem from it.
+    #[test]
+    fn a_drive_holding_stormblock_slabs_refuses_destruction() {
+        let mut d = base_drive();
+        d.in_use_by = Some("stormblock (slabs in partitions 2 'data', 3 'system')".into());
+        assert_eq!(d.membership, Membership::Out);
+        for why in [d.fleet_join_blocker(), d.destructive_test_blocker(), d.format_blocker()] {
+            assert!(why.unwrap().contains("stormblock"));
+        }
+        assert!(d.firmware_blocker(false).is_none(), "firmware is what this node needs");
+        assert!(d.serves_data(), "…one data-serving drive at a time");
+        assert!(!base_drive().serves_data());
     }
 
     #[test]

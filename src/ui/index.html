@@ -235,7 +235,7 @@ window.toggleSel=(id,on)=>{ if(on) sel.add(id); else sel.delete(id); updateSelIn
 window.toggleAll=on=>{ sel.clear(); if(on) lastDrives.filter(selectable).forEach(d=>sel.add(d.id)); updateSelInfo(); render(); };
 window.selectNeeding=()=>{ sel.clear(); lastDrives.filter(d=>d.needs_reformat&&formattable(d)).forEach(d=>sel.add(d.id)); updateSelInfo(); render(); };
 window.clearSel=()=>{ sel.clear(); $('selall').checked=false; updateSelInfo(); render(); };
-function formattable(d){ return d.membership!=='fleet' && d.activity==='idle' && d.designation!=='reserved' && d.kind!=='nvme_ssd'; }
+function formattable(d){ return d.membership!=='fleet' && !d.in_use_by && d.activity==='idle' && d.designation!=='reserved' && d.kind!=='nvme_ssd'; }
 function fwable(d){ return d.activity==='idle' && !['failing','failed'].includes(d.health&&d.health.status); }
 function selectable(d){ return formattable(d) || fwable(d); }
 window.formatSelected=bs=>{
@@ -340,12 +340,12 @@ function actionsCell(d){
   const idle = d.activity==='idle';
   if(d.membership==='fleet')
     b.push(`<button onclick="leaveFleet('${d.id}','${esc(d.name)}')">Leave fleet</button>`);
-  else if(idle && d.usable && d.designation!=='failed' && d.designation!=='reserved')
+  else if(idle && d.usable && !d.in_use_by && d.designation!=='failed' && d.designation!=='reserved')
     b.push(`<button onclick="joinFleet('${d.id}','${esc(d.name)}')">Join fleet</button>`);
   if(idle && d.usable){
     b.push(`<button onclick="runTest('${d.id}','${esc(d.name)}','smoke')">Smoke</button>`);
     b.push(`<button onclick="runTest('${d.id}','${esc(d.name)}','read_scan')">Scan</button>`);
-    if(d.membership!=='fleet')
+    if(d.membership!=='fleet' && !d.in_use_by)
       b.push(`<button class="danger" onclick="runTest('${d.id}','${esc(d.name)}','destructive_sample')">Destructive</button>`);
   }
   if(fwable(d))
@@ -380,7 +380,7 @@ function render(){
     <td>${sectorChip(d)}</td>
     <td class="dim">${esc(locStr(d.location))}</td>
     <td>${healthChip(d.health)}</td>
-    <td>${d.membership==='fleet'?chip('fleet','c-acc'):chip('out','c-mut')}</td>
+    <td>${d.membership==='fleet'?chip('fleet','c-acc'):d.in_use_by?`<span title="${esc(d.in_use_by)}">${chip('in use','c-acc')}</span>`:chip('out','c-mut')}</td>
     <td>${desigCell(d)}</td>
     <td>${activityCell(d)}</td>
     <td>${actionsCell(d)}</td>

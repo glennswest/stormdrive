@@ -147,8 +147,17 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     if let Some(sp) = d.health.available_spare_pct {
         metrics.push(Metric::new("spare", sp.to_string()).unit("%"));
     }
+    // NVMe reports media errors; for SCSI/SATA the only counter we read
+    // is sysfs `ioerr_cnt` — commands that failed, for any reason — and
+    // calling that "media errors" overstated it (#2).
     if d.health.media_errors > 0 {
-        metrics.push(Metric::new("media errs", d.health.media_errors.to_string()).tone("warn"));
+        let label = if d.kind == DriveKind::NvmeSsd { "media errs" } else { "io errs" };
+        metrics.push(Metric::new(label, d.health.media_errors.to_string()).tone("warn"));
+    }
+    // Why join/format/destructive are greyed out on an out-of-fleet drive:
+    // somebody's data is on it (the node's own system disk).
+    if let Some(who) = &d.in_use_by {
+        metrics.push(Metric::new("in use", who.clone()).tone("accent"));
     }
     if d.paths.len() > 1 {
         metrics.push(Metric::new("paths", d.paths.len().to_string()).tone("accent"));
@@ -493,6 +502,7 @@ mod tests {
             block_size: 512,
             physical_block_size: 512,
             usable: true,
+            in_use_by: None,
             format: None,
             firmware_update: None,
             location: Location::default(),
@@ -634,6 +644,20 @@ mod tests {
         assert!(!c.actions.iter().find(|a| a.id == "fleet-join").unwrap().enabled);
         assert!(!c.actions.iter().find(|a| a.id == "test-destructive").unwrap().enabled);
         assert!(c.metrics.iter().any(|m| m.label == "sector"));
+    }
+
+    /// #2: the R230's system disk — out of fleet, not mounted, root served
+    /// by stormblock from slabs on it.
+    #[test]
+    fn system_disk_offers_nothing_destructive() {
+        let mut d = drive();
+        d.in_use_by = Some("stormblock (slabs in partitions 2 'data')".into());
+        let c = drive_component(&d);
+        for id in ["fleet-join", "test-destructive", "format-4k"] {
+            let a = c.actions.iter().find(|a| a.id == id).unwrap();
+            assert!(!a.enabled, "{id} must be disabled on a disk stormblock serves from");
+        }
+        assert!(c.metrics.iter().any(|m| m.label == "in use"));
     }
 
     #[test]

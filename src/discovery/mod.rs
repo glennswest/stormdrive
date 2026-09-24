@@ -25,6 +25,9 @@ pub struct Observed {
     /// The kernel exposes a non-zero capacity — I/O through /dev works.
     /// False for the sector sizes sd refuses (520, 528, …).
     pub usable: bool,
+    /// Whose data is on it (a stormblock slab), read off the drive —
+    /// see `contents`.
+    pub in_use_by: Option<String>,
 }
 
 /// Is a sector size one the kernel will drive?
@@ -115,7 +118,10 @@ mod linux {
             return DriveKind::NvmeSsd;
         }
         let rotational = read_trim(&base.join("queue/rotational")).as_deref() == Some("1");
-        let is_sas = base.join("device/sas_address").exists();
+        // A SATA drive behind a SAS HBA has a sas_address too (the HBA's
+        // end-device address for it); the SAT layer reports vendor "ATA".
+        let is_ata = read_trim(&base.join("device/vendor")).as_deref() == Some("ATA");
+        let is_sas = !is_ata && base.join("device/sas_address").exists();
         match (is_sas, rotational) {
             (true, false) => DriveKind::SasSsd,
             (true, true) => DriveKind::SasHdd,
@@ -205,6 +211,11 @@ mod linux {
                 block_size,
                 physical_block_size,
                 usable: sectors > 0,
+                in_use_by: if sectors > 0 {
+                    crate::contents::probe(&format!("/dev/{name}"))
+                } else {
+                    None
+                },
                 name,
             });
         }
