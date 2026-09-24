@@ -303,8 +303,13 @@ with stable id. Found:
       — stormblock#133
 - [x] stormconsole on the node (:9094) aggregates the feed: `plugin:drive`
       ok, drive + shelf components present
-- [ ] Report on the issue: no firmware images anywhere, no source for
-      them; BIOS/HBA firmware not modelled (drives only)
+- [x] Report on the issue (comment 5820044394): no firmware images
+      anywhere, no source for them; BIOS/HBA firmware not modelled
+- [x] v0.10.0 tagged (f5aa63f). sc-build passed on 244ee47; the run on
+      f5aa63f was killed by VM memory pressure — re-run it, then request
+      the golden (`stormcentral component build stormdrive`)
+- [ ] Waiting on Glenn: who owns BIOS/HBA firmware (stormipmi via iDRAC
+      Redfish? HBA version_fw inventory here is cheap and in scope)
 - [ ] After the 0.10.0 golden reaches the R230: sda shows `in_use_by`,
       Format/Destructive/Join disabled, kind `sata_hdd`
 
