@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.10.0] — 2026-09-24
+
 ### 2026-09-24
 - **fix:** the node's own system disk was offered for Format 4K, the
   destructive test and Join fleet (#2). On the R230, sda carries the
