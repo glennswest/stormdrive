@@ -289,19 +289,24 @@ stormdrive 0.9.0 on the Dell R230 (`192.168.30.2:9092`, stormcos 11.3x).
 Verified over HTTP: health, summary, drives, topology, events, components,
 UI all answer; one drive (WDC WD20EFAX-68F, fw 0A82, mpt3sas host0, bay 4)
 with stable id. Found:
-- [ ] **Safety:** sda is the node's system disk (stormcos GPT, stormblock
+- [x] **Safety:** sda is the node's system disk (stormcos GPT, stormblock
       system + data slabs, root on ublk) but reads "out of fleet, not
       mounted" — Format 4K, destructive test and Join were all offered.
       stormblock's `/api/v1/drives` is empty (slabs are `drive=file+…`),
       so reconcile cannot tell. Fix: probe the disk for stormblock slabs
       (`STRMSLAB` at LBA 0 or at any GPT partition start) → `in_use_by`;
       block join/format/destructive test; serialise firmware like fleet
-- [ ] SATA behind a SAS HBA classified `sas_hdd` (sas_address exists for
+- [x] SATA behind a SAS HBA classified `sas_hdd` (sas_address exists for
       SATA end devices) — use the SCSI vendor `ATA`
-- [ ] `ioerr_cnt` published as "media errs" — it counts failed commands
-- [ ] File stormblock issue: system-disk slabs not attributed to a drive
+- [x] `ioerr_cnt` published as "media errs" — it counts failed commands
+- [x] File stormblock issue: system-disk slabs not attributed to a drive
+      — stormblock#133
+- [x] stormconsole on the node (:9094) aggregates the feed: `plugin:drive`
+      ok, drive + shelf components present
 - [ ] Report on the issue: no firmware images anywhere, no source for
       them; BIOS/HBA firmware not modelled (drives only)
+- [ ] After the 0.10.0 golden reaches the R230: sda shows `in_use_by`,
+      Format/Destructive/Join disabled, kind `sata_hdd`
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
