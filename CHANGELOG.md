@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### 2026-09-27
+- **feat:** per-drive `usage` (#12): capacity; each stormblock slab on the
+  drive (id, role, tier, total, allocated, free), joined from
+  `/api/v1/slabs` by WWN, else serial, else path (stormblock#136);
+  `used`, `free_in_slabs`, `outside_slabs` and `free` (= capacity − used).
+  On `/api/v1/drives`, the kube Drive status, the components feed
+  (`used`/`free`/`slabs` metrics) and the UI size column.
+
+### 2026-09-27
 - **docs:** work plan — #10 done: golden-stormdrive-df998ec9c92d, stormcos#131
 
 ## [v0.12.0] — 2026-09-27

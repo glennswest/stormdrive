@@ -329,7 +329,8 @@ polls this; SSE can come later for direct consumers.
 GET  /                                 embedded UI (also /ui, /ui/; the page
                                        detects stormd's proxy prefix itself)
 GET  /api/v1/health                    liveness {status, version}
-GET  /api/v1/drives                    inventory (running test inlined)
+GET  /api/v1/drives                    inventory (running test inlined; each
+                                       drive's `usage`: capacity, slabs, left)
 GET  /api/v1/drives/{id}               id = DriveId, wwid (any case), path or
                                        name, serial — in that order
 GET  /api/v1/drives/{id}/health        latest HealthReport + trend
@@ -389,6 +390,38 @@ reads the metrics instead:
   to the PCIe address its drives report, plus the controllers of the shelf's
   own drives. A controller fails as a unit, so "which card are these four
   drives behind" is answerable from the feed.
+
+### Per-drive usage (`usage` on every drive, #12)
+"Look at a drive and know how much storage is left." Each monitor tick
+reads stormblock's `/api/v1/slabs`. Since v17.1 (stormblock#136) every
+slab names the drive it is on (`drive {serial, wwn, model, path}`; for a
+slab in a partition, the disk). The join is on the WWN when the slab names
+one, so NVMe-oF namespaces sharing a serial stay apart; otherwise the
+serial, then the `/dev` path.
+
+```json
+"usage": { "capacity_bytes": 2000398934016,
+  "slabs": [{ "id": "…", "role": "data", "tier": "cool", "slot_size": 1073741824,
+              "total_bytes": …, "allocated_bytes": …, "free_bytes": … },
+            { "id": "…", "role": "system", … }],
+  "in_slabs_bytes": …, "used_bytes": …, "free_in_slabs_bytes": …,
+  "outside_slabs_bytes": …, "free_bytes": …, "collected_at": … }
+```
+
+- `used` = Σ allocated. `free` = capacity − used: the owner's "how much is
+  left".
+- `free_in_slabs` is what stormblock can hand out now.
+- `outside_slabs` = capacity − Σ slab slot area. It is the partition
+  table, each slab's metadata region, unpartitioned space and other
+  partitions. Only part of it could become a new slab.
+- `usage` is `null` until stormblock's slab listing has answered once. A
+  failed listing keeps the last usage along with its `collected_at`.
+  A drive with no slab reads as all outside, all free.
+
+`usage` is shown on `/api/v1/drives`, on the kube Drive `status.usage`, in
+the components feed (`used`, `free` (warn under 10 %), `slabs`) and in the
+UI's size column, with the per-slab split on hover. It is not part of the
+placement view: it changes with every write and would churn `generation`.
 
 ### The placement view (`/api/v1/placement`, #10)
 What rustkube-node attaches to each PV (rustkube-node#60) next to

@@ -97,6 +97,7 @@ src/
   stormblock.rs   client for stormblock :9090 (add drive w/ labels+uuid, slabs, health, drain)
   fleet.rs        the loop: labels, health push, drains → retire, auto-add
   placement.rs    where every drive + shelf is, hashed generation (#10)
+  usage.rs        per-drive used/free joined from stormblock's slabs (#12)
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} — Kubernetes-shaped (stormblock#80)
   api/            axum REST :9092  (/api/v1/*, /api/v1/summary for stormd)
 ```
@@ -289,12 +290,12 @@ to 4096.
 "Look at a drive and know how much storage is left." stormblock v17.1
 `/api/v1/slabs` names each slab's drive (`drive {serial, wwn, model,
 path}`, stormblock#136) with total/free/allocated slots.
-- [ ] `usage` on each drive: capacity; slabs (id, role, tier, total,
+- [x] `usage` on each drive: capacity; slabs (id, role, tier, total,
       allocated, free); `outside_slabs` = capacity − Σ slab total (partition
       table, slab metadata, unpartitioned); `used` = Σ allocated; `free` =
       capacity − used. Joined by wwn, else serial, else path. Fetched each
       monitor tick; unknown (null) until stormblock answers once
-- [ ] `/api/v1/drives`, kube Drive status, components feed metrics, UI column
+- [x] `/api/v1/drives`, kube Drive status, components feed metrics, UI column
 - [ ] Tests, docs, changelog, release, sc-build, golden, close #12
 
 ### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
