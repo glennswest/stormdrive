@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-09-27
+- **docs:** work plan — #10 done: golden-stormdrive-df998ec9c92d, stormcos#131
+
 ## [v0.12.0] — 2026-09-27
 
 ### 2026-09-27

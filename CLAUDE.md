@@ -284,7 +284,7 @@ to 4096.
       a real drive: needs a vendor image for the ST1200MM0098 / X425 on
       stormblock1
 
-### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — IN PROGRESS
+### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
 
 rustkube-node mirrors each PV's placement: stormblock v17.1 names the
 drives by `wwn` (raw sysfs wwid) + `serial` with a `generation` feed
@@ -302,7 +302,9 @@ name is never re-located, no move event, no SAS phy.
 - [x] `sas_phy` + `expander` in Location (sysfs port → phy)
 - [x] Tests (104; 6 new), docs, changelog, v0.12.0; sc-build + clippy
       pass
-- [ ] Golden, close #10
+- [x] Golden `golden-stormdrive-df998ec9c92d` (0.12.0 @ f48f7a4),
+      stormcos#131; #10 closed, contract posted on rustkube-node#60.
+      Not yet seen on a shelf rig (sas_phy/expander synthetic-tested)
 
 ### #14: present the stormblock engine token (P0, stormcos#104, 2026-09-27) — DONE
 
