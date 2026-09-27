@@ -273,7 +273,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn ids(n: usize) -> Vec<DriveId> {
-        (0..n).map(|i| DriveId::derive(Some(&format!("naa.{i:016x}")), "M", &i.to_string())).collect()
+        (0..n).map(|i| DriveId::derive(Some(format!("naa.{i:016x}").as_str()), "M", &i.to_string())).collect()
     }
 
     fn drive(id: DriveId, name: &str) -> Drive {
@@ -359,7 +359,9 @@ mod tests {
 
         let timed_out: Vec<_> = outcomes.iter().filter(|(_, o)| !o.answered()).map(|(n, _)| n.as_str()).collect();
         assert_eq!(timed_out, ["nvme77n1"]);
-        assert!(peak.load(Ordering::SeqCst) <= 8, "at most 8 reads in flight, saw {}", peak.load(Ordering::SeqCst));
+        // 8 lanes; the hung read gave its lane back at the timeout but its
+        // thread is still in the collector: 8 + 1 stuck.
+        assert!(peak.load(Ordering::SeqCst) <= 9, "at most 8 + 1 stuck reads, saw {}", peak.load(Ordering::SeqCst));
         // 159 × 5 ms over 8 lanes ≈ 100 ms, plus the one 200 ms timeout.
         assert!(took < Duration::from_millis(1_200), "the round took {took:?}");
 

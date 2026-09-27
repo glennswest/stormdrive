@@ -167,11 +167,8 @@ pub async fn run(state: Arc<AppState>) {
                 while let Ok(more) = hotplug.try_recv() {
                     names.push(more);
                 }
-                tracing::info!(
-                    events = names.len(),
-                    first = %format!("{} {}", names[0].action, names[0].name),
-                    "hotplug: rescanning"
-                );
+                let first = format!("{} {}", names[0].action, names[0].name);
+                tracing::info!(events = names.len(), %first, "hotplug: rescanning");
                 hotplugged = true;
             }
         }
