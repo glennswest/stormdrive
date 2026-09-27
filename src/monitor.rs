@@ -360,7 +360,10 @@ async fn merge_shelves(state: &Arc<AppState>, fresh: topology::Shelves) {
 /// Replace the HBA table with this scan's; a card appearing, going away
 /// or coming back with different firmware is an event.
 async fn merge_hbas(state: &Arc<AppState>, fresh: crate::hba::Hbas) {
-    let msgs = crate::hba::diff(&state.hbas.read().await, &fresh);
+    let msgs = {
+        let old = state.hbas.read().await;
+        crate::hba::diff(&old, &fresh)
+    };
     *state.hbas.write().await = fresh;
     if !msgs.is_empty() {
         let mut log = state.events.write().await;
