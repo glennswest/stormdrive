@@ -318,8 +318,10 @@ rustkube-node#62 publishes the headroom; stormconsole#29 shows it.
       contract posted on stormblock#152
 - [x] kube status, feed metric + action, UI selector; tests (118), docs,
       changelog; sc-build + clippy pass on 9b9d357; v0.14.0
-- [ ] Golden (blocked on stormcentral#111 like v0.13.0), close #13.
-      Enforcement itself is stormblock#152
+- [x] sc-build passes on f34c3aa (v0.14.0), 118/118; status on #13,
+      contract on stormblock#152
+- [ ] Golden (blocked on stormcentral#111), then close #13. Enforcement
+      itself is stormblock#152
 
 ### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
 
@@ -397,7 +399,7 @@ with stable id. Found:
       - [x] sc-build passes on 4a69a06 (114/114); #17 closed
       - [x] v0.13.0 tagged (46ecff9)
       - [x] sc-build passes on 46ecff9 (114/114)
-      - [ ] RESUME HERE: golden blocked — two requests failed at the seal
+      - [ ] RESUME HERE (now v0.14.0, f34c3aa, covers #2/#12/#13): golden blocked — two requests failed at the seal
             ("no NVMe device appeared"): dev.g8.lo has no nvme-tcp since
             its reboot (stormcentral#111, owner/root). #2 and #12 proposed
             --after it, status posted on both. When #111 closes: request
