@@ -312,25 +312,23 @@ re-reads LBA 0 + GPT (and READ CAPACITY) of every drive every 30 s; no
 hotplug; an NVMe namespace under native multipath
 (`/sys/devices/virtual/nvme-subsystem/…`) has no PCIe location; no NVMe
 locate LED; nothing links a replacement drive to the one it replaces.
-- [ ] Health scheduler: its own task; each drive due at its own phase
-      (hash of id over the interval) so polls spread evenly; at most
-      `monitor.max_concurrent` (8) samples in flight; per-sample timeout
-      (`monitor.sample_timeout_secs`, 10) — a drive whose sample is still
-      stuck is skipped, not stacked; `GET /api/v1/monitor` cost stats
-- [ ] Trend: record on change or daily, not every poll; persist: compact
-      JSON, serialised under the lock, written outside it, skipped when
-      unchanged
-- [ ] Discovery: cache per device (dev_t, size, wwid) — READ CAPACITY and
-      the slab probe only for new/changed devices (and every 10 min)
-- [ ] Hotplug: netlink kobject uevents (block add/remove/change) trigger
-      a debounced discovery pass
-- [ ] NVMe location: multipath head → controller via `multipath/` links;
-      PCIe slot on the chain (switch downstream ports); `bay` from a
-      numeric slot label; locate via slot `attention` or NPEM LED
-- [ ] Replace: a new drive in the bay/slot of a missing one → `replaces`
-      link + event
-- [ ] Scale test (160 synthetic drives, one hung); docs (cost per poll
-      cycle), changelog, v0.15.0, sc-build, golden. Per-drive /metrics is #18
+- [x] Health scheduler (`poller.rs`): phase per drive, `max_concurrent`
+      8, `sample_timeout_secs` 10, stuck drives skipped; `GET
+      /api/v1/monitor` cost stats (3ef40c6)
+- [x] Trend on change or daily; persist compact, outside the lock,
+      skipped when unchanged (3ef40c6)
+- [x] Discovery probe cache, one /proc/mounts read, NVMe path nodes and
+      hidden disks skipped (2b536df)
+- [x] Hotplug (`hotplug.rs`): kernel uevents → debounced pass (07f8ab4)
+- [x] NVMe: multipath head → controller, slot on the chain, VMD BDFs,
+      bay from numeric slot, locate via attention / NPEM (ede48da)
+- [x] Replace: `replaces` by bay_key + event; `DELETE /api/v1/drives/{id}`
+      forget; feed/UI Forget (d1d4fcf, 202580b)
+- [x] Docs (architecture: cost per poll cycle table), changelog (fa9e8b9)
+- [ ] RESUME HERE: sc-build (build + test + clippy) on a206529 in flight;
+      fix what it finds; then v0.15.0, sc-build, golden (stormcentral#111
+      permitting), close #15 — not seen on a 160-bay chassis (none here);
+      /metrics is #18, UI grouping for hundreds of rows is #6
 
 ### #13: per-drive overcommit setting (2026-09-27) — IN PROGRESS
 
