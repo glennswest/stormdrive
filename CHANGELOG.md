@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.11.0] — 2026-09-27
+
 ### 2026-09-27
 - **fix:** present the stormblock engine token (#14, stormcos#104). stormblock
   v17 (stormblock#107) requires `Authorization: Bearer` on all of `/api/v1`,

@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.10.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.11.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -287,12 +287,14 @@ to 4096.
 
 stormblock v17 (stormblock#107) requires `Authorization: Bearer` on all of
 `/api/v1`; every stormdrive → engine call is a 401 today. #2 is parked.
-- [ ] Token lookup: `stormblock.api_token` / `$STORMBLOCK_API_TOKEN`, then
+- [x] Token lookup: `stormblock.api_token` / `$STORMBLOCK_API_TOKEN`, then
       `stormblock.token_file` / `$STORMBLOCK_TOKEN_FILE`, then
       `/run/stormblock/engine/api_token`, `/etc/stormblock/api_token`,
       `/var/lib/stormblock/api_token`; re-read while absent and on a 401
       (retry once); optional admin token for DELETE
-- [ ] Tests, docs, changelog, v0.11.0, sc-build, golden → post on stormcos#104
+- [x] Tests (98, incl. a stand-in engine: token absent → minted → rotated),
+      docs, changelog, v0.11.0; sc-build + clippy -D warnings pass on ff7ade0
+- [ ] Golden → post its name on stormcos#104
 
 ### #2: first look at a real node (R230, 2026-09-24) — IN PROGRESS
 
