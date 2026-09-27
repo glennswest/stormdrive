@@ -42,6 +42,12 @@ curl -s http://localhost:9092/api/v1/drives | python3 -m json.tool
 curl -s http://localhost:9092/api/v1/summary
 curl -s -X POST http://localhost:9092/api/v1/drives/<id>/locate -d '{"on":true}'
 
+# Where each drive is (shelf, bay, SAS phy, fleet/spare/failed), by WWN;
+# 304 while the generation is unchanged
+curl -s http://localhost:9092/api/v1/placement | python3 -m json.tool
+curl -s http://localhost:9092/api/v1/placement/naa.50014ee2bab11f8d
+curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:9092/api/v1/placement?since=<generation>"
+
 # NetApp shelves: identity, PSU/fan/temperature elements, slot map
 curl -s http://localhost:9092/api/v1/shelves | python3 -m json.tool
 # 520-byte drives (kernel: "Unsupported sector size") → 4096, one or many
