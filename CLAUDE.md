@@ -302,6 +302,36 @@ path}`, stormblock#136) with total/free/allocated slots.
 - [ ] Golden (shared with #2) blocked on stormcentral#111, then close #12;
       live reading rides the release (R230 runs 0.11.0)
 
+### #15: 160+ drives per node (2026-09-27) — IN PROGRESS
+
+Owner: 160 NVMe per 4U node (ASG-4116S-NU160R class), 1,600 per rack.
+Found in the code: health polling is sequential (one hung NVMe ioctl stalls
+the round for every drive); trend samples every poll (160 × 512 samples ≈
+5 MB of inventory JSON rewritten every tick, under the lock); discovery
+re-reads LBA 0 + GPT (and READ CAPACITY) of every drive every 30 s; no
+hotplug; an NVMe namespace under native multipath
+(`/sys/devices/virtual/nvme-subsystem/…`) has no PCIe location; no NVMe
+locate LED; nothing links a replacement drive to the one it replaces.
+- [ ] Health scheduler: its own task; each drive due at its own phase
+      (hash of id over the interval) so polls spread evenly; at most
+      `monitor.max_concurrent` (8) samples in flight; per-sample timeout
+      (`monitor.sample_timeout_secs`, 10) — a drive whose sample is still
+      stuck is skipped, not stacked; `GET /api/v1/monitor` cost stats
+- [ ] Trend: record on change or daily, not every poll; persist: compact
+      JSON, serialised under the lock, written outside it, skipped when
+      unchanged
+- [ ] Discovery: cache per device (dev_t, size, wwid) — READ CAPACITY and
+      the slab probe only for new/changed devices (and every 10 min)
+- [ ] Hotplug: netlink kobject uevents (block add/remove/change) trigger
+      a debounced discovery pass
+- [ ] NVMe location: multipath head → controller via `multipath/` links;
+      PCIe slot on the chain (switch downstream ports); `bay` from a
+      numeric slot label; locate via slot `attention` or NPEM LED
+- [ ] Replace: a new drive in the bay/slot of a missing one → `replaces`
+      link + event
+- [ ] Scale test (160 synthetic drives, one hung); docs (cost per poll
+      cycle), changelog, v0.15.0, sc-build, golden. Per-drive /metrics is #18
+
 ### #13: per-drive overcommit setting (2026-09-27) — IN PROGRESS
 
 Owner: "an attribute to drives to allow overcommit or not." Split per

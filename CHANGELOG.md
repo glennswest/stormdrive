@@ -4,6 +4,9 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-27
+- **docs:** work plan — #15, 160+ drives per node
+
+### 2026-09-27
 - **docs:** work plan — v0.14.0 sc-build passes; golden waits on stormcentral#111
 
 ## [v0.14.0] — 2026-09-27
