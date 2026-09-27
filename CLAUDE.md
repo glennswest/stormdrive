@@ -302,6 +302,25 @@ path}`, stormblock#136) with total/free/allocated slots.
 - [ ] Golden (shared with #2) blocked on stormcentral#111, then close #12;
       live reading rides the release (R230 runs 0.11.0)
 
+### #13: per-drive overcommit setting (2026-09-27) — IN PROGRESS
+
+Owner: "an attribute to drives to allow overcommit or not." Split per
+stormblock `docs/multi-drive.md` §5: stormdrive holds the per-drive
+setting; stormblock enforces it when a claim binds (stormblock#152);
+rustkube-node#62 publishes the headroom; stormconsole#29 shows it.
+- [ ] `overcommit {enabled, ratio}` on Drive, persisted, default off
+      (ratio 1.0); ratio finite, 1.0..=16.0 (typo guard)
+- [ ] `PUT/POST /api/v1/drives/{id}/overcommit`, event on change
+- [ ] usage: `promisable_bytes` = Σ slab total × ratio (× 1 when off);
+      `committed_bytes` + `headroom_bytes` once stormblock's slab listing
+      carries `committed_bytes` (null until then)
+- [ ] Push to stormblock: `PUT /api/v1/drives/{path}/overcommit
+      {enabled, ratio, drive{uuid,wwn,serial}}` for drives with slabs, on
+      change; a 404/405 = engine without #152 yet (quiet, retried); also
+      in the join body. Contract posted on stormblock#152
+- [ ] kube Drive status, feed metric, UI control; tests, docs, changelog,
+      v0.14.0, sc-build, golden (after stormcentral#111), close #13
+
 ### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
 
 rustkube-node mirrors each PV's placement: stormblock v17.1 names the

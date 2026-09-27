@@ -7,6 +7,7 @@
 - **docs:** work plan — #2: v0.13.0 tagged, sc-build + golden pending
 - **docs:** work plan — #12: shipped in v0.13.0, golden pending
 - **docs:** work plan — v0.13.0 golden blocked on stormcentral#111 (nvme-tcp on dev)
+- **docs:** work plan — #13 per-drive overcommit setting
 
 ## [v0.13.0] — 2026-09-27
 
