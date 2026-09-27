@@ -370,6 +370,10 @@ pub struct Drive {
     /// A drain in progress or finished, as stormblock last reported it.
     #[serde(default)]
     pub drain: Option<DrainRecord>,
+    /// Capacity, the stormblock slabs on the drive and how much is left
+    /// (#12). None until stormblock's slab listing has answered once.
+    #[serde(default)]
+    pub usage: Option<crate::usage::Usage>,
 }
 
 fn default_true() -> bool {
@@ -617,6 +621,7 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             drain: None,
+            usage: None,
         }
     }
 

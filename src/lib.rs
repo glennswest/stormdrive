@@ -23,5 +23,6 @@ pub mod ses;
 pub mod smart;
 pub mod stormblock;
 pub mod topology;
+pub mod usage;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

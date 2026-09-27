@@ -257,6 +257,9 @@ async fn tick(
 
     // Reconcile Active state against stormblock's drive list.
     if state.stormblock.enabled() {
+        if let Err(e) = refresh_usage(state).await {
+            tracing::debug!("stormblock slab listing: {e:#}");
+        }
         if let Err(e) = reconcile_stormblock(state).await {
             tracing::debug!("stormblock reconcile skipped: {e:#}");
         }
@@ -472,6 +475,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         pushed_labels: Vec::new(),
                         pushed_health: None,
                         drain: None,
+                        usage: None,
                     },
                 );
             }
@@ -493,6 +497,18 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
     for (id, sev, kind, msg) in events {
         log.push(id, sev, kind, msg);
     }
+}
+
+/// Each drive's usage (#12) from stormblock's slab listing. When the
+/// engine does not answer, the last known usage stays, with its time.
+async fn refresh_usage(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let slabs = state.stormblock.list_slabs().await?;
+    let now = SystemTime::now();
+    let mut inv = state.inventory.write().await;
+    for d in inv.drives.values_mut() {
+        d.usage = Some(crate::usage::compute(d, &slabs, now));
+    }
+    Ok(())
 }
 
 /// Reconcile fleet membership against stormblock's /api/v1/drives list

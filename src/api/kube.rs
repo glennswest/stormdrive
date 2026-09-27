@@ -132,6 +132,7 @@ fn drive_object(d: &Drive, node: &str) -> Value {
             "activity": d.activity,
             "health": d.health,
             "drain": d.drain,
+            "usage": d.usage,
             "pushedLabels": d.pushed_labels,
             "firstSeen": d.first_seen.duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0),
             "lastSeen": d.last_seen.duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0),
@@ -533,6 +534,7 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             drain: None,
+            usage: None,
         }
     }
 

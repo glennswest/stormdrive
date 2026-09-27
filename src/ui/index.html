@@ -113,6 +113,14 @@ function human(b){
   while(b>=1024 && i<u.length-1){b/=1024;i++}
   return b.toFixed(b>=100||i===0?0:1)+' '+u[i];
 }
+// How much is left (#12): used / free under the size, the slabs on hover.
+function usageLine(u){
+  if(!u) return '';
+  const slabs=(u.slabs||[]).map(s=>`${s.role} ${s.tier}: ${human(s.allocated_bytes)} used of ${human(s.total_bytes)}`)
+    .concat([`outside slabs: ${human(u.outside_slabs_bytes)}`]).join('\n');
+  const low=u.capacity_bytes&&u.free_bytes<u.capacity_bytes/10;
+  return `<br><span class="${low?'':'dim'} mono" title="${esc(slabs)}">${human(u.used_bytes)} used · ${human(u.free_bytes)} free</span>`;
+}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function chip(text, cls){return `<span class="chip ${cls}">${esc(text)}</span>`}
 function healthChip(h){
@@ -376,7 +384,7 @@ function render(){
     <td>${esc(d.model||'?')}<br><span class="dim mono">${esc(d.serial||'')}</span></td>
     <td>${esc((d.kind||'').replace('_',' '))}</td>
     <td class="mono">${esc(d.firmware||'')}</td>
-    <td>${human(d.capacity_bytes)}</td>
+    <td>${human(d.capacity_bytes)}${usageLine(d.usage)}</td>
     <td>${sectorChip(d)}</td>
     <td class="dim">${esc(locStr(d.location))}</td>
     <td>${healthChip(d.health)}</td>

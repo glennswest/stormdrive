@@ -128,6 +128,16 @@ fn drive_component(d: &Drive) -> ComponentSummary {
             Metric::new("capacity", stormview::format_bytes(d.capacity_bytes)).tone("muted"),
         );
     }
+    // How much is left (#12), once stormblock's slab listing has answered.
+    if let Some(u) = &d.usage {
+        metrics.push(Metric::new("used", stormview::format_bytes(u.used_bytes)));
+        let free = Metric::new("free", stormview::format_bytes(u.free_bytes));
+        let low = u.capacity_bytes > 0 && u.free_bytes < u.capacity_bytes / 10;
+        metrics.push(if low { free.tone("warn") } else { free });
+        if !u.slabs.is_empty() {
+            metrics.push(Metric::new("slabs", u.slabs.len().to_string()).tone("muted"));
+        }
+    }
     // How to address it right now. `id` is stable across boots and `path`
     // is not, which is exactly why both are worth having: the id to talk to
     // this daemon, the /dev node to run anything else against it.
@@ -519,6 +529,7 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             drain: None,
+            usage: None,
         }
     }
 
@@ -557,6 +568,26 @@ mod tests {
         assert_eq!(m("dev").as_deref(), Some("/dev/sdx"));
         assert_eq!(m("capacity").as_deref(), Some("1.0 GB"));
         assert_eq!(m("hours").as_deref(), Some("1000"));
+    }
+
+    #[test]
+    fn a_drive_says_how_much_is_left() {
+        let mut d = drive();
+        let c = drive_component(&d);
+        assert!(!c.metrics.iter().any(|m| m.label == "free"), "unknown until stormblock answers");
+
+        let slab = serde_json::json!({
+            "id": "s1", "role": "data", "tier": "warm", "slot_size": 1u64 << 20,
+            "total_slots": 1000, "free_slots": 50, "allocated_slots": 950,
+            "total_bytes": 1000u64 << 20, "free_bytes": 50u64 << 20,
+            "drive": { "serial": "S", "path": "/dev/sdx" },
+        });
+        d.usage = Some(crate::usage::compute(&d, &[slab], SystemTime::now()));
+        let c = drive_component(&d);
+        let m = |name: &str| c.metrics.iter().find(|m| m.label == name);
+        assert!(m("used").is_some());
+        assert_eq!(m("slabs").unwrap().value, "1");
+        assert_eq!(m("free").unwrap().tone.as_deref(), Some("warn"), "under a tenth left");
     }
 
     #[test]

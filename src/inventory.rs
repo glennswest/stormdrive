@@ -105,6 +105,7 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             drain: None,
+            usage: None,
         }
     }
 
