@@ -8,7 +8,7 @@ use crate::config::MonitorConfig;
 use crate::drive::{Activity, DriveId, DriveKind, HealthReport, HealthStatus, Membership};
 use crate::events::Severity;
 use crate::inventory::TrendSample;
-use crate::smart::{self, crit, Sample};
+use crate::smart::{crit, Sample};
 use crate::ses;
 use crate::{api::AppState, discovery, topology};
 use std::collections::HashMap;
@@ -126,7 +126,7 @@ impl Damper {
 }
 
 pub async fn run(state: Arc<AppState>) {
-    let mut damper = Damper::default();
+    tokio::spawn(health_loop(state.clone()));
     let mut fleet = crate::fleet::FleetState::default();
     let disc_int = state.config.discovery.interval_secs;
     let mon_int = state.config.monitor.interval_secs;
@@ -141,7 +141,7 @@ pub async fn run(state: Arc<AppState>) {
         if mon_due {
             last_mon = Some(std::time::Instant::now());
         }
-        if let Err(e) = tick(&state, &mut damper, disc_due, mon_due).await {
+        if let Err(e) = tick(&state, disc_due, mon_due).await {
             tracing::error!("monitor tick failed: {e:#}");
         }
         // The stormblock loop: labels, health, drains, auto-add. After the
@@ -156,7 +156,6 @@ pub async fn run(state: Arc<AppState>) {
 
 async fn tick(
     state: &Arc<AppState>,
-    damper: &mut Damper,
     discover: bool,
     collect: bool,
 ) -> anyhow::Result<()> {
@@ -177,86 +176,6 @@ async fn tick(
         return Ok(());
     }
 
-    // Collect health for every present drive.
-    let targets: Vec<(DriveId, crate::drive::Drive)> = {
-        let inv = state.inventory.read().await;
-        inv.drives
-            .iter()
-            .filter(|(_, d)| d.activity != Activity::Missing)
-            .map(|(id, d)| (*id, d.clone()))
-            .collect()
-    };
-    for (id, drive) in targets {
-        let d2 = drive.clone();
-        let sample = tokio::task::spawn_blocking(move || smart::collect(&d2)).await?;
-        // Baseline for growth detection: only a real prior sample counts —
-        // a fresh drive's default 0 would turn its first reading into a
-        // false "growing" warning.
-        let prev = {
-            let inv = state.inventory.read().await;
-            inv.drives
-                .get(&id)
-                .filter(|d| d.health.collected_at.is_some())
-                .map(|d| d.health.media_errors)
-        };
-        let (candidate, why) = evaluate(&state.config.monitor, &sample, prev);
-        let current = drive.health.status();
-        let effective = damper.apply(&state.config.monitor, id, current, candidate);
-
-        let mut inv = state.inventory.write().await;
-        if let Some(d) = inv.drives.get_mut(&id) {
-            d.health = HealthReport {
-                status: Some(effective),
-                temperature_c: sample.temperature_c,
-                power_on_hours: sample.power_on_hours,
-                media_errors: sample.media_errors,
-                available_spare_pct: sample.available_spare_pct,
-                wear_pct: sample.wear_pct,
-                critical_warning: sample.critical_warning,
-                messages: why.clone(),
-                collected_at: Some(SystemTime::now()),
-            };
-            // Health and designation stay separate: a health-Failed drive
-            // keeps its operator designation; the summary card and the UI
-            // treat health-Failed as bad regardless.
-        }
-        if d_is_ssd(&drive.kind) || sample.wear_pct.is_some() {
-            inv.record_trend(
-                id,
-                TrendSample {
-                    unix_secs: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                    wear_pct: sample.wear_pct,
-                    media_errors: sample.media_errors,
-                },
-            );
-        }
-        drop(inv);
-
-        if effective != current {
-            let sev = match effective {
-                HealthStatus::Failed | HealthStatus::Failing => Severity::Error,
-                HealthStatus::Warning => Severity::Warning,
-                _ => Severity::Info,
-            };
-            state.events.write().await.push(
-                Some(id),
-                sev,
-                "health",
-                format!(
-                    "{} ({}): {:?} → {:?}: {}",
-                    drive.name,
-                    drive.model,
-                    current,
-                    effective,
-                    why.join("; ")
-                ),
-            );
-        }
-    }
-
     // Reconcile Active state against stormblock's drive list.
     if state.stormblock.enabled() {
         if let Err(e) = refresh_usage(state).await {
@@ -269,6 +188,127 @@ async fn tick(
 
     state.persist().await;
     Ok(())
+}
+
+/// Health polling (#15): every present drive once per interval at its own
+/// phase, through the bounded, timed-out sampler. Wakes each second to
+/// start what is due and to apply what came back.
+async fn health_loop(state: Arc<AppState>) {
+    let interval = Duration::from_secs(state.config.monitor.interval_secs);
+    let mut schedule = crate::poller::Schedule::new(interval);
+    let mut damper = Damper::default();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                let (present, due) = {
+                    let inv = state.inventory.read().await;
+                    let present: Vec<DriveId> = inv
+                        .drives
+                        .values()
+                        .filter(|d| d.activity != Activity::Missing)
+                        .map(|d| d.id)
+                        .collect();
+                    let due: Vec<crate::drive::Drive> = schedule
+                        .take_due(std::time::Instant::now(), &present)
+                        .iter()
+                        .filter_map(|id| inv.drives.get(id).cloned())
+                        .collect();
+                    (present.len(), due)
+                };
+                state.poller.set_drives(present);
+                for d in due {
+                    let (tx, sampler) = (tx.clone(), state.poller.clone());
+                    tokio::spawn(async move {
+                        let out = sampler.sample(d.clone()).await;
+                        let _ = tx.send((d, out));
+                    });
+                }
+                state.poller.refresh_stuck();
+            }
+            Some((drive, out)) = rx.recv() => {
+                apply_outcome(&state, &mut damper, drive, out).await;
+            }
+        }
+    }
+}
+
+/// How often an unchanged wear/media-error reading is still recorded in
+/// the trend: once a day. A changed one is recorded when it changes.
+const TREND_HEARTBEAT_SECS: u64 = 86_400;
+
+/// One sample's worth of health: evaluate, damp, store, trend, event.
+async fn apply_outcome(
+    state: &Arc<AppState>,
+    damper: &mut Damper,
+    drive: crate::drive::Drive,
+    out: crate::poller::Outcome,
+) {
+    let id = drive.id;
+    let sample = out.sample(state.poller.timeout());
+    // Baseline for growth detection: only a real prior sample counts —
+    // a fresh drive's default 0 would turn its first reading into a
+    // false "growing" warning.
+    let (prev, current) = {
+        let inv = state.inventory.read().await;
+        let Some(d) = inv.drives.get(&id) else { return };
+        (d.health.collected_at.is_some().then_some(d.health.media_errors), d.health.status())
+    };
+    let (candidate, why) = evaluate(&state.config.monitor, &sample, prev);
+    let effective = damper.apply(&state.config.monitor, id, current, candidate);
+
+    let mut inv = state.inventory.write().await;
+    let Some(d) = inv.drives.get_mut(&id) else { return };
+    if out.answered() {
+        d.health = HealthReport {
+            status: Some(effective),
+            temperature_c: sample.temperature_c,
+            power_on_hours: sample.power_on_hours,
+            media_errors: sample.media_errors,
+            available_spare_pct: sample.available_spare_pct,
+            wear_pct: sample.wear_pct,
+            critical_warning: sample.critical_warning,
+            messages: why.clone(),
+            collected_at: Some(SystemTime::now()),
+        };
+    } else {
+        // No answer: the last readings stand; only the verdict and the
+        // reason move.
+        d.health.status = Some(effective);
+        d.health.messages = why.clone();
+    }
+    // Health and designation stay separate: a health-Failed drive keeps
+    // its operator designation; the summary card and the UI treat
+    // health-Failed as bad regardless.
+    if out.answered() && (d_is_ssd(&drive.kind) || sample.wear_pct.is_some()) {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let last = inv.trends.get(&id).and_then(|v| v.last()).cloned();
+        let due = last.map_or(true, |l| {
+            l.wear_pct != sample.wear_pct
+                || l.media_errors != sample.media_errors
+                || now.saturating_sub(l.unix_secs) >= TREND_HEARTBEAT_SECS
+        });
+        if due {
+            inv.record_trend(id, TrendSample { unix_secs: now, wear_pct: sample.wear_pct, media_errors: sample.media_errors });
+        }
+    }
+    drop(inv);
+
+    if effective != current {
+        let sev = match effective {
+            HealthStatus::Failed | HealthStatus::Failing => Severity::Error,
+            HealthStatus::Warning => Severity::Warning,
+            _ => Severity::Info,
+        };
+        state.events.write().await.push(
+            Some(id),
+            sev,
+            "health",
+            format!("{} ({}): {:?} → {:?}: {}", drive.name, drive.model, current, effective, why.join("; ")),
+        );
+    }
 }
 
 fn d_is_ssd(k: &DriveKind) -> bool {

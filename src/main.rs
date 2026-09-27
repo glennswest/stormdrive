@@ -60,6 +60,12 @@ async fn main() -> anyhow::Result<()> {
     let node_name = config.node_name();
     let stormblock = StormBlockClient::new(config.stormblock.clone());
     let listen = config.listen_addr.clone();
+    let poller = stormdrive::poller::Sampler::new(
+        Arc::new(stormdrive::smart::collect),
+        std::time::Duration::from_secs(config.monitor.interval_secs),
+        config.monitor.max_concurrent,
+        std::time::Duration::from_secs(config.monitor.sample_timeout_secs),
+    );
     let state = Arc::new(AppState {
         config,
         inventory: RwLock::new(inventory),
@@ -73,6 +79,8 @@ async fn main() -> anyhow::Result<()> {
         hbas: RwLock::new(std::collections::BTreeMap::new()),
         inventory_path,
         node_name,
+        poller,
+        persisted: Default::default(),
     });
 
     tokio::spawn(stormdrive::monitor::run(state.clone()));

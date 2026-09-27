@@ -43,6 +43,13 @@ pub struct AppState {
     pub hbas: RwLock<crate::hba::Hbas>,
     pub inventory_path: Option<PathBuf>,
     pub node_name: String,
+    /// Health reads: bounded, timed out, costed (#15).
+    pub poller: crate::poller::Sampler,
+    /// Hash of the inventory last written, so an unchanged one is not
+    /// rewritten.
+    /// Held across serialise + write, so two persists never land out of
+    /// order.
+    pub persisted: tokio::sync::Mutex<Option<u64>>,
 }
 
 impl AppState {
@@ -50,9 +57,27 @@ impl AppState {
         let Some(path) = &self.inventory_path else {
             return;
         };
-        let inv = self.inventory.read().await;
-        if let Err(e) = inv.save(path) {
-            tracing::error!("inventory persist failed: {e:#}");
+        // Serialise under the lock, write outside it: at 160 drives the
+        // write is the slow half, and every poll result waits on the lock.
+        let mut last = self.persisted.lock().await;
+        let bytes = match self.inventory.read().await.to_bytes() {
+            Ok(b) => b,
+            Err(e) => return tracing::error!("inventory persist failed: {e:#}"),
+        };
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut h);
+            h.finish()
+        };
+        if *last == Some(hash) {
+            return;
+        }
+        let path = path.clone();
+        match tokio::task::spawn_blocking(move || crate::inventory::write_atomic(&path, &bytes)).await {
+            Ok(Ok(())) => *last = Some(hash),
+            Ok(Err(e)) => tracing::error!("inventory persist failed: {e:#}"),
+            Err(e) => tracing::error!("inventory persist failed: {e}"),
         }
     }
 }
@@ -123,6 +148,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/components", get(components_feed))
         .route("/ws/components", get(ws_components))
+        .route("/api/v1/monitor", get(monitor_stats))
         .route("/api/v1/drives", get(list_drives))
         .route("/api/v1/drives/{id}", get(get_drive))
         .route("/api/v1/drives/{id}/health", get(get_drive_health))
@@ -235,6 +261,11 @@ async fn resolve_id(s: &AppState, handle: &str) -> Result<DriveId, ApiError> {
     inv.resolve(handle)
         .map(|d| d.id)
         .ok_or_else(|| ApiError::not_found(format!("drive {handle:?}")))
+}
+
+/// What health polling costs on this node, and which drives are stuck.
+async fn monitor_stats(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::to_value(s.poller.stats()).unwrap_or_default())
 }
 
 async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {

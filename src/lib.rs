@@ -19,6 +19,7 @@ pub mod hba;
 pub mod inventory;
 pub mod monitor;
 pub mod placement;
+pub mod poller;
 pub mod scsi;
 pub mod ses;
 pub mod smart;

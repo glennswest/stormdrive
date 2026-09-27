@@ -36,13 +36,13 @@ impl Inventory {
     /// Atomic write: tmp + rename, so a crash mid-write never leaves a torn
     /// inventory.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = PathBuf::from(format!("{}.tmp", path.display()));
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        write_atomic(path, &self.to_bytes()?)
+    }
+
+    /// Compact JSON: at 160 drives the file is rewritten every tick, and
+    /// pretty-printing roughly doubled it.
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
     }
 
     pub fn record_trend(&mut self, id: DriveId, sample: TrendSample) {
@@ -69,6 +69,17 @@ impl Inventory {
             .or_else(|| by(&|d| d.name == handle || d.path == handle || d.paths.iter().any(|p| p == handle)))
             .or_else(|| by(&|d| !d.serial.is_empty() && d.serial == handle))
     }
+}
+
+/// tmp + rename.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = PathBuf::from(format!("{}.tmp", path.display()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 #[cfg(test)]

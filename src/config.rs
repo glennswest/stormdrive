@@ -91,6 +91,11 @@ pub struct MonitorConfig {
     pub wear_crit_pct: u8,
     /// Consecutive samples required before a *worsening* transition sticks.
     pub hysteresis: u32,
+    /// Health reads in flight at once (#15): no thread per drive.
+    pub max_concurrent: usize,
+    /// A health read that has not answered by then counts as a failed
+    /// sample; the drive is not read again until the stuck read returns.
+    pub sample_timeout_secs: u64,
 }
 
 impl Default for MonitorConfig {
@@ -104,6 +109,8 @@ impl Default for MonitorConfig {
             wear_warn_pct: 80,
             wear_crit_pct: 95,
             hysteresis: 3,
+            max_concurrent: 8,
+            sample_timeout_secs: 10,
         }
     }
 }
@@ -189,6 +196,9 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("listen_addr {:?}: {e}", self.listen_addr))?;
         if self.monitor.interval_secs == 0 || self.discovery.interval_secs == 0 {
             anyhow::bail!("intervals must be non-zero");
+        }
+        if self.monitor.max_concurrent == 0 || self.monitor.sample_timeout_secs == 0 {
+            anyhow::bail!("monitor.max_concurrent and monitor.sample_timeout_secs must be non-zero");
         }
         if self.monitor.hysteresis == 0 {
             anyhow::bail!("monitor.hysteresis must be >= 1");
