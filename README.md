@@ -74,7 +74,7 @@ curl -s -X POST http://localhost:9092/api/v1/firmware -d '{"model":"ST1200MM0098
 
 ## Status
 
-v0.14.0 — discovery, health, fleet hand-off to stormblock, drive tests,
+v0.15.0 — discovery, health, fleet hand-off to stormblock, drive tests,
 NetApp shelf management (SES status, locate LEDs, dual-IOM merge),
 sector-size reformat (520 → 4096 via FORMAT UNIT, batch, with progress)
 and firmware updates (image store; WRITE BUFFER for SAS/SATA, Firmware

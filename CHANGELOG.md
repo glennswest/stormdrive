@@ -3,6 +3,8 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.15.0] — 2026-09-27
+
 ### 2026-09-27
 - **docs:** work plan — #15, 160+ drives per node
 - **perf:** health polling at 160+ drives (#15). Each drive is polled at

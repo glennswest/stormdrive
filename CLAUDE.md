@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.14.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.15.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -325,8 +325,9 @@ locate LED; nothing links a replacement drive to the one it replaces.
 - [x] Replace: `replaces` by bay_key + event; `DELETE /api/v1/drives/{id}`
       forget; feed/UI Forget (d1d4fcf, 202580b)
 - [x] Docs (architecture: cost per poll cycle table), changelog (fa9e8b9)
-- [ ] RESUME HERE: sc-build (build + test + clippy) on a206529 in flight;
-      fix what it finds; then v0.15.0, sc-build, golden (stormcentral#111
+- [x] sc-build + clippy pass on 4b595b8 (131/131; #20 was a test window
+      edge, closed); v0.15.0
+- [ ] RESUME HERE: sc-build on the v0.15.0 commit, golden (stormcentral#111
       permitting), close #15 — not seen on a 160-bay chassis (none here);
       /metrics is #18, UI grouping for hundreds of rows is #6
 
