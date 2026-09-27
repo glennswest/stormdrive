@@ -130,6 +130,16 @@ pub struct StormBlockConfig {
     pub drain_on_failing: bool,
     /// kind → slab tier overrides; DriveKind::default_tier() otherwise.
     pub tier_map: BTreeMap<String, String>,
+    /// The engine's bearer token, named explicitly (stormblock#107). Empty
+    /// = `$STORMBLOCK_API_TOKEN`, then `token_file`.
+    pub api_token: String,
+    /// Where the engine minted its token. Empty = `$STORMBLOCK_TOKEN_FILE`,
+    /// then `/run/stormblock/engine/api_token`, `/etc/stormblock/api_token`,
+    /// `/var/lib/stormblock/api_token`. Re-read while absent and on a 401.
+    pub token_file: String,
+    /// Destructive verbs (`DELETE`) need the engine's `admin_token` when a
+    /// node sets one. Empty = `$STORMBLOCK_ADMIN_TOKEN`, then `api_token`.
+    pub admin_token: String,
 }
 
 fn yes() -> bool {
@@ -146,6 +156,9 @@ impl Default for StormBlockConfig {
             push_health: true,
             drain_on_failing: true,
             tier_map: BTreeMap::new(),
+            api_token: String::new(),
+            token_file: String::new(),
+            admin_token: String::new(),
         }
     }
 }

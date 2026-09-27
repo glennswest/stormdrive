@@ -29,6 +29,14 @@ auto_add = false            # register qualified drives automatically (with loca
 auto_format_slab = true     # …and format a slab on them, tier from tier_map / kind
 push_health = true          # Failing/Failed → stormblock quarantines the drive and its legs
 drain_on_failing = true     # Failing/Failed in the fleet → drain, then retire when empty
+# The engine's bearer token (stormblock v17 requires it on all of /api/v1).
+# Empty = $STORMBLOCK_API_TOKEN, then the first readable file of token_file,
+# $STORMBLOCK_TOKEN_FILE, /run/stormblock/engine/api_token,
+# /etc/stormblock/api_token, /var/lib/stormblock/api_token. Re-read while
+# absent and on a 401, so the engine may mint or rotate it at any time.
+# api_token = ""
+# token_file = ""
+# admin_token = ""          # for DELETEs when the engine sets management.admin_token
 # tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", sas_hdd = "cool", sata_hdd = "cool" }
 
 [api]

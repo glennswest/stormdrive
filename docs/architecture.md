@@ -397,6 +397,19 @@ stormblock v11 closed the loop (stormblock#70, #71); this side closed in
 stormdrive 0.5.0. `stormblock.rs` is the client, `fleet.rs` the policy the
 monitor tick runs after every discovery/health round:
 
+- **Authenticated (stormblock#107, v17).** Every engine call carries
+  `Authorization: Bearer <token>`; without it all of `/api/v1` is a 401.
+  The token is found the way stormblock's own CLI finds it:
+  `stormblock.api_token` / `$STORMBLOCK_API_TOKEN`, then the first readable
+  non-empty file of `stormblock.token_file`, `$STORMBLOCK_TOKEN_FILE`,
+  `/run/stormblock/engine/api_token` (where stormcos mounts it into this
+  container, stormcos#104), `/etc/stormblock/api_token`,
+  `/var/lib/stormblock/api_token`. The engine mints it at boot, maybe after
+  stormdrive starts, so an absent token is looked up again on every call,
+  and a 401 re-reads it and retries once when it changed. `DELETE`s use
+  `stormblock.admin_token` / `$STORMBLOCK_ADMIN_TOKEN` when set (the
+  engine's `management.admin_token`), else the same token.
+
 - **Register with labels + identity.** `POST /api/v1/drives {path, labels,
   uuid}` — `labels` are the location as `Location::labels()` resolves it
   (`shelf`, `bay`, `hba`, `pcie_slot`), `uuid` is our stable `DriveId`. They
@@ -465,6 +478,7 @@ hysteresis      = 3                 # consecutive samples before a transition
 enabled  = true
 url      = "http://127.0.0.1:9090"
 auto_add = false                    # phase 4; explicit opt-in
+token_file = ""                     # engine bearer token; empty = stormblock CLI lookup order
 tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", hdd = "cool" }
 
 [api]

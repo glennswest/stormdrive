@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### 2026-09-27
+- **fix:** present the stormblock engine token (#14, stormcos#104). stormblock
+  v17 (stormblock#107) requires `Authorization: Bearer` on all of `/api/v1`,
+  so every stormdrive → engine call — drive list, add, labels, slabs, health
+  reports, drains — was a 401, and quarantine and drain stopped working.
+  Every call now carries the token, found in stormblock's CLI order
+  (`stormblock.api_token` / `$STORMBLOCK_API_TOKEN`, then `token_file`,
+  `$STORMBLOCK_TOKEN_FILE`, `/run/stormblock/engine/api_token`,
+  `/etc/stormblock/api_token`, `/var/lib/stormblock/api_token`). An absent
+  token is looked up again on every call (the engine mints it at boot), and
+  a 401 re-reads it and retries once. `DELETE`s use `admin_token` when set.
+
 ### 2026-09-24
 - **docs:** work plan — v0.10.0 passes sc-build; golden request pending (#2)
 - **docs:** work plan — golden-stormdrive-b0941b2857a0 built, release request stormcos#70 (#2)

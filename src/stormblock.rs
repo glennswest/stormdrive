@@ -11,13 +11,85 @@ use crate::config::StormBlockConfig;
 use crate::drive::DriveKind;
 use serde::Deserialize;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use uuid::Uuid;
+
+/// Where the engine mints its token when nothing names one (stormblock#107;
+/// the first is where stormcos mounts it into this container, stormcos#104).
+const DEFAULT_TOKEN_FILES: &[&str] = &[
+    "/run/stormblock/engine/api_token",
+    "/etc/stormblock/api_token",
+    "/var/lib/stormblock/api_token",
+];
 
 #[derive(Clone)]
 pub struct StormBlockClient {
     cfg: StormBlockConfig,
     http: reqwest::Client,
+    /// The engine's bearer token. The engine mints it at boot, possibly
+    /// after we start, and may rotate it: `None` is re-read on every call,
+    /// and a 401 re-reads it once.
+    token: Arc<RwLock<Option<String>>>,
+    /// Named explicitly (config or env) for destructive verbs; `None` =
+    /// the ordinary token covers them.
+    admin_token: Option<String>,
+}
+
+/// Where the engine token comes from, in stormblock's own CLI order: a
+/// named token first, then the first readable non-empty file.
+#[derive(Debug, Clone, PartialEq)]
+struct TokenSource {
+    explicit: Option<String>,
+    files: Vec<PathBuf>,
+}
+
+impl TokenSource {
+    fn from_config(cfg: &StormBlockConfig) -> Self {
+        Self::resolve(
+            &cfg.api_token,
+            std::env::var("STORMBLOCK_API_TOKEN").ok(),
+            &cfg.token_file,
+            std::env::var("STORMBLOCK_TOKEN_FILE").ok(),
+            DEFAULT_TOKEN_FILES,
+        )
+    }
+
+    fn resolve(
+        cfg_token: &str,
+        env_token: Option<String>,
+        cfg_file: &str,
+        env_file: Option<String>,
+        defaults: &[&str],
+    ) -> Self {
+        let explicit = non_empty(cfg_token).or_else(|| env_token.as_deref().and_then(non_empty));
+        let mut files: Vec<PathBuf> = Vec::new();
+        let named = [non_empty(cfg_file), env_file.as_deref().and_then(non_empty)];
+        for f in named.into_iter().flatten().chain(defaults.iter().map(|d| d.to_string())) {
+            let f = PathBuf::from(f);
+            if !files.contains(&f) {
+                files.push(f);
+            }
+        }
+        Self { explicit, files }
+    }
+
+    fn read(&self) -> Option<String> {
+        if let Some(t) = &self.explicit {
+            return Some(t.clone());
+        }
+        self.files.iter().find_map(|f| read_token_file(f))
+    }
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+fn read_token_file(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok().as_deref().and_then(non_empty)
 }
 
 /// What stormblock says about a drain (`GET /api/v1/drives/{id}/drain`).
@@ -47,12 +119,73 @@ impl DrainStatus {
 
 impl StormBlockClient {
     pub fn new(cfg: StormBlockConfig) -> Self {
+        let admin_token = non_empty(&cfg.admin_token).or_else(|| {
+            std::env::var("STORMBLOCK_ADMIN_TOKEN").ok().as_deref().and_then(non_empty)
+        });
+        let token = TokenSource::from_config(&cfg).read();
+        if token.is_none() && cfg.enabled {
+            tracing::warn!("no stormblock engine token yet; engine calls will retry the lookup");
+        }
         Self {
             cfg,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
                 .expect("reqwest client"),
+            token: Arc::new(RwLock::new(token)),
+            admin_token,
+        }
+    }
+
+    /// Re-read the engine token and remember it; the new value.
+    fn reload_token(&self) -> Option<String> {
+        let t = TokenSource::from_config(&self.cfg).read();
+        *self.token.write().unwrap_or_else(|e| e.into_inner()) = t.clone();
+        t
+    }
+
+    /// The token for this call. An absent token is looked up again every
+    /// time: the engine writes it at boot, maybe after we start.
+    fn bearer(&self, admin: bool) -> Option<String> {
+        if admin {
+            if let Some(t) = &self.admin_token {
+                return Some(t.clone());
+            }
+        }
+        let cached = self.token.read().unwrap_or_else(|e| e.into_inner()).clone();
+        cached.or_else(|| self.reload_token())
+    }
+
+    /// Every engine call goes through here (stormblock#107: all of
+    /// `/api/v1` needs `Authorization: Bearer`). A 401 re-reads the token
+    /// and, when it changed, retries once.
+    async fn send(
+        &self,
+        req: reqwest::RequestBuilder,
+        admin: bool,
+    ) -> anyhow::Result<reqwest::Response> {
+        let retry = req.try_clone();
+        let used = self.bearer(admin);
+        let resp = with_bearer(req, used.as_deref()).send().await?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+        if admin && self.admin_token.is_some() {
+            return Ok(resp);
+        }
+        let fresh = self.reload_token();
+        match (retry, fresh) {
+            (Some(req), Some(fresh)) if Some(&fresh) != used.as_ref() => {
+                tracing::info!("stormblock refused our token; retrying with the re-read one");
+                Ok(with_bearer(req, Some(fresh.as_str())).send().await?)
+            }
+            _ => {
+                tracing::warn!(
+                    have_token = used.is_some(),
+                    "stormblock returned 401; set stormblock.token_file or $STORMBLOCK_TOKEN_FILE"
+                );
+                Ok(resp)
+            }
         }
     }
 
@@ -71,9 +204,7 @@ impl StormBlockClient {
     /// GET /api/v1/drives — stormblock's view of its open drives.
     pub async fn list_drives(&self) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .http
-            .get(self.url("/api/v1/drives"))
-            .send()
+            .send(self.http.get(self.url("/api/v1/drives")), false)
             .await?
             .error_for_status()?
             .json()
@@ -109,10 +240,7 @@ impl StormBlockClient {
             body["uuid"] = Value::String(u.to_string());
         }
         Ok(self
-            .http
-            .post(self.url("/api/v1/drives"))
-            .json(&body)
-            .send()
+            .send(self.http.post(self.url("/api/v1/drives")).json(&body), false)
             .await?
             .error_for_status()?
             .json()
@@ -134,10 +262,11 @@ impl StormBlockClient {
         if let Some(u) = uuid {
             map.insert("drive".into(), Value::String(u.to_string()));
         }
-        self.http
+        let req = self
+            .http
             .put(self.drive_url(id_or_path, "/labels"))
-            .json(&serde_json::json!({ "labels": map }))
-            .send()
+            .json(&serde_json::json!({ "labels": map }));
+        self.send(req, false)
             .await?
             .error_for_status()?;
         Ok(())
@@ -146,9 +275,7 @@ impl StormBlockClient {
     /// DELETE /api/v1/drives/{id} — id may be a UUID or a path.
     pub async fn delete_drive(&self, id_or_path: &str, force: bool) -> anyhow::Result<()> {
         let q = if force { "?force=true" } else { "" };
-        self.http
-            .delete(self.drive_url(id_or_path, q))
-            .send()
+        self.send(self.http.delete(self.drive_url(id_or_path, q)), true)
             .await?
             .error_for_status()?;
         Ok(())
@@ -158,9 +285,7 @@ impl StormBlockClient {
     /// identity (stormblock#70 item 2). Empty means nothing lives there.
     pub async fn drive_slabs(&self, id_or_path: &str) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .http
-            .get(self.drive_url(id_or_path, "/slabs"))
-            .send()
+            .send(self.http.get(self.drive_url(id_or_path, "/slabs")), false)
             .await?
             .error_for_status()?
             .json()
@@ -171,9 +296,7 @@ impl StormBlockClient {
     /// GET /api/v1/slabs — the whole pool, for the summary card.
     pub async fn list_slabs(&self) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .http
-            .get(self.url("/api/v1/slabs"))
-            .send()
+            .send(self.http.get(self.url("/api/v1/slabs")), false)
             .await?
             .error_for_status()?
             .json()
@@ -191,11 +314,12 @@ impl StormBlockClient {
 
     /// POST /api/v1/slabs {device_path, tier} — format the drive as a slab.
     pub async fn format_slab(&self, device_path: &str, tier: &str) -> anyhow::Result<Value> {
-        Ok(self
+        let req = self
             .http
             .post(self.url("/api/v1/slabs"))
-            .json(&serde_json::json!({ "device_path": device_path, "tier": tier }))
-            .send()
+            .json(&serde_json::json!({ "device_path": device_path, "tier": tier }));
+        Ok(self
+            .send(req, false)
             .await?
             .error_for_status()?
             .json()
@@ -213,11 +337,12 @@ impl StormBlockClient {
         reason: Option<&str>,
         drain: bool,
     ) -> anyhow::Result<Value> {
-        Ok(self
+        let req = self
             .http
             .post(self.drive_url(id_or_path, "/health"))
-            .json(&serde_json::json!({ "state": state, "reason": reason, "drain": drain }))
-            .send()
+            .json(&serde_json::json!({ "state": state, "reason": reason, "drain": drain }));
+        Ok(self
+            .send(req, false)
             .await?
             .error_for_status()?
             .json()
@@ -227,9 +352,7 @@ impl StormBlockClient {
     /// POST /api/v1/drives/{id}/drain — empty every slab on the drive.
     pub async fn start_drain(&self, id_or_path: &str) -> anyhow::Result<DrainStatus> {
         Ok(self
-            .http
-            .post(self.drive_url(id_or_path, "/drain"))
-            .send()
+            .send(self.http.post(self.drive_url(id_or_path, "/drain")), false)
             .await?
             .error_for_status()?
             .json()
@@ -238,7 +361,9 @@ impl StormBlockClient {
 
     /// GET /api/v1/drives/{id}/drain — where the drain is.
     pub async fn drain_status(&self, id_or_path: &str) -> anyhow::Result<Option<DrainStatus>> {
-        let resp = self.http.get(self.drive_url(id_or_path, "/drain")).send().await?;
+        let resp = self
+            .send(self.http.get(self.drive_url(id_or_path, "/drain")), false)
+            .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -247,9 +372,7 @@ impl StormBlockClient {
 
     /// DELETE /api/v1/drives/{id}/drain — stop a drain; what moved stays moved.
     pub async fn cancel_drain(&self, id_or_path: &str) -> anyhow::Result<()> {
-        self.http
-            .delete(self.drive_url(id_or_path, "/drain"))
-            .send()
+        self.send(self.http.delete(self.drive_url(id_or_path, "/drain")), true)
             .await?
             .error_for_status()?;
         Ok(())
@@ -276,6 +399,13 @@ impl StormBlockClient {
 
 /// Percent-encode the path-segment characters that matter for a /dev path
 /// used as a URL path parameter.
+fn with_bearer(req: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::RequestBuilder {
+    match token {
+        Some(t) => req.bearer_auth(t),
+        None => req,
+    }
+}
+
 fn urlencode_path(s: &str) -> String {
     s.replace('%', "%25").replace('/', "%2F")
 }
@@ -308,5 +438,124 @@ mod tests {
         let s: DrainStatus =
             serde_json::from_value(serde_json::json!({ "drive": "/dev/sdb", "state": "running" })).unwrap();
         assert!(s.is_running());
+    }
+
+    #[test]
+    fn token_lookup_follows_the_cli_order() {
+        let t = TokenSource::resolve("", Some("env-tok".into()), "", None, DEFAULT_TOKEN_FILES);
+        assert_eq!(t.explicit.as_deref(), Some("env-tok"));
+        let t = TokenSource::resolve(" cfg-tok\n", Some("env-tok".into()), "", None, &[]);
+        assert_eq!(t.explicit.as_deref(), Some("cfg-tok"));
+
+        let t = TokenSource::resolve("", None, "/cfg/tok", Some("/env/tok".into()), DEFAULT_TOKEN_FILES);
+        assert_eq!(t.explicit, None);
+        let files: Vec<_> = t.files.iter().map(|p| p.to_str().unwrap()).collect();
+        assert_eq!(
+            files,
+            [
+                "/cfg/tok",
+                "/env/tok",
+                "/run/stormblock/engine/api_token",
+                "/etc/stormblock/api_token",
+                "/var/lib/stormblock/api_token"
+            ]
+        );
+        // The stormcos unit names the default path: no duplicate.
+        let t = TokenSource::resolve(
+            "",
+            None,
+            "",
+            Some("/run/stormblock/engine/api_token".into()),
+            DEFAULT_TOKEN_FILES,
+        );
+        assert_eq!(t.files.len(), 3);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("stormdrive-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn token_file_is_read_trimmed_and_skips_empty_files() {
+        let d = scratch("files");
+        let (a, b) = (d.join("a"), d.join("b"));
+        let src = TokenSource { explicit: None, files: vec![a.clone(), b.clone()] };
+        assert_eq!(src.read(), None);
+        std::fs::write(&a, "\n").unwrap();
+        std::fs::write(&b, "tok-b\n").unwrap();
+        assert_eq!(src.read().as_deref(), Some("tok-b"));
+        std::fs::write(&a, "tok-a").unwrap();
+        assert_eq!(src.read().as_deref(), Some("tok-a"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A stand-in engine that answers only the bearer token in `want`.
+    async fn fake_engine(want: Arc<RwLock<String>>) -> String {
+        use axum::http::{HeaderMap, StatusCode};
+        let app = axum::Router::new().route(
+            "/api/v1/drives",
+            axum::routing::get(move |h: HeaderMap| {
+                let want = want.clone();
+                async move {
+                    let expect = format!("Bearer {}", want.read().unwrap());
+                    let got = h.get("authorization").and_then(|v| v.to_str().ok());
+                    if got == Some(expect.as_str()) {
+                        (StatusCode::OK, axum::Json(serde_json::json!({ "items": [{ "path": "/dev/sdb" }] })))
+                    } else {
+                        (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "auth" })))
+                    }
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn token_absent_at_start_then_minted_then_rotated() {
+        let d = scratch("engine");
+        let file = d.join("api_token");
+        let want = Arc::new(RwLock::new("first".to_string()));
+        let url = fake_engine(want.clone()).await;
+        let cfg = StormBlockConfig {
+            url,
+            token_file: file.to_str().unwrap().into(),
+            ..Default::default()
+        };
+        let c = StormBlockClient::new(cfg);
+
+        // The engine has not minted it yet: 401, and nothing cached.
+        let e = c.list_drives().await.unwrap_err();
+        assert!(e.to_string().contains("401"), "{e}");
+
+        // Minted after we started: the next call finds it with no restart.
+        std::fs::write(&file, "first\n").unwrap();
+        assert_eq!(c.list_drives().await.unwrap().len(), 1);
+
+        // Rotated: the cached token gets a 401, the re-read one succeeds.
+        std::fs::write(&file, "second").unwrap();
+        *want.write().unwrap() = "second".into();
+        assert_eq!(c.list_drives().await.unwrap().len(), 1);
+        assert_eq!(c.token.read().unwrap().as_deref(), Some("second"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn admin_token_is_used_only_for_destructive_verbs() {
+        let cfg = StormBlockConfig {
+            api_token: "ops".into(),
+            admin_token: "root".into(),
+            ..Default::default()
+        };
+        let c = StormBlockClient::new(cfg);
+        assert_eq!(c.bearer(false).as_deref(), Some("ops"));
+        assert_eq!(c.bearer(true).as_deref(), Some("root"));
+        let c = StormBlockClient::new(StormBlockConfig { api_token: "ops".into(), ..Default::default() });
+        assert_eq!(c.bearer(true).as_deref(), Some("ops"));
     }
 }
