@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-09-27
+- **docs:** work plan — v0.15.0 verified; golden waits on stormcentral#111
+
 ## [v0.15.0] — 2026-09-27
 
 ### 2026-09-27

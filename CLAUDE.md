@@ -327,8 +327,8 @@ locate LED; nothing links a replacement drive to the one it replaces.
 - [x] Docs (architecture: cost per poll cycle table), changelog (fa9e8b9)
 - [x] sc-build + clippy pass on 4b595b8 (131/131; #20 was a test window
       edge, closed); v0.15.0
-- [ ] RESUME HERE: sc-build on the v0.15.0 commit, golden (stormcentral#111
-      permitting), close #15 — not seen on a 160-bay chassis (none here);
+- [x] sc-build passes on 8a86c76 (v0.15.0), 131/131; status on #15
+- [ ] Golden (blocked on stormcentral#111), then close #15 — not seen on a 160-bay chassis (none here);
       /metrics is #18, UI grouping for hundreds of rows is #6
 
 ### #13: per-drive overcommit setting (2026-09-27) — IN PROGRESS
@@ -428,7 +428,7 @@ with stable id. Found:
       - [x] sc-build passes on 4a69a06 (114/114); #17 closed
       - [x] v0.13.0 tagged (46ecff9)
       - [x] sc-build passes on 46ecff9 (114/114)
-      - [ ] RESUME HERE (now v0.14.0, f34c3aa, covers #2/#12/#13): golden blocked — two requests failed at the seal
+      - [ ] RESUME HERE (now v0.15.0, 8a86c76, covers #2/#12/#13/#15): golden blocked — two requests failed at the seal
             ("no NVMe device appeared"): dev.g8.lo has no nvme-tcp since
             its reboot (stormcentral#111, owner/root). #2 and #12 proposed
             --after it, status posted on both. When #111 closes: request
