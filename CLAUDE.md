@@ -283,6 +283,24 @@ to 4096.
       a real drive: needs a vendor image for the ST1200MM0098 / X425 on
       stormblock1
 
+### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — IN PROGRESS
+
+rustkube-node mirrors each PV's placement: stormblock v17.1 names the
+drives by `wwn` (raw sysfs wwid) + `serial` with a `generation` feed
+(stormblock#136); stormdrive supplies where each drive physically is.
+Existing: `/api/v1/drives` + kube Drive carry location, but the kube
+fingerprint churns on every health sample, a re-bay that keeps the /dev
+name is never re-located, no move event, no SAS phy.
+- [ ] `GET /api/v1/placement` (+ `/{wwn|serial|uuid|path}`): per drive
+      wwn, serial, shelf (key/logical id/model/serial), bay, SAS address,
+      phy, expander, HBA, PCIe, membership/designation/activity/health;
+      shelves list; `generation` = FNV over placement fields only (53-bit,
+      stable across restarts), ETag, `?since=` / If-None-Match → 304
+- [ ] Resolve order uuid → wwn (case-insensitive) → path/name → serial
+- [ ] Re-locate every discovery pass; `location` event on a move
+- [ ] `sas_phy` + `expander` in Location (sysfs port → phy)
+- [ ] Tests, docs, changelog, release, sc-build, golden, close #10
+
 ### #14: present the stormblock engine token (P0, stormcos#104, 2026-09-27) — DONE
 
 stormblock v17 (stormblock#107) requires `Authorization: Bearer` on all of
