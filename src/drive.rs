@@ -133,6 +133,14 @@ pub struct Location {
     pub bay: Option<u32>,
     /// The drive's own SAS address.
     pub sas_address: Option<String>,
+    /// The phy its SAS end device is attached through: an expander phy
+    /// (a shelf's slot wiring) or an HBA phy when direct-attached.
+    #[serde(default)]
+    pub sas_phy: Option<u32>,
+    /// SAS address of the expander that phy belongs to; None when the
+    /// drive hangs off the HBA directly.
+    #[serde(default)]
+    pub expander: Option<String>,
     /// NVMe drives: the namespace's controller BDF / physical slot.
     pub pcie_addr: Option<String>,
     pub pcie_slot: Option<String>,
@@ -159,6 +167,69 @@ impl Location {
             out.push(("pcie_slot".into(), s.clone()));
         }
         out
+    }
+
+    /// Where a person would walk to, for events: "DS224C 5000… bay 4",
+    /// "PCIe slot 3", or "unplaced".
+    pub fn place(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(sh) = &self.shelf {
+            parts.push(sh.display());
+        }
+        if let Some(b) = self.bay {
+            parts.push(format!("bay {b}"));
+        }
+        if let Some(s) = &self.pcie_slot {
+            parts.push(format!("PCIe slot {s}"));
+        }
+        if parts.is_empty() {
+            "unplaced".into()
+        } else {
+            parts.join(" ")
+        }
+    }
+
+    /// This rescan's location, merged with what we knew. On the same shelf
+    /// (or with no shelf either time) a field the rescan could not read —
+    /// a bay from an SES page that failed this pass, the shelf's model —
+    /// keeps its known value instead of flapping to unknown; a value that
+    /// is present and different wins, which is how a re-bay shows up. A
+    /// different shelf is a different place: the rescan is taken whole.
+    pub fn refreshed(&self, fresh: Location) -> Location {
+        let old_key = self.shelf.as_ref().and_then(|s| s.key());
+        let new_key = fresh.shelf.as_ref().and_then(|s| s.key());
+        if old_key != new_key {
+            return fresh;
+        }
+        let shelf = match (self.shelf.as_ref(), fresh.shelf) {
+            (Some(o), Some(n)) => Some(Shelf {
+                id: n.id.or_else(|| o.id.clone()),
+                vendor: n.vendor.or_else(|| o.vendor.clone()),
+                model: n.model.or_else(|| o.model.clone()),
+                serial: n.serial.or_else(|| o.serial.clone()),
+                sas_address: n.sas_address.or_else(|| o.sas_address.clone()),
+                logical_id: n.logical_id.or_else(|| o.logical_id.clone()),
+            }),
+            (_, n) => n,
+        };
+        Location {
+            controller: fresh.controller.or_else(|| self.controller.clone()),
+            shelf,
+            bay: fresh.bay.or(self.bay),
+            sas_address: fresh.sas_address.or_else(|| self.sas_address.clone()),
+            sas_phy: fresh.sas_phy.or(self.sas_phy),
+            expander: fresh.expander.or_else(|| self.expander.clone()),
+            pcie_addr: fresh.pcie_addr.or_else(|| self.pcie_addr.clone()),
+            pcie_slot: fresh.pcie_slot.or_else(|| self.pcie_slot.clone()),
+        }
+    }
+
+    /// Did the drive physically move (or get placed for the first time)
+    /// between `self` and `now`? Shelf, bay, HBA and PCIe slot — the
+    /// failure-domain labels — are what count; detail filling in is not a
+    /// move.
+    pub fn moved_to(&self, now: &Location) -> bool {
+        self.labels() != now.labels()
     }
 }
 
@@ -762,5 +833,44 @@ mod tests {
         v.as_object_mut().unwrap().remove("pushed_health");
         let old: Drive = serde_json::from_value(v).unwrap();
         assert!(old.drain.is_none() && old.pushed_labels.is_empty());
+    }
+
+    fn shelf_bay(key: &str, model: Option<&str>, bay: Option<u32>) -> Location {
+        Location {
+            shelf: Some(Shelf {
+                logical_id: Some(key.into()),
+                model: model.map(Into::into),
+                ..Default::default()
+            }),
+            bay,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_rescan_that_loses_detail_keeps_the_known_place() {
+        let known = shelf_bay("5000a098", Some("DS224C"), Some(4));
+        // SES failed this pass: same shelf, no model, no bay.
+        let now = known.refreshed(shelf_bay("5000a098", None, None));
+        assert_eq!(now, known);
+        assert!(!known.moved_to(&now));
+    }
+
+    #[test]
+    fn a_rebay_and_a_new_shelf_are_moves() {
+        let known = shelf_bay("5000a098", Some("DS224C"), Some(4));
+        let rebay = known.refreshed(shelf_bay("5000a098", None, Some(9)));
+        assert_eq!(rebay.bay, Some(9));
+        assert_eq!(rebay.shelf.as_ref().unwrap().model.as_deref(), Some("DS224C"));
+        assert!(known.moved_to(&rebay));
+
+        let other = known.refreshed(shelf_bay("5000b111", None, None));
+        assert_eq!(other, shelf_bay("5000b111", None, None), "a new shelf is taken whole");
+        assert!(known.moved_to(&other));
+
+        let placed = Location::default().refreshed(known.clone());
+        assert!(Location::default().moved_to(&placed));
+        assert_eq!(placed.place(), "DS224C 5000a098 bay 4");
+        assert_eq!(Location::default().place(), "unplaced");
     }
 }

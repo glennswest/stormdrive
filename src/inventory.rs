@@ -62,13 +62,12 @@ impl Inventory {
                 return Some(d);
             }
         }
-        self.drives.values().find(|d| {
-            d.name == handle
-                || d.path == handle
-                || d.paths.iter().any(|p| p == handle)
-                || d.serial == handle
-                || d.wwid.as_deref() == Some(handle)
-        })
+        // Most specific first: a WWN names one namespace, where NVMe-oF
+        // namespaces can share a controller serial (stormblock#136).
+        let by = |f: &dyn Fn(&Drive) -> bool| self.drives.values().find(|d| f(*d));
+        by(&|d| d.wwid.as_deref().is_some_and(|w| w.eq_ignore_ascii_case(handle)))
+            .or_else(|| by(&|d| d.name == handle || d.path == handle || d.paths.iter().any(|p| p == handle)))
+            .or_else(|| by(&|d| !d.serial.is_empty() && d.serial == handle))
     }
 }
 
@@ -136,6 +135,23 @@ mod tests {
         assert!(loaded.resolve(&id.to_string()).is_some());
         assert!(loaded.resolve("nope").is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_prefers_the_wwn_over_a_shared_serial() {
+        // NVMe-oF namespaces share a controller serial; the WWN tells them
+        // apart, and it is what stormblock's placement names.
+        let mut inv = Inventory::default();
+        for (name, wwn) in [("nvme1n1", "uuid.aaaa"), ("nvme1n2", "uuid.bbbb")] {
+            let mut d = drive(name, "SB010A");
+            d.wwid = Some(wwn.into());
+            d.id = DriveId::derive(Some(wwn), "M", "SB010A");
+            inv.drives.insert(d.id, d);
+        }
+        assert_eq!(inv.resolve("uuid.bbbb").unwrap().name, "nvme1n2");
+        assert_eq!(inv.resolve("UUID.AAAA").unwrap().name, "nvme1n1");
+        assert_eq!(inv.resolve("/dev/nvme1n2").unwrap().name, "nvme1n2");
+        assert!(inv.resolve("SB010A").is_some());
     }
 
     #[test]

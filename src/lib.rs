@@ -17,6 +17,7 @@ pub mod fleet;
 pub mod format;
 pub mod inventory;
 pub mod monitor;
+pub mod placement;
 pub mod scsi;
 pub mod ses;
 pub mod smart;

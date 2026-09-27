@@ -41,6 +41,44 @@ pub fn parse_vpd80(raw: &[u8]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// SAS wiring from a drive's canonical sysfs path
+/// (`…/host0/port-0:0/expander-0:0/port-0:0:5/end_device-0:0:5/…`): the
+/// phy its end device is attached through — the lowest one of a wide port
+/// — and the SAS address of the expander that phy is on, when it is on
+/// one. Behind a shelf's expander the phy is the shelf's own slot wiring;
+/// direct-attached it is the HBA phy.
+pub fn sas_attachment(real: &std::path::Path) -> (Option<u32>, Option<String>) {
+    use std::path::PathBuf;
+    let read = |p: PathBuf| {
+        std::fs::read_to_string(p)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let comps: Vec<String> = real
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    let Some(ed) = comps.iter().position(|c| c.starts_with("end_device-")) else {
+        return (None, None);
+    };
+    if ed < 1 || !comps[ed - 1].starts_with("port-") {
+        return (None, None);
+    }
+    let prefix = |n: usize| comps[..n].iter().collect::<PathBuf>();
+    let phy = std::fs::read_dir(prefix(ed))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("phy-"))
+        .filter_map(|e| read(e.path().join("phy_identifier"))?.parse::<u32>().ok())
+        .min();
+    let expander = (ed >= 2 && comps[ed - 2].starts_with("expander-"))
+        .then(|| read(prefix(ed - 1).join("sas_device").join(&comps[ed - 2]).join("sas_address")))
+        .flatten();
+    (phy, expander)
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
@@ -147,6 +185,7 @@ mod linux {
         let real = std::fs::canonicalize(&base).ok();
         if let Some(r) = &real {
             loc.controller = controller_of(r);
+            (loc.sas_phy, loc.expander) = sas_attachment(r);
         }
         loc.sas_address = read_trim(&base.join("device/sas_address"));
         if let Some((enc, slot_dir)) = find_enclosure_slot(name) {
@@ -260,5 +299,37 @@ mod tests {
         let mut short = vec![0x0d, 0x80, 0x00, 0x20];
         short.extend_from_slice(b"AB");
         assert_eq!(parse_vpd80(&short), Some("AB".into()), "length clamped to buffer");
+    }
+
+    #[test]
+    fn sas_phy_and_expander_from_the_device_path() {
+        let root = std::env::temp_dir().join(format!("stormdrive-sas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mk = |p: &std::path::Path, f: &str, v: &str| {
+            std::fs::create_dir_all(p).unwrap();
+            std::fs::write(p.join(f), v).unwrap();
+        };
+
+        // Behind a shelf expander: the expander phy and its SAS address.
+        let host = root.join("devices/pci0000:00/0000:01:00.0/host0");
+        let exp = host.join("port-0:0/expander-0:0");
+        let port = exp.join("port-0:0:5");
+        mk(&exp.join("sas_device/expander-0:0"), "sas_address", "0x500a09800abc0001\n");
+        mk(&port.join("phy-0:0:5"), "phy_identifier", "5\n");
+        let sdc = port.join("end_device-0:0:5/target0:0:5/0:0:5:0/block/sdc");
+        std::fs::create_dir_all(&sdc).unwrap();
+        assert_eq!(sas_attachment(&sdc), (Some(5), Some("0x500a09800abc0001".into())));
+
+        // Direct to the HBA over a wide port: the lowest phy, no expander.
+        let port = host.join("port-0:4");
+        mk(&port.join("phy-0:6"), "phy_identifier", "6");
+        mk(&port.join("phy-0:4"), "phy_identifier", "4");
+        let sda = port.join("end_device-0:4/target0:0:0/0:0:0:0/block/sda");
+        std::fs::create_dir_all(&sda).unwrap();
+        assert_eq!(sas_attachment(&sda), (Some(4), None));
+
+        // Not SAS at all.
+        assert_eq!(sas_attachment(std::path::Path::new("/sys/devices/pci0000:00/0000:00:1d.0/nvme/nvme0/nvme0n1")), (None, None));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

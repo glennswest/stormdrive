@@ -371,14 +371,23 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         "discovered",
                         format!("{}: paths now {}", d.name, paths.join(", ")),
                     ));
-                    // A path change usually means recabling or a re-bay —
-                    // the old location is not to be trusted.
-                    d.location = topology::locate(&primary.name, &shelves);
-                } else if d.location.shelf.is_none() || d.location.bay.is_none() {
-                    // Not placed yet (the shelf scan may have come up
-                    // after the drive did): keep trying.
-                    d.location = topology::locate(&primary.name, &shelves);
                 }
+                // Re-resolved every pass: a drive pulled and pushed into
+                // another bay can come back under the same /dev name, and
+                // a shelf scan may name a shelf after its drives appeared.
+                // A path change usually means recabling or a re-bay — the
+                // old location is not to be trusted at all then.
+                let fresh = topology::locate(&primary.name, &shelves);
+                let now_at = if d.paths != paths { fresh } else { d.location.refreshed(fresh) };
+                if d.location.moved_to(&now_at) {
+                    let msg = if d.location.labels().is_empty() {
+                        format!("{}: located at {}", primary.name, now_at.place())
+                    } else {
+                        format!("{}: moved from {} to {}", primary.name, d.location.place(), now_at.place())
+                    };
+                    events.push((Some(id), Severity::Info, "location", msg));
+                }
+                d.location = now_at;
                 d.path = primary.path.clone();
                 d.name = primary.name.clone();
                 d.paths = paths;

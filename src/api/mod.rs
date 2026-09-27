@@ -156,6 +156,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/shelves/{key}/format", post(format_shelf))
         .route("/api/v1/shelves/{key}/format/{block_size}", post(format_shelf_by_path))
         .route("/api/v1/topology", get(topology))
+        .route("/api/v1/placement", get(placement))
+        .route("/api/v1/placement/{id}", get(placement_one))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
         // Kubernetes-shaped resources, served by this daemon (stormblock#80).
@@ -164,6 +166,50 @@ pub fn router(state: Arc<AppState>) -> Router {
             state.config.firmware.max_image_mib as usize * 1024 * 1024 + 4096,
         ))
         .with_state(state)
+}
+
+#[derive(Deserialize, Default)]
+struct PlacementQuery {
+    since: Option<u64>,
+}
+
+/// Where every drive and shelf is (#10), for mirrors. `?since=G` or
+/// `If-None-Match: "G"` answers 304 while the generation is still G.
+async fn placement(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<PlacementQuery>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let v = {
+        let inv = s.inventory.read().await;
+        let shelves = s.shelves.read().await;
+        crate::placement::view(inv.drives.values(), &shelves, &s.node_name)
+    };
+    let generation = v["generation"].as_u64().unwrap_or_default();
+    let etag = format!("\"{generation}\"");
+    let matched = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| h.split(',').any(|t| t.trim().trim_start_matches("W/") == etag || t.trim() == "*"));
+    let hdr = [(axum::http::header::ETAG, etag)];
+    if matched || q.since == Some(generation) {
+        return (StatusCode::NOT_MODIFIED, hdr).into_response();
+    }
+    (hdr, Json(v)).into_response()
+}
+
+/// One drive's placement, by wwn, uuid, /dev path or name, or serial.
+async fn placement_one(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let inv = s.inventory.read().await;
+    let d = inv
+        .resolve(&id)
+        .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
+    let mut v = crate::placement::drive_record(d);
+    v["node"] = json!(s.node_name);
+    Ok(Json(v))
 }
 
 async fn ui_index() -> Html<&'static str> {
