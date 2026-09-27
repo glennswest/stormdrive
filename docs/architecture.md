@@ -330,7 +330,8 @@ GET  /                                 embedded UI (also /ui, /ui/; the page
                                        detects stormd's proxy prefix itself)
 GET  /api/v1/health                    liveness {status, version}
 GET  /api/v1/drives                    inventory (running test inlined)
-GET  /api/v1/drives/{id}               id = DriveId, name, path, serial, wwid
+GET  /api/v1/drives/{id}               id = DriveId, wwid (any case), path or
+                                       name, serial — in that order
 GET  /api/v1/drives/{id}/health        latest HealthReport + trend
 POST /api/v1/drives/{id}/locate        {"on": true|false} → SES slot LED
 POST /api/v1/drives/{id}/fleet         {"action":"join","format_slab":bool,
@@ -359,6 +360,10 @@ POST /api/v1/shelves/{key}/format      {"block_size", "all"?} — every
 GET  /api/v1/components                stormview feed: drives + shelves
 GET  /ws/components                    the same feed, pushed on change
 GET  /api/v1/topology                  controller → shelf → drive tree
+GET  /api/v1/placement                 where every drive + shelf is, for
+                                       mirrors; generation, ETag, ?since=G /
+                                       If-None-Match → 304
+GET  /api/v1/placement/{id}            one drive's placement record
 GET  /api/v1/events?since=<seq>
 GET  /api/v1/summary                   stormd RemoteSummary card
 GET  /metrics                          Prometheus (phase 2)
@@ -384,6 +389,51 @@ reads the metrics instead:
   to the PCIe address its drives report, plus the controllers of the shelf's
   own drives. A controller fails as a unit, so "which card are these four
   drives behind" is answerable from the feed.
+
+### The placement view (`/api/v1/placement`, #10)
+What rustkube-node attaches to each PV (rustkube-node#60) next to
+stormblock's per-volume placement (stormblock#136, v17.1). stormblock names
+a volume's drives by `wwn` (the raw sysfs `wwid`, `naa.…`/`eui.…`/`uuid.…`)
+and `serial`; every record here carries both, so the join needs no device
+name.
+
+```json
+{ "node": "storm-06f96d", "generation": 4203381229011457,
+  "drives": [{ "id": "28684b23-…", "wwn": "naa.50014ee2bab11f8d",
+    "serial": "WD-WX11D28JFS6T", "model": "…", "kind": "sata_hdd",
+    "capacity_bytes": 2000398934016, "path": "/dev/sda", "paths": ["/dev/sda"],
+    "shelf": { "key": "5000a098…", "logical_id": "5000a098…", "vendor": "NETAPP",
+               "model": "DS224-12", "serial": "…", "sas_address": "…" },
+    "bay": 4, "sas_address": "0x4433221106000000", "sas_phy": 6,
+    "expander": null, "hba": { "scsi_host": "host0", "pcie_addr": "0000:01:00.0",
+    "driver": "mpt3sas" }, "pcie_addr": null, "pcie_slot": null,
+    "labels": { "shelf": "…", "bay": "4", "hba": "host0" },
+    "membership": "fleet", "designation": "none", "activity": "idle",
+    "health": "good", "in_use_by": null }],
+  "shelves": [{ "key": "5000a098…", "status": "ok", "esp_paths": 2,
+    "drives": [{ "bay": 4, "wwn": "…", "serial": "…" }], … }] }
+```
+
+- **Only placement** is in a record: shelf, bay, SAS address, `sas_phy`
+  (the expander phy behind a shelf, the HBA phy when direct), `expander`
+  (its SAS address), HBA, PCIe, fleet `membership`, `designation`
+  (reserved/spare/failed), `activity`, and the health *state*. No
+  temperatures or counters.
+- **`generation`** is a 53-bit FNV-1a hash of the view. It moves when a
+  drive moves bays, a shelf appears or goes, or a drive changes role or
+  health state, and not on a health sample. Compare it for equality only.
+  Because it hashes the content, it is unchanged across a restart when
+  nothing moved. `?since=G` and `If-None-Match: "G"` answer 304 while it is
+  still G.
+- **Moves are seen.** A drive's location is re-resolved on every discovery
+  pass, because a drive pushed into another bay can come back under the
+  same `/dev` name. On the same shelf, a field a pass could not read (an
+  SES page that failed) keeps its known value, and a different value wins.
+  A move logs a `location` event ("sdb: moved from DS224C … bay 4 to … bay
+  9"), and a fleet drive's new labels are pushed to stormblock.
+- The shelves list is the SES scan plus any shelf only a drive's sysfs
+  names, each with the bays it holds, so a new shelf shows up with its
+  drives.
 
 ### The stormd card (`/api/v1/summary`)
 Answer within 400 ms (stormd's timeout) from cached state — never collect on

@@ -3,6 +3,23 @@
 ## [Unreleased]
 
 ### 2026-09-27
+- **feat:** `GET /api/v1/placement` and `/api/v1/placement/{id}` — where
+  every drive and shelf is, for the PV placement mirror (#10,
+  rustkube-node#60): per drive `wwn` + `serial` (what stormblock#136 names
+  a volume's drives by), shelf, bay, SAS address, `sas_phy`, `expander`,
+  HBA, PCIe, membership, designation, activity, health state; shelves with
+  their bays. `generation` hashes placement only (not health samples),
+  survives restarts, and `?since=` / `If-None-Match` answer 304.
+- **feat:** `Location` gains `sas_phy` and `expander` (SAS wiring from
+  sysfs).
+- **fix:** a drive re-bayed under the same `/dev` name kept its old
+  location: location is now re-resolved every discovery pass (known detail
+  kept on the same shelf when a pass cannot read it) and a move logs a
+  `location` event.
+- **fix:** drive lookup by handle tries the WWN first (any case), then
+  path/name, then serial — NVMe-oF namespaces can share a serial.
+
+### 2026-09-27
 - **docs:** work plan — #14 done: golden-stormdrive-fa8dbebdd485, stormcos#123
 
 ## [v0.11.0] — 2026-09-27

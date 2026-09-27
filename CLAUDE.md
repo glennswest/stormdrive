@@ -96,6 +96,7 @@ src/
                   UNIT (IMMED), progress via TUR sense, kernel rescan after
   stormblock.rs   client for stormblock :9090 (add drive w/ labels+uuid, slabs, health, drain)
   fleet.rs        the loop: labels, health push, drains → retire, auto-add
+  placement.rs    where every drive + shelf is, hashed generation (#10)
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} — Kubernetes-shaped (stormblock#80)
   api/            axum REST :9092  (/api/v1/*, /api/v1/summary for stormd)
 ```
@@ -291,14 +292,14 @@ drives by `wwn` (raw sysfs wwid) + `serial` with a `generation` feed
 Existing: `/api/v1/drives` + kube Drive carry location, but the kube
 fingerprint churns on every health sample, a re-bay that keeps the /dev
 name is never re-located, no move event, no SAS phy.
-- [ ] `GET /api/v1/placement` (+ `/{wwn|serial|uuid|path}`): per drive
+- [x] `GET /api/v1/placement` (+ `/{wwn|serial|uuid|path}`): per drive
       wwn, serial, shelf (key/logical id/model/serial), bay, SAS address,
       phy, expander, HBA, PCIe, membership/designation/activity/health;
       shelves list; `generation` = FNV over placement fields only (53-bit,
       stable across restarts), ETag, `?since=` / If-None-Match → 304
-- [ ] Resolve order uuid → wwn (case-insensitive) → path/name → serial
-- [ ] Re-locate every discovery pass; `location` event on a move
-- [ ] `sas_phy` + `expander` in Location (sysfs port → phy)
+- [x] Resolve order uuid → wwn (case-insensitive) → path/name → serial
+- [x] Re-locate every discovery pass; `location` event on a move
+- [x] `sas_phy` + `expander` in Location (sysfs port → phy)
 - [ ] Tests, docs, changelog, release, sc-build, golden, close #10
 
 ### #14: present the stormblock engine token (P0, stormcos#104, 2026-09-27) — DONE
