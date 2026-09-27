@@ -82,6 +82,7 @@ Download + Commit for NVMe; one, many, or by model). It talks to
 stormblock v17+ with the engine's bearer token (`[stormblock] token_file`,
 default: stormblock's own CLI lookup order). `/api/v1/placement` says
 where every drive physically is, keyed by WWN, for the PV placement mirror;
-each drive carries its `usage` (slabs, used, free), and `/api/v1/hbas`
+each drive carries its `usage` (slabs, used, free) and an `overcommit`
+setting (off, or a ratio) that stormblock enforces when claims bind, and `/api/v1/hbas`
 lists every HBA with its firmware, BIOS and NVDATA versions.
 See the work plan in [CLAUDE.md](CLAUDE.md).

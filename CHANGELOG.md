@@ -4,6 +4,16 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-27
+- **feat:** per-drive `overcommit` (#13): off by default, or on with a
+  ratio (1.0–16.0), set by `PUT /api/v1/drives/{id}/overcommit` (and a
+  body-free `/overcommit/{off|ratio}`), persisted, and recorded as an event.
+  `usage` gains `promisable_bytes` (slab space × ratio), plus
+  `committed_bytes` and `headroom_bytes` once stormblock reports committed
+  per slab (stormblock#152). The setting is pushed to the engine as
+  `PUT /api/v1/drives/{path}/overcommit` for every drive with slabs; an
+  engine without the route is retried quietly. On `/api/v1/drives`, the
+  kube Drive status, the feed (metric + toggle action) and the UI
+  (selector, committed/headroom line).
 - **docs:** work plan — #2: v0.13.0 tagged, sc-build + golden pending
 - **docs:** work plan — #12: shipped in v0.13.0, golden pending
 - **docs:** work plan — v0.13.0 golden blocked on stormcentral#111 (nvme-tcp on dev)

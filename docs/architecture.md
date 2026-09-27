@@ -357,6 +357,8 @@ POST /api/v1/drives/{id}/locate        {"on": true|false} → SES slot LED
 POST /api/v1/drives/{id}/fleet         {"action":"join","format_slab":bool,
                                         "tier"?} | {"action":"leave","force"?}
 POST /api/v1/drives/{id}/designation   {"designation":"none|reserved|spare|failed"}
+GET|PUT|POST /api/v1/drives/{id}/overcommit  {"enabled":false} | {"enabled":true,"ratio":2.0}
+POST /api/v1/drives/{id}/overcommit/{off|<ratio>}   body-free form
 POST /api/v1/drives/{id}/test          {"kind":"smoke|read_scan|destructive_sample"}
 GET  /api/v1/drives/{id}/test          current/last run (progress, errors)
 POST /api/v1/drives/{id}/test/cancel
@@ -443,6 +445,46 @@ serial, then the `/dev` path.
 the components feed (`used`, `free` (warn under 10 %), `slabs`) and in the
 UI's size column, with the per-slab split on hover. It is not part of the
 placement view: it changes with every write and would churn `generation`.
+
+### Per-drive overcommit (`overcommit` on every drive, #13)
+"An attribute to drives to allow overcommit or not." The split follows
+stormblock `docs/multi-drive.md` §5: stormdrive holds the setting,
+stormblock enforces it when a claim binds (stormblock#152), and
+rustkube-node publishes the resulting headroom to the scheduler
+(rustkube-node#62).
+
+- `overcommit {enabled, ratio}` on the drive, operator-set like
+  `designation` and persisted in the inventory. Off by default (ratio 1.0):
+  thin clones may not promise more than the drive's slab space. On, `ratio`
+  bounds it: 2.0 promises up to twice. Accepted ratios are 1.0–16.0. The cap
+  only guards against typos (20 for 2.0).
+- `PUT /api/v1/drives/{id}/overcommit` sets it, and an `overcommit` event
+  records the change. `GET` returns the setting, whether the engine
+  has accepted it (`pushed`), and promisable, committed, written and
+  headroom.
+- `usage` gains `promisable_bytes` = Σ slab total × ratio (× 1 when off).
+  Only slab space can hold volumes. `committed_bytes` is Σ the slabs'
+  `committed_bytes` (the virtual size promised out of each), and
+  `headroom_bytes` = promisable − committed. Both are `null` until
+  stormblock's slab listing carries `committed_bytes`, which #152 adds. One
+  slab without the figure leaves the total unknown rather than guessed.
+- **Push to the engine** (fleet loop, each tick, on change): for every
+  drive with slabs on it (a fleet drive, or the node's system disk):
+  ```
+  PUT /api/v1/drives/{path}/overcommit
+  {"enabled": true, "ratio": 2.0,
+   "drive": {"uuid": "…", "wwn": "naa.…", "serial": "…", "path": "/dev/sda"}}
+  ```
+  `drive` names it by the identity the slab listing uses, so a disk the engine
+  holds as `file+…` slabs rather than as an opened drive (stormblock#133) is
+  still found. A 404/405 means the engine has no route yet. That is logged
+  at debug level and retried after ten minutes. What the engine last
+  accepted is kept in memory only, so a restart pushes the setting once more.
+- Shown on `/api/v1/drives`, the kube Drive `status.overcommit`, and the
+  feed. The feed has an `overcommit` metric (when on, or when there are
+  slabs), `committed`, and `headroom` (warn under 10 %), plus an
+  `Overcommit 2×` / `Overcommit off` action. The UI adds a selector under
+  the designation and a committed/headroom line in the size column.
 
 ### The placement view (`/api/v1/placement`, #10)
 What rustkube-node attaches to each PV (rustkube-node#60) next to
