@@ -64,7 +64,7 @@ impl Inventory {
         }
         // Most specific first: a WWN names one namespace, where NVMe-oF
         // namespaces can share a controller serial (stormblock#136).
-        let by = |f: &dyn Fn(&Drive) -> bool| self.drives.values().find(|d| f(*d));
+        let by = |f: &dyn Fn(&Drive) -> bool| self.drives.values().find(|d| f(d));
         by(&|d| d.wwid.as_deref().is_some_and(|w| w.eq_ignore_ascii_case(handle)))
             .or_else(|| by(&|d| d.name == handle || d.path == handle || d.paths.iter().any(|p| p == handle)))
             .or_else(|| by(&|d| !d.serial.is_empty() && d.serial == handle))
