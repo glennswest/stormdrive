@@ -3,6 +3,8 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.14.0] — 2026-09-27
+
 ### 2026-09-27
 - **feat:** per-drive `overcommit` (#13): off by default, or on with a
   ratio (1.0–16.0), set by `PUT /api/v1/drives/{id}/overcommit` (and a

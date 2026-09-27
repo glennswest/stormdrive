@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.13.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.14.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -308,18 +308,18 @@ Owner: "an attribute to drives to allow overcommit or not." Split per
 stormblock `docs/multi-drive.md` §5: stormdrive holds the per-drive
 setting; stormblock enforces it when a claim binds (stormblock#152);
 rustkube-node#62 publishes the headroom; stormconsole#29 shows it.
-- [ ] `overcommit {enabled, ratio}` on Drive, persisted, default off
+- [x] `overcommit {enabled, ratio}` on Drive, persisted, default off
       (ratio 1.0); ratio finite, 1.0..=16.0 (typo guard)
-- [ ] `PUT/POST /api/v1/drives/{id}/overcommit`, event on change
-- [ ] usage: `promisable_bytes` = Σ slab total × ratio (× 1 when off);
-      `committed_bytes` + `headroom_bytes` once stormblock's slab listing
-      carries `committed_bytes` (null until then)
-- [ ] Push to stormblock: `PUT /api/v1/drives/{path}/overcommit
-      {enabled, ratio, drive{uuid,wwn,serial}}` for drives with slabs, on
-      change; a 404/405 = engine without #152 yet (quiet, retried); also
-      in the join body. Contract posted on stormblock#152
-- [ ] kube Drive status, feed metric, UI control; tests, docs, changelog,
-      v0.14.0, sc-build, golden (after stormcentral#111), close #13
+- [x] `GET/PUT/POST /api/v1/drives/{id}/overcommit` (+ `/{off|ratio}`),
+      event on change
+- [x] usage: `promisable_bytes`; `committed_bytes` + `headroom_bytes` from
+      the slab listing's `committed_bytes` (null until stormblock#152)
+- [x] Push `PUT /api/v1/drives/{path}/overcommit` for drives with slabs;
+      contract posted on stormblock#152
+- [x] kube status, feed metric + action, UI selector; tests (118), docs,
+      changelog; sc-build + clippy pass on 9b9d357; v0.14.0
+- [ ] Golden (blocked on stormcentral#111 like v0.13.0), close #13.
+      Enforcement itself is stormblock#152
 
 ### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
 
