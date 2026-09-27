@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.11.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.12.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -300,7 +300,9 @@ name is never re-located, no move event, no SAS phy.
 - [x] Resolve order uuid → wwn (case-insensitive) → path/name → serial
 - [x] Re-locate every discovery pass; `location` event on a move
 - [x] `sas_phy` + `expander` in Location (sysfs port → phy)
-- [ ] Tests, docs, changelog, release, sc-build, golden, close #10
+- [x] Tests (104; 6 new), docs, changelog, v0.12.0; sc-build + clippy
+      pass
+- [ ] Golden, close #10
 
 ### #14: present the stormblock engine token (P0, stormcos#104, 2026-09-27) — DONE
 

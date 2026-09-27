@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.12.0] — 2026-09-27
+
 ### 2026-09-27
 - **feat:** `GET /api/v1/placement` and `/api/v1/placement/{id}` — where
   every drive and shelf is, for the PV placement mirror (#10,
