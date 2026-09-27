@@ -16,6 +16,7 @@ pub mod firmware;
 pub mod fleet;
 pub mod format;
 pub mod hba;
+pub mod hotplug;
 pub mod inventory;
 pub mod monitor;
 pub mod placement;

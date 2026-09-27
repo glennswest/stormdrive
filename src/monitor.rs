@@ -132,8 +132,15 @@ pub async fn run(state: Arc<AppState>) {
     let mon_int = state.config.monitor.interval_secs;
     let mut last_disc: Option<std::time::Instant> = None;
     let mut last_mon: Option<std::time::Instant> = None;
+    let (hp_tx, mut hotplug) = tokio::sync::mpsc::unbounded_channel();
+    match crate::hotplug::listen(hp_tx) {
+        Ok(()) => tracing::info!("hotplug: listening for kernel disk uevents"),
+        Err(e) => tracing::warn!("hotplug unavailable, discovery polls every {disc_int} s: {e}"),
+    }
+    let mut hotplugged = false;
     loop {
-        let disc_due = last_disc.map_or(true, |t| t.elapsed().as_secs() >= disc_int);
+        let disc_due = hotplugged || last_disc.map_or(true, |t| t.elapsed().as_secs() >= disc_int);
+        hotplugged = false;
         let mon_due = last_mon.map_or(true, |t| t.elapsed().as_secs() >= mon_int);
         if disc_due {
             last_disc = Some(std::time::Instant::now());
@@ -150,9 +157,30 @@ pub async fn run(state: Arc<AppState>) {
             crate::fleet::tick(&state, &mut fleet).await;
             state.persist().await;
         }
-        tokio::time::sleep(Duration::from_secs(disc_int.min(mon_int).max(1))).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(disc_int.min(mon_int).max(1))) => {}
+            Some(ev) = hotplug.recv() => {
+                // Debounce: a pulled shelf or a dual-ported drive is a
+                // burst of events, and one pass sees all of it.
+                tokio::time::sleep(HOTPLUG_SETTLE).await;
+                let mut names = vec![ev];
+                while let Ok(more) = hotplug.try_recv() {
+                    names.push(more);
+                }
+                tracing::info!(
+                    events = names.len(),
+                    first = %format!("{} {}", names[0].action, names[0].name),
+                    "hotplug: rescanning"
+                );
+                hotplugged = true;
+            }
+        }
     }
 }
+
+/// How long hotplug waits for a burst of uevents to finish before it
+/// rescans.
+const HOTPLUG_SETTLE: Duration = Duration::from_secs(2);
 
 async fn tick(
     state: &Arc<AppState>,
