@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+<!-- New unreleased changes go here -->
+
+## [v0.13.0] — 2026-09-27
 
 ### 2026-09-27
 - **feat:** HBA inventory (#2 — owner's decision: HBA firmware version

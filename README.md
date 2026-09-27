@@ -74,12 +74,14 @@ curl -s -X POST http://localhost:9092/api/v1/firmware -d '{"model":"ST1200MM0098
 
 ## Status
 
-v0.12.0 — discovery, health, fleet hand-off to stormblock, drive tests,
+v0.13.0 — discovery, health, fleet hand-off to stormblock, drive tests,
 NetApp shelf management (SES status, locate LEDs, dual-IOM merge),
 sector-size reformat (520 → 4096 via FORMAT UNIT, batch, with progress)
 and firmware updates (image store; WRITE BUFFER for SAS/SATA, Firmware
 Download + Commit for NVMe; one, many, or by model). It talks to
 stormblock v17+ with the engine's bearer token (`[stormblock] token_file`,
 default: stormblock's own CLI lookup order). `/api/v1/placement` says
-where every drive physically is, keyed by WWN, for the PV placement mirror.
+where every drive physically is, keyed by WWN, for the PV placement mirror;
+each drive carries its `usage` (slabs, used, free), and `/api/v1/hbas`
+lists every HBA with its firmware, BIOS and NVDATA versions.
 See the work plan in [CLAUDE.md](CLAUDE.md).
