@@ -360,10 +360,16 @@ with stable id. Found:
       cd6600e (v0.10.0 + docs, 94/94, 2026-09-24)
 - [x] Golden `golden-stormdrive-b0941b2857a0` (0.10.0 @ 205bf9a, sc-build
       passed on that commit); release request stormcos#70
-- [ ] Waiting on Glenn: who owns BIOS/HBA firmware (stormipmi via iDRAC
-      Redfish? HBA version_fw inventory here is cheap and in scope)
-- [ ] After the 0.10.0 golden reaches the R230: sda shows `in_use_by`,
-      Format/Destructive/Join disabled, kind `sata_hdd`
+- [x] Decided (Glenn, 2026-09-24): HBA firmware *version collection* is
+      stormdrive's; BIOS goes to stormipmi. Flashing HBAs is not in scope
+- [x] Live on the R230 (0.11.0, 2026-09-27): sda `in_use_by` stormblock
+      (partitions 2, 3), kind `sata_hdd`, Join/Destructive/Format 4K
+      disabled in the feed
+- [ ] `hba.rs`: every PCIe SCSI HBA from /sys/class/scsi_host (driver,
+      version_fw, version_bios, nvdata, board name/assembly/tracer, host
+      SAS address), grouped by PCIe function; refreshed each discovery
+      pass; `GET /api/v1/hbas`, `firmware` on topology controllers, `hba:`
+      components in the feed, UI panel; tests, docs, v0.13.0, golden
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
