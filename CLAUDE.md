@@ -283,6 +283,17 @@ to 4096.
       a real drive: needs a vendor image for the ST1200MM0098 / X425 on
       stormblock1
 
+### #14: present the stormblock engine token (P0, stormcos#104, 2026-09-27) — IN PROGRESS
+
+stormblock v17 (stormblock#107) requires `Authorization: Bearer` on all of
+`/api/v1`; every stormdrive → engine call is a 401 today. #2 is parked.
+- [ ] Token lookup: `stormblock.api_token` / `$STORMBLOCK_API_TOKEN`, then
+      `stormblock.token_file` / `$STORMBLOCK_TOKEN_FILE`, then
+      `/run/stormblock/engine/api_token`, `/etc/stormblock/api_token`,
+      `/var/lib/stormblock/api_token`; re-read while absent and on a 401
+      (retry once); optional admin token for DELETE
+- [ ] Tests, docs, changelog, v0.11.0, sc-build, golden → post on stormcos#104
+
 ### #2: first look at a real node (R230, 2026-09-24) — IN PROGRESS
 
 stormdrive 0.9.0 on the Dell R230 (`192.168.30.2:9092`, stormcos 11.3x).
