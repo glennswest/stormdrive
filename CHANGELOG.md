@@ -5,6 +5,31 @@
 
 ### 2026-09-27
 - **docs:** work plan — #15, 160+ drives per node
+- **perf:** health polling at 160+ drives (#15). Each drive is polled at
+  its own phase in the interval, so the polls spread out. At most
+  `monitor.max_concurrent` (8) reads are in flight. A read slower than
+  `monitor.sample_timeout_secs` (10) is a failed sample, and a hung drive
+  is not re-read until its read returns, so one hung NVMe no longer stalls
+  the rest. `GET /api/v1/monitor` reports the cost per cycle and the stuck
+  drives.
+- **perf:** trend samples are recorded on change or daily, not on every
+  poll. The inventory is compact JSON, written outside the lock, and not
+  rewritten when unchanged.
+- **perf:** discovery caches READ CAPACITY and the slab probe per device
+  (asked again when the device changes, or every 10 minutes), and reads
+  `/proc/mounts` once per pass.
+- **fix:** NVMe native-multipath path nodes (`nvme0c1n1`) and hidden
+  gendisks are no longer drives.
+- **feat:** hotplug: kernel disk uevents trigger a debounced discovery
+  pass.
+- **feat:** NVMe location behind PCIe switches and VMD, and under native
+  multipath:
+  - the PCIe slot anywhere on the chain
+  - `bay` from a numeric slot number
+  - locate through the slot's attention indicator or an NPEM LED
+- **feat:** a new drive in a missing drive's bay `replaces` it (link +
+  event). `DELETE /api/v1/drives/{id}` (Forget in the feed and UI) removes
+  a missing, out-of-fleet drive's record.
 
 ### 2026-09-27
 - **docs:** work plan — v0.14.0 sc-build passes; golden waits on stormcentral#111

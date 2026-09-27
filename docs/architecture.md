@@ -169,14 +169,38 @@ path failover is actually needed.
   classification (nvme vs sd; SAS vs SATA from `device/sas_address`
   presence — except that a SATA drive behind a SAS HBA has a sas_address
   too, so a SCSI vendor of `ATA` (the SAT layer) wins).
-- Hotplug: netlink kobject-uevent socket (add/remove of block devices)
-  triggers targeted re-scan; the interval scan remains the safety net.
+- Hotplug (`hotplug.rs`, #15): one thread reads the kernel's
+  `NETLINK_KOBJECT_UEVENT` group (no udev needed). An `add`, `remove` or
+  `change` of a whole block disk triggers a discovery pass after a 2 s
+  settle, so a pulled shelf is one pass, not hundreds. A kernel-side
+  overflow (`ENOBUFS`) also triggers a pass. The interval scan is still the
+  safety net, and the only mechanism when the socket cannot be opened.
+- **Probe cache** (#15): what discovery asks the drive itself (READ
+  CAPACITY(16) and the slab probe of LBA 0 and the GPT) is kept per device
+  and asked again only when the device changes (`dev` maj:min, size,
+  WWID: a swap, a rescan, a reformat) or every 10 minutes. A drive that did
+  not answer (mid-format) is asked again every pass. `/proc/mounts` is read
+  once per pass. Hidden gendisks and NVMe native-multipath path nodes
+  (`nvme0c1n1`) are not drives; the namespace head (`nvme0n1`) is.
 - A known drive whose node vanishes → `Missing` + event. A Missing drive
   reappearing keeps its `DriveId` (that's the point of stable identity).
 
-### Monitoring (`monitor.rs`, `smart/`)
-- One loop, every `monitor.interval_secs` (default 60): collect per drive,
-  evaluate, transition, persist, emit events, update metrics.
+### Monitoring (`monitor.rs`, `poller.rs`, `smart/`)
+- Health polling is its own task (#15). Every present drive is sampled
+  once per `monitor.interval_secs` (default 60), at its own **phase** in
+  the interval (its id's hash, stable across restarts). 160 drives on 60 s
+  is ~2.7 samples a second, not a burst of 160. At most
+  `monitor.max_concurrent` (8) reads are in flight, with no thread per
+  drive. A read that has not answered in `monitor.sample_timeout_secs`
+  (10) is a failed sample (`kernel_ok = false`, damped by the hysteresis
+  like any worsening). The drive is then *stuck* until the blocking read
+  returns: it is not read again, so threads never pile onto a hung device,
+  and each due time counts as another timeout, which walks a hung drive to
+  Failed after `hysteresis` intervals. A timeout keeps the last readings;
+  only the verdict and the reason change. Blocking threads are bounded by
+  `max_concurrent` + stuck drives.
+- The main loop keeps discovery, stormblock usage/reconcile, the fleet
+  policy and persisting on their intervals.
 - **NVMe** (`smart/nvme.rs`): `NVME_IOCTL_ADMIN_CMD` Get Log Page 0x02 —
   critical warning bits, composite temp, available spare (+threshold),
   percentage used, POH, unsafe shutdowns, media errors, error-log count.
@@ -195,8 +219,43 @@ path failover is actually needed.
   (`device/state != running`), read-only NVMe bit. Transitions are
   hysteresis-guarded (N consecutive samples) so one bad poll doesn't flap.
 - **Wear trending**: per-drive ring of (time, wear_pct, media_errors)
-  samples persisted with the inventory; linear projection → "days to
-  wear-out" surfaced in the API and UI.
+  samples (512) persisted with the inventory. A sample is recorded when
+  either value changes, or daily when neither does (#15). Recording every
+  poll made 160 drives × 512 samples ≈ 5 MB of inventory, rewritten every
+  tick, and the ring only covered 8.5 hours. Linear projection gives "days
+  to wear-out" in the API and UI.
+- **Persisting** (#15): compact JSON, serialised under the inventory lock
+  and written outside it (tmp + rename), skipped when unchanged. One async
+  mutex spans both, so two persists never land out of order.
+
+### Cost per poll cycle (#15)
+
+`GET /api/v1/monitor` reports it live:
+- `samples`, `timeouts`, and `last`/`avg`/`max_sample_ms`
+- `busy_ms_per_interval` (avg × drives)
+- `load_pct` (busy / (interval × max_concurrent))
+- `stuck` (drives whose read hasn't returned)
+- the last discovery pass: `discovery_ms`, `discovery_drives` and
+  `discovery_cached`
+
+What one cycle does, per drive:
+
+| Transport | Per sample | At 160 drives, 60 s interval |
+|---|---|---|
+| NVMe | one admin command, Get Log Page 0x02 (512 B), 5 s command timeout | 160 admin commands a minute, ~2.7 a second, 8 at most in flight |
+| SAS/SATA | sysfs only (`device/state`, `ioerr_cnt`, hwmon); no I/O to the drive | 160 × ~4 sysfs reads a minute |
+
+A discovery pass (every 30 s, and on hotplug) reads sysfs attributes per
+device. It sends drive I/O only for new or changed devices, plus a
+refresh every 10 minutes: READ CAPACITY(16) for `sd*`, and LBA 0, the GPT
+header, the GPT entries and each partition's first LBA for the slab probe.
+At 160 unchanged drives that is 0 drive commands per pass, and 160 probe
+sets every 10 minutes. Location re-resolution is sysfs only: it walks the
+PCIe slot table per NVMe drive, about 160 × 160 small reads, tens of
+milliseconds.
+
+Not here: per-drive Prometheus series (`/metrics`) is #18. At 160 drives ×
+~6 gauges it is ~1,000 series per node, ~10,000 per rack.
 
 ### Location (`topology.rs`)
 - SAS bays: `/sys/class/enclosure/*/` — each enclosure device exposes
@@ -209,6 +268,27 @@ path failover is actually needed.
   bay_identifier}` from the expander's SMP discover; that gives the
   shelf's logical id and the bay, and the SES scan (below) names the
   shelf. Locate then goes through the SES control page ourselves.
+- **NVMe bays** (#15): a 160-bay NVMe chassis has no SES enclosure. Its
+  bays are PCIe hotplug slots, usually behind PCIe switches and often
+  inside an Intel VMD domain (`10000:01:00.0` — five-digit domains are
+  BDFs too).
+  - `pcie_slot` is the `/sys/bus/pci/slots/<n>` whose `address` is a device
+    on the drive's PCI chain, nearest the drive first.
+  - A numeric slot name (ACPI `_SUN`, the number on the chassis label) is
+    also the `bay`, when nothing else gave one.
+  - Under native NVMe multipath, `/sys/block/nvme0n1` is a virtual
+    subsystem head with no PCIe in its path. Its `multipath/` links are
+    followed, first sorted, to a controller.
+  - Locate writes the slot's `attention` indicator (pciehp), else the NPEM
+    `<bdf>:enclosure:locate` LED of a port on the chain (Linux 6.12+).
+- **Replacement** (#15): a new drive whose `bay_key` (shelf + bay, or PCIe
+  slot) is a missing drive's gets `replaces: <old id>` and a `replaced`
+  event naming both serials. A missing drive still in the fleet is called
+  out. If several drives went missing from that bay, the most recently
+  seen one is used, and each drive is replaced at most once.
+  `DELETE /api/v1/drives/{id}` forgets a missing, out-of-fleet drive's
+  record and trend, so years of swaps in 160 bays do not pile up. The feed
+  and UI offer it as Forget.
 - Shelf key is the **enclosure logical id** (page 0x01 / mpt3sas
   `enclosure_identifier`), the same through every IOM. The SES device's
   VPD 0x80 serial is the IOM's serial on NetApp shelves, so it is only a
@@ -356,6 +436,8 @@ GET  /api/v1/drives/{id}/health        latest HealthReport + trend
 POST /api/v1/drives/{id}/locate        {"on": true|false} → SES slot LED
 POST /api/v1/drives/{id}/fleet         {"action":"join","format_slab":bool,
                                         "tier"?} | {"action":"leave","force"?}
+GET  /api/v1/monitor                    health-poll cost + stuck drives (#15)
+DELETE /api/v1/drives/{id}              forget a missing, out-of-fleet drive (#15)
 POST /api/v1/drives/{id}/designation   {"designation":"none|reserved|spare|failed"}
 GET|PUT|POST /api/v1/drives/{id}/overcommit  {"enabled":false} | {"enabled":true,"ratio":2.0}
 POST /api/v1/drives/{id}/overcommit/{off|<ratio>}   body-free form
@@ -619,6 +701,8 @@ spare_warn_pct  = 20
 spare_crit_pct  = 10
 wear_warn_pct   = 80
 hysteresis      = 3                 # consecutive samples before a transition
+max_concurrent  = 8                 # health reads in flight at once
+sample_timeout_secs = 10            # a read slower than this is a failed sample
 
 [stormblock]
 enabled  = true
