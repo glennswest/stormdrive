@@ -299,8 +299,7 @@ path}`, stormblock#136) with total/free/allocated slots.
 - [x] Tests (usage::tests: R230 system disk adds up, wwn→serial→path
       join, no-slab drive), docs (architecture "Per-drive usage"), changelog
 - [x] Released in v0.13.0 (46ecff9); sc-build 114/114
-- [ ] Golden (shared with #2, retry in flight after a forge
-      "no NVMe device appeared for volume" failure), then close #12;
+- [ ] Golden (shared with #2) blocked on stormcentral#111, then close #12;
       live reading rides the release (R230 runs 0.11.0)
 
 ### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
@@ -378,9 +377,13 @@ with stable id. Found:
       - [x] Code + docs pushed (8f9eb43, 64c29f1 borrow fix, 5b44e1c docs)
       - [x] sc-build passes on 4a69a06 (114/114); #17 closed
       - [x] v0.13.0 tagged (46ecff9)
-      - [ ] RESUME HERE: sc-build on 46ecff9 in flight; then golden once,
-            close #2 (live /api/v1/hbas check rides the release — the
-            R230 runs 0.11.0 today)
+      - [x] sc-build passes on 46ecff9 (114/114)
+      - [ ] RESUME HERE: golden blocked — two requests failed at the seal
+            ("no NVMe device appeared"): dev.g8.lo has no nvme-tcp since
+            its reboot (stormcentral#111, owner/root). #2 and #12 proposed
+            --after it, status posted on both. When #111 closes: request
+            the golden once, then close #2 and #12 (live checks ride the
+            release)
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
