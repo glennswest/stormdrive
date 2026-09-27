@@ -137,6 +137,21 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         if !u.slabs.is_empty() {
             metrics.push(Metric::new("slabs", u.slabs.len().to_string()).tone("muted"));
         }
+        // What the slabs may still promise (#13): committed and headroom
+        // once stormblock reports committed per slab (stormblock#152).
+        if let Some(c) = u.committed_bytes {
+            metrics.push(Metric::new("committed", stormview::format_bytes(c)));
+        }
+        if let Some(h) = u.headroom_bytes {
+            let m = Metric::new("headroom", stormview::format_bytes(h));
+            metrics.push(if h < u.promisable_bytes / 10 { m.tone("warn") } else { m });
+        }
+    }
+    // The overcommit setting (#13): shown when on, or when there are slabs
+    // it applies to.
+    if d.overcommit.enabled || d.usage.as_ref().is_some_and(|u| !u.slabs.is_empty()) {
+        let m = Metric::new("overcommit", d.overcommit.word());
+        metrics.push(if d.overcommit.enabled { m.tone("accent") } else { m.tone("muted") });
     }
     // How to address it right now. `id` is stable across boots and `path`
     // is not, which is exactly why both are worth having: the id to talk to
@@ -251,6 +266,13 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         d.format_blocker().is_none() && present,
         true,
     ));
+    // Body-free, so a renderer can offer it; any other ratio goes through
+    // PUT /api/v1/drives/{id}/overcommit.
+    actions.push(if d.overcommit.enabled {
+        act("overcommit-off", "Overcommit off", "POST", format!("{base}/overcommit/off"), true, false)
+    } else {
+        act("overcommit-2x", "Overcommit 2×", "POST", format!("{base}/overcommit/2"), true, true)
+    });
     actions.push(act(
         "mark-spare",
         "Mark spare",
@@ -566,6 +588,7 @@ mod tests {
             location: Location::default(),
             membership: Membership::Out,
             designation: Designation::None,
+            overcommit: Default::default(),
             activity: Activity::Idle,
             health: HealthReport {
                 status: Some(HealthStatus::Good),
@@ -576,6 +599,7 @@ mod tests {
             last_seen: SystemTime::now(),
             pushed_labels: Vec::new(),
             pushed_health: None,
+            pushed_overcommit: None,
             drain: None,
             usage: None,
         }
@@ -636,6 +660,37 @@ mod tests {
         assert!(m("used").is_some());
         assert_eq!(m("slabs").unwrap().value, "1");
         assert_eq!(m("free").unwrap().tone.as_deref(), Some("warn"), "under a tenth left");
+    }
+
+    #[test]
+    fn overcommit_is_shown_and_toggled_from_the_feed() {
+        let mut d = drive();
+        let c = drive_component(&d);
+        assert!(!c.metrics.iter().any(|m| m.label == "overcommit"), "no slabs, off: nothing to say");
+        let on = c.actions.iter().find(|a| a.id == "overcommit-2x").unwrap();
+        assert!(on.path.ends_with("/overcommit/2") && on.danger, "promising more than the disk holds is a risk");
+
+        let mut slab = serde_json::json!({
+            "id": "s1", "role": "data", "tier": "warm", "slot_size": 1u64 << 20,
+            "total_slots": 1000, "free_slots": 900, "allocated_slots": 100,
+            "total_bytes": 1000u64 << 20, "free_bytes": 900u64 << 20,
+            "drive": { "serial": "S", "path": "/dev/sdx" },
+        });
+        d.usage = Some(crate::usage::compute(&d, &[slab.clone()], SystemTime::now()));
+        let c = drive_component(&d);
+        let m = |c: &ComponentSummary, name: &str| {
+            c.metrics.iter().find(|m| m.label == name).map(|m| (m.value.clone(), m.tone.clone()))
+        };
+        assert_eq!(m(&c, "overcommit").unwrap().0, "off");
+        assert!(m(&c, "headroom").is_none(), "unknown until the engine reports committed");
+
+        d.overcommit = crate::drive::Overcommit::new(true, Some(2.0)).unwrap();
+        slab["committed_bytes"] = serde_json::json!(1950u64 << 20);
+        d.usage = Some(crate::usage::compute(&d, &[slab], SystemTime::now()));
+        let c = drive_component(&d);
+        assert_eq!(m(&c, "overcommit").unwrap().0, "2×");
+        assert_eq!(m(&c, "headroom").unwrap().1.as_deref(), Some("warn"), "50 MiB of 2000 left");
+        assert!(c.actions.iter().any(|a| a.id == "overcommit-off" && a.path.ends_with("/overcommit/off")));
     }
 
     #[test]

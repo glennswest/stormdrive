@@ -272,6 +272,35 @@ impl StormBlockClient {
         Ok(())
     }
 
+    /// PUT /api/v1/drives/{id}/overcommit {enabled, ratio, drive} — the
+    /// drive's overcommit setting (#13), for stormblock to enforce when a
+    /// claim binds on its slabs (stormblock#152). `drive` names it by our
+    /// identity, as the slab listing does, so a disk the engine holds as
+    /// `file+…` slabs rather than an opened drive (stormblock#133) is still
+    /// found. `Ok(false)`: the engine has no such route yet (404/405).
+    pub async fn set_overcommit(
+        &self,
+        path: &str,
+        oc: crate::drive::Overcommit,
+        uuid: Uuid,
+        wwn: Option<&str>,
+        serial: &str,
+    ) -> anyhow::Result<bool> {
+        let body = serde_json::json!({
+            "enabled": oc.enabled,
+            "ratio": oc.ratio,
+            "drive": { "uuid": uuid.to_string(), "wwn": wwn, "serial": serial, "path": path },
+        });
+        let resp = self
+            .send(self.http.put(self.drive_url(path, "/overcommit")).json(&body), false)
+            .await?;
+        if matches!(resp.status(), reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED) {
+            return Ok(false);
+        }
+        resp.error_for_status()?;
+        Ok(true)
+    }
+
     /// DELETE /api/v1/drives/{id} — id may be a UUID or a path.
     pub async fn delete_drive(&self, id_or_path: &str, force: bool) -> anyhow::Result<()> {
         let q = if force { "?force=true" } else { "" };
@@ -543,6 +572,46 @@ mod tests {
         assert_eq!(c.list_drives().await.unwrap().len(), 1);
         assert_eq!(c.token.read().unwrap().as_deref(), Some("second"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The overcommit push (#13): what an engine with stormblock#152 gets,
+    /// and how one without it answers.
+    #[tokio::test]
+    async fn overcommit_push_names_the_drive_and_tells_a_missing_route_apart() {
+        let seen: Arc<RwLock<Option<Value>>> = Arc::default();
+        let got = seen.clone();
+        let app = axum::Router::new().route(
+            "/api/v1/drives/{id}/overcommit",
+            axum::routing::put(move |axum::extract::Path(id): axum::extract::Path<String>, axum::Json(v): axum::Json<Value>| {
+                let got = got.clone();
+                async move {
+                    // Only sda is served, so sdb stands for an engine
+                    // without the route.
+                    if id != "/dev/sda" {
+                        return axum::http::StatusCode::NOT_FOUND;
+                    }
+                    *got.write().unwrap() = Some(v);
+                    axum::http::StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let c = StormBlockClient::new(StormBlockConfig { url, api_token: "t".into(), ..Default::default() });
+
+        let oc = crate::drive::Overcommit::new(true, Some(2.0)).unwrap();
+        let uuid = Uuid::nil();
+        assert!(c.set_overcommit("/dev/sda", oc, uuid, Some("naa.5000"), "WD-1").await.unwrap());
+        let v = seen.read().unwrap().clone().unwrap();
+        assert_eq!(v["enabled"], true);
+        assert_eq!(v["ratio"], 2.0);
+        assert_eq!(v["drive"]["wwn"], "naa.5000");
+        assert_eq!(v["drive"]["serial"], "WD-1");
+        assert_eq!(v["drive"]["uuid"], uuid.to_string());
+
+        // An engine without the route: not an error, just "not yet".
+        assert!(!c.set_overcommit("/dev/sdb", oc, uuid, None, "S").await.unwrap());
     }
 
     #[test]

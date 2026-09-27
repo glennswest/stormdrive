@@ -122,7 +122,12 @@ function usageLine(u){
   const slabs=(u.slabs||[]).map(s=>`${s.role} ${s.tier}: ${human(s.allocated_bytes)} used of ${human(s.total_bytes)}`)
     .concat([`outside slabs: ${human(u.outside_slabs_bytes)}`]).join('\n');
   const low=u.capacity_bytes&&u.free_bytes<u.capacity_bytes/10;
-  return `<br><span class="${low?'':'dim'} mono" title="${esc(slabs)}">${human(u.used_bytes)} used · ${human(u.free_bytes)} free</span>`;
+  let promise='';
+  if(u.committed_bytes!=null){
+    const tight=u.headroom_bytes<u.promisable_bytes/10;
+    promise=`<br><span class="${tight?'':'dim'} mono" title="promisable ${human(u.promisable_bytes)}">${human(u.committed_bytes)} committed · ${human(u.headroom_bytes)} headroom</span>`;
+  }
+  return `<br><span class="${low?'':'dim'} mono" title="${esc(slabs)}">${human(u.used_bytes)} used · ${human(u.free_bytes)} free</span>${promise}`;
 }
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function chip(text, cls){return `<span class="chip ${cls}">${esc(text)}</span>`}
@@ -188,6 +193,8 @@ window.leaveFleet=(id,name)=>{
                     throw e; }));
 };
 window.setDesig=(id,v)=>act(post(`api/v1/drives/${id}/designation`,{designation:v}));
+window.setOvercommit=(id,v)=>act(post(`api/v1/drives/${id}/overcommit`,
+  v==='off'?{enabled:false}:{enabled:true,ratio:parseFloat(v)}));
 window.runTest=(id,name,kind)=>{
   if(kind==='destructive_sample' &&
      !confirm(`DESTRUCTIVE test on ${name}: writes patterns into sampled regions and destroys data there. Continue?`)) return;
@@ -390,7 +397,17 @@ function actionsCell(d){
 function desigCell(d){
   const opts=['none','reserved','spare','failed'].map(v=>
     `<option value="${v}" ${d.designation===v?'selected':''}>${v}</option>`).join('');
-  return `<select onchange="setDesig('${d.id}',this.value)">${opts}</select>`;
+  return `<select onchange="setDesig('${d.id}',this.value)">${opts}</select>${overcommitSel(d)}`;
+}
+// Per-drive overcommit (#13): may this drive's slabs promise more than
+// they hold? stormblock enforces it when a claim binds.
+function overcommitSel(d){
+  const oc=d.overcommit||{enabled:false,ratio:1};
+  const cur=oc.enabled?String(oc.ratio):'off';
+  const vals=['off','1.5','2','3','4'];
+  if(!vals.includes(cur)) vals.push(cur);
+  const opts=vals.map(v=>`<option value="${v}" ${v===cur?'selected':''}>${v==='off'?'overcommit off':'overcommit '+v+'×'}</option>`).join('');
+  return `<br><select title="thin clones on this drive may promise up to ratio × its slab space" onchange="setOvercommit('${d.id}',this.value)">${opts}</select>`;
 }
 
 let lastShelves=[], lastEvents=[], lastHealth={}, lastHbas=[];

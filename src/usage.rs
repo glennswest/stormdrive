@@ -15,8 +15,17 @@
 //!   partitions. Not all of it can become slab space; most of it on a
 //!   stormcos disk is metadata.
 //! - `free` = capacity − used, the owner's "how much is left".
+//!
+//! And what the drive may promise (#13, stormblock#152):
+//!
+//! - `promisable` = slab space × the drive's overcommit ratio (× 1 when
+//!   overcommit is off). Only slab space can hold volumes.
+//! - `committed` = Σ the virtual size of the volumes placed in the drive's
+//!   slabs, as stormblock reports it per slab (`committed_bytes`). Null
+//!   until the engine reports it — stormblock#152 adds it.
+//! - `headroom` = promisable − committed: what a new claim can still get.
 
-use crate::drive::Drive;
+use crate::drive::{Drive, Overcommit};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::SystemTime;
@@ -31,6 +40,10 @@ pub struct SlabUsage {
     pub total_bytes: u64,
     pub allocated_bytes: u64,
     pub free_bytes: u64,
+    /// Virtual size promised out of this slab (stormblock#152); None while
+    /// the engine does not report it.
+    #[serde(default)]
+    pub committed_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +57,15 @@ pub struct Usage {
     pub outside_slabs_bytes: u64,
     /// capacity − used.
     pub free_bytes: u64,
+    /// in_slabs × the overcommit factor (#13).
+    #[serde(default)]
+    pub promisable_bytes: u64,
+    /// Σ slab committed, when every slab on the drive reports it.
+    #[serde(default)]
+    pub committed_bytes: Option<u64>,
+    /// promisable − committed (0 when over).
+    #[serde(default)]
+    pub headroom_bytes: Option<u64>,
     /// When stormblock last answered for this drive.
     pub collected_at: SystemTime,
 }
@@ -88,6 +110,7 @@ fn slab_usage(slab: &Value) -> SlabUsage {
         total_bytes,
         allocated_bytes,
         free_bytes,
+        committed_bytes: slab.get("committed_bytes").and_then(Value::as_u64),
     }
 }
 
@@ -100,6 +123,7 @@ pub fn compute(d: &Drive, slabs: &[Value], now: SystemTime) -> Usage {
     let in_slabs: u64 = mine.iter().map(|s| s.total_bytes).sum();
     let used: u64 = mine.iter().map(|s| s.allocated_bytes).sum();
     let free_in_slabs: u64 = mine.iter().map(|s| s.free_bytes).sum();
+    let committed: Option<u64> = mine.iter().map(|s| s.committed_bytes).sum();
     Usage {
         capacity_bytes: capacity,
         slabs: mine,
@@ -108,7 +132,21 @@ pub fn compute(d: &Drive, slabs: &[Value], now: SystemTime) -> Usage {
         free_in_slabs_bytes: free_in_slabs,
         outside_slabs_bytes: capacity.saturating_sub(in_slabs),
         free_bytes: capacity.saturating_sub(used),
+        promisable_bytes: 0,
+        committed_bytes: committed,
+        headroom_bytes: None,
         collected_at: now,
+    }
+    .priced(d.overcommit)
+}
+
+impl Usage {
+    /// Promisable and headroom under this overcommit setting — again when
+    /// an operator changes it, without waiting for the engine.
+    pub fn priced(mut self, oc: Overcommit) -> Self {
+        self.promisable_bytes = (self.in_slabs_bytes as f64 * oc.factor()) as u64;
+        self.headroom_bytes = self.committed_bytes.map(|c| self.promisable_bytes.saturating_sub(c));
+        self
     }
 }
 
@@ -165,6 +203,33 @@ mod tests {
         // ~15 GB used, ~1.98 TB left, ~15 GB in no slab.
         assert!(u.used_bytes / GB == 15 && u.free_bytes / GB == 1_985, "{u:?}");
         assert!(u.outside_slabs_bytes / GB == 15, "{u:?}");
+    }
+
+    #[test]
+    fn promisable_follows_the_overcommit_ratio_and_committed_needs_every_slab() {
+        let mut d = drive("S1", None, "/dev/sdc", 200 * SLOT);
+        let on = json!({ "serial": "S1", "path": "/dev/sdc" });
+        let mut a = slab("a", "data", 100, 10, on.clone());
+        let mut b = slab("b", "data", 50, 5, on);
+        let u = compute(&d, &[a.clone(), b.clone()], SystemTime::UNIX_EPOCH);
+        assert_eq!(u.promisable_bytes, 150 * SLOT, "off: promise only what the slabs hold");
+        assert_eq!((u.committed_bytes, u.headroom_bytes), (None, None), "no engine figure, no guess");
+
+        a["committed_bytes"] = json!(200 * SLOT);
+        let u = compute(&d, &[a.clone(), b.clone()], SystemTime::UNIX_EPOCH);
+        assert_eq!(u.committed_bytes, None, "one slab without a figure leaves the total unknown");
+
+        b["committed_bytes"] = json!(40 * SLOT);
+        let u = compute(&d, &[a.clone(), b.clone()], SystemTime::UNIX_EPOCH);
+        assert_eq!(u.committed_bytes, Some(240 * SLOT));
+        assert_eq!(u.headroom_bytes, Some(0), "over-promised reads as no headroom, not a wrap");
+
+        d.overcommit = Overcommit::new(true, Some(2.0)).unwrap();
+        let u = compute(&d, &[a, b], SystemTime::UNIX_EPOCH);
+        assert_eq!(u.promisable_bytes, 300 * SLOT);
+        assert_eq!(u.headroom_bytes, Some(60 * SLOT));
+        let off = u.priced(Overcommit::default());
+        assert_eq!((off.promisable_bytes, off.headroom_bytes), (150 * SLOT, Some(0)));
     }
 
     #[test]

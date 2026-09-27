@@ -260,6 +260,51 @@ pub enum Designation {
     Failed,
 }
 
+/// May the slabs on this drive promise more than they hold (#13)? Off by
+/// default: thin clones may not promise more than the drive's slab space.
+/// On, `ratio` bounds it (2.0 = promise up to twice). stormdrive holds the
+/// setting; stormblock enforces it when a claim binds (stormblock#152).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Overcommit {
+    pub enabled: bool,
+    pub ratio: f64,
+}
+
+/// The largest ratio accepted — a guard against a typo (20 for 2.0), not
+/// a policy.
+pub const MAX_OVERCOMMIT_RATIO: f64 = 16.0;
+
+impl Default for Overcommit {
+    fn default() -> Self {
+        Overcommit { enabled: false, ratio: 1.0 }
+    }
+}
+
+impl Overcommit {
+    /// A checked setting. Off always stores ratio 1.0; on needs a ratio in
+    /// 1.0..=16.0.
+    pub fn new(enabled: bool, ratio: Option<f64>) -> Result<Self, String> {
+        if !enabled {
+            return Ok(Overcommit::default());
+        }
+        let ratio = ratio.ok_or("overcommit on needs a ratio (e.g. 2.0)")?;
+        if !ratio.is_finite() || !(1.0..=MAX_OVERCOMMIT_RATIO).contains(&ratio) {
+            return Err(format!("overcommit ratio {ratio} is outside 1.0..={MAX_OVERCOMMIT_RATIO}"));
+        }
+        Ok(Overcommit { enabled, ratio })
+    }
+
+    /// What one byte of slab space may promise: the ratio when on, else 1.
+    pub fn factor(&self) -> f64 {
+        if self.enabled { self.ratio } else { 1.0 }
+    }
+
+    /// For people: `off` or `2×`.
+    pub fn word(&self) -> String {
+        if self.enabled { format!("{}×", self.ratio) } else { "off".into() }
+    }
+}
+
 /// What the drive is doing right now.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -353,6 +398,9 @@ pub struct Drive {
     pub membership: Membership,
     #[serde(default)]
     pub designation: Designation,
+    /// Operator-set, like designation (#13).
+    #[serde(default)]
+    pub overcommit: Overcommit,
     #[serde(default)]
     pub activity: Activity,
     #[serde(default)]
@@ -367,6 +415,11 @@ pub struct Drive {
     /// on change rather than every poll.
     #[serde(default)]
     pub pushed_health: Option<String>,
+    /// The overcommit setting stormblock last accepted, so it is pushed
+    /// on change rather than every tick. Not persisted: a restart pushes
+    /// it once more, in case the engine forgot it.
+    #[serde(skip)]
+    pub pushed_overcommit: Option<Overcommit>,
     /// A drain in progress or finished, as stormblock last reported it.
     #[serde(default)]
     pub drain: Option<DrainRecord>,
@@ -614,15 +667,39 @@ mod tests {
             location: Location::default(),
             membership: Membership::Out,
             designation: Designation::None,
+            overcommit: Default::default(),
             activity: Activity::Idle,
             health: HealthReport::default(),
             first_seen: SystemTime::now(),
             last_seen: SystemTime::now(),
             pushed_labels: Vec::new(),
             pushed_health: None,
+            pushed_overcommit: None,
             drain: None,
             usage: None,
         }
+    }
+
+    #[test]
+    fn overcommit_is_off_by_default_and_checked_when_on() {
+        assert_eq!(base_drive().overcommit, Overcommit { enabled: false, ratio: 1.0 });
+        let old: Drive = serde_json::from_value({
+            let mut v = serde_json::to_value(base_drive()).unwrap();
+            v.as_object_mut().unwrap().remove("overcommit");
+            v
+        })
+        .unwrap();
+        assert!(!old.overcommit.enabled, "an inventory from before #13 loads as off");
+
+        assert_eq!(Overcommit::new(false, Some(3.0)).unwrap(), Overcommit::default(), "off drops the ratio");
+        assert_eq!(Overcommit::new(true, Some(2.0)).unwrap().factor(), 2.0);
+        assert_eq!(Overcommit::new(true, Some(1.0)).unwrap().word(), "1×");
+        assert!(Overcommit::new(true, None).is_err());
+        for bad in [0.5, 16.5, f64::NAN, f64::INFINITY] {
+            assert!(Overcommit::new(true, Some(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(Overcommit::default().factor(), 1.0);
+        assert_eq!(Overcommit::default().word(), "off");
     }
 
     #[test]

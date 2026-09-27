@@ -10,6 +10,10 @@
 //! - **health**: our Failing/Failed conclusion goes to the engine, which
 //!   quarantines the drive's slabs and makes every redundant volume stop
 //!   reading that leg *before* an I/O fails on it. `healthy` lifts it.
+//! - **overcommit**: each drive's overcommit setting (#13) goes to the
+//!   engine for every drive that carries slabs, on change; stormblock
+//!   enforces it when a claim binds (stormblock#152). An engine without the
+//!   route yet is asked again every ten minutes, quietly.
 //! - **auto-add**: a qualified out-of-fleet drive is registered, labelled
 //!   and given a slab. Off by default (`stormblock.auto_add`).
 //! - **drains**: a fleet drive that goes Failing/Failed, or that an operator
@@ -30,6 +34,8 @@ use crate::stormblock::DrainStatus;
 
 /// How long a failed auto-add is left alone before it is tried again.
 const AUTO_ADD_RETRY: Duration = Duration::from_secs(600);
+/// How long an engine without the overcommit route is left alone.
+const OVERCOMMIT_RETRY: Duration = Duration::from_secs(600);
 
 /// A drive as the label push sees it: id, name, path, labels, identity.
 type LabelJob = (DriveId, String, String, Vec<(String, String)>, uuid::Uuid);
@@ -40,6 +46,8 @@ type AddJob = (DriveId, String, String, Vec<(String, String)>, crate::drive::Dri
 #[derive(Default)]
 pub struct FleetState {
     auto_add_attempted: std::collections::HashMap<DriveId, Instant>,
+    /// The engine answered 404/405 to the overcommit push: not before then.
+    overcommit_unsupported_until: Option<Instant>,
 }
 
 /// Everything, in the order that matters: labels first (a drain places by
@@ -49,6 +57,7 @@ pub async fn tick(state: &Arc<AppState>, fs: &mut FleetState) {
         return;
     }
     sync_labels(state).await;
+    sync_overcommit(state, fs).await;
     if state.config.stormblock.push_health {
         push_health(state).await;
     }
@@ -80,6 +89,42 @@ async fn sync_labels(state: &Arc<AppState>) {
                 tracing::info!(drive = %name, labels = ?labels, "location labels pushed to stormblock");
             }
             Err(e) => tracing::debug!(drive = %name, "labels not pushed: {e:#}"),
+        }
+    }
+}
+
+/// Push the overcommit setting of every drive with slabs on it — a fleet
+/// drive, or the node's own system disk — that the engine has not
+/// accepted yet.
+async fn sync_overcommit(state: &Arc<AppState>, fs: &mut FleetState) {
+    if fs.overcommit_unsupported_until.is_some_and(|t| Instant::now() < t) {
+        return;
+    }
+    type Job = (DriveId, String, String, crate::drive::Overcommit, Option<String>, String);
+    let due: Vec<Job> = {
+        let inv = state.inventory.read().await;
+        inv.drives
+            .values()
+            .filter(|d| d.activity != Activity::Missing)
+            .filter(|d| d.membership == Membership::Fleet || d.usage.as_ref().is_some_and(|u| !u.slabs.is_empty()))
+            .filter(|d| d.pushed_overcommit != Some(d.overcommit))
+            .map(|d| (d.id, d.name.clone(), d.path.clone(), d.overcommit, d.wwid.clone(), d.serial.clone()))
+            .collect()
+    };
+    for (id, name, path, oc, wwn, serial) in due {
+        match state.stormblock.set_overcommit(&path, oc, id.0, wwn.as_deref(), &serial).await {
+            Ok(true) => {
+                if let Some(d) = state.inventory.write().await.drives.get_mut(&id) {
+                    d.pushed_overcommit = Some(oc);
+                }
+                tracing::info!(drive = %name, overcommit = %oc.word(), "overcommit pushed to stormblock");
+            }
+            Ok(false) => {
+                tracing::debug!("stormblock has no overcommit route yet (stormblock#152)");
+                fs.overcommit_unsupported_until = Some(Instant::now() + OVERCOMMIT_RETRY);
+                return;
+            }
+            Err(e) => tracing::debug!(drive = %name, "overcommit not pushed: {e:#}"),
         }
     }
 }
@@ -311,6 +356,7 @@ async fn retire(state: &Arc<AppState>, id: DriveId) {
                     d.activity = Activity::Idle;
                     d.pushed_labels.clear();
                     d.pushed_health = None;
+                    d.pushed_overcommit = None;
                 }
             }
             {
@@ -411,6 +457,7 @@ pub async fn join(
         d.membership = Membership::Fleet;
         d.pushed_labels = labels.to_vec();
         d.pushed_health = None;
+        d.pushed_overcommit = None;
         d.drain = None;
     }
     let _ = name;

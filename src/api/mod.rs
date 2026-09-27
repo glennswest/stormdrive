@@ -135,6 +135,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}/fleet/{action}", post(fleet_by_path))
         .route("/api/v1/drives/{id}/designation", post(set_designation))
         .route("/api/v1/drives/{id}/designation/{value}", post(designation_by_path))
+        .route("/api/v1/drives/{id}/overcommit", get(get_overcommit).put(set_overcommit).post(set_overcommit))
+        .route("/api/v1/drives/{id}/overcommit/{value}", post(overcommit_by_path))
         .route("/api/v1/drives/{id}/test", get(get_test).post(start_test))
         .route("/api/v1/drives/{id}/test/cancel", post(cancel_test))
         .route("/api/v1/drives/{id}/test/{kind}", post(test_by_path))
@@ -534,6 +536,85 @@ async fn set_designation(
     }
     s.persist().await;
     Ok(Json(json!({ "id": did, "from": from, "to": body.designation, "drain": drain })))
+}
+
+#[derive(Deserialize)]
+struct OvercommitBody {
+    enabled: bool,
+    #[serde(default)]
+    ratio: Option<f64>,
+}
+
+async fn get_overcommit(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    let inv = s.inventory.read().await;
+    let d = inv.drives.get(&did).expect("resolved id present");
+    Ok(Json(overcommit_json(d)))
+}
+
+fn overcommit_json(d: &crate::drive::Drive) -> serde_json::Value {
+    let u = d.usage.as_ref();
+    json!({
+        "id": d.id, "overcommit": d.overcommit,
+        // stormblock enforces it when a claim binds (stormblock#152); this
+        // says whether the engine has accepted the current setting.
+        "pushed": d.pushed_overcommit == Some(d.overcommit),
+        "promisable_bytes": u.map(|u| u.promisable_bytes),
+        "committed_bytes": u.and_then(|u| u.committed_bytes),
+        "written_bytes": u.map(|u| u.used_bytes),
+        "headroom_bytes": u.and_then(|u| u.headroom_bytes),
+    })
+}
+
+/// Set a drive's overcommit (#13): `{"enabled": false}` or
+/// `{"enabled": true, "ratio": 2.0}`. Taken here and pushed to stormblock
+/// by the fleet loop on its next tick.
+async fn set_overcommit(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<OvercommitBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let oc = crate::drive::Overcommit::new(body.enabled, body.ratio).map_err(ApiError::bad_request)?;
+    let did = resolve_id(&s, &id).await?;
+    let (name, from, out) = {
+        let mut inv = s.inventory.write().await;
+        let d = inv.drives.get_mut(&did).expect("resolved id present");
+        let from = d.overcommit;
+        d.overcommit = oc;
+        d.usage = d.usage.take().map(|u| u.priced(oc));
+        (d.name.clone(), from, overcommit_json(d))
+    };
+    if from != oc {
+        s.events.write().await.push(
+            Some(did),
+            Severity::Info,
+            "overcommit",
+            format!("{name}: overcommit {} → {} (operator)", from.word(), oc.word()),
+        );
+        s.persist().await;
+    }
+    Ok(Json(out))
+}
+
+/// Body-free form for renderers: `off`, or a ratio (`2`, `1.5`).
+async fn overcommit_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((id, value)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let body = match value.as_str() {
+        "off" => OvercommitBody { enabled: false, ratio: None },
+        v => {
+            let ratio: f64 = v
+                .trim_end_matches(['x', '×'])
+                .parse()
+                .map_err(|_| ApiError::bad_request(format!("overcommit {v:?}: off or a ratio")))?;
+            OvercommitBody { enabled: true, ratio: Some(ratio) }
+        }
+    };
+    set_overcommit(State(s), Path(id), Json(body)).await
 }
 
 #[derive(Deserialize)]
