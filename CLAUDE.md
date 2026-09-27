@@ -370,6 +370,13 @@ with stable id. Found:
       SAS address), grouped by PCIe function; refreshed each discovery
       pass; `GET /api/v1/hbas`, `firmware` on topology controllers, `hba:`
       components in the feed, UI panel; tests, docs, v0.13.0, golden
+      - [x] Code + docs pushed (8f9eb43, b04c0a9 borrow fix, 5b44e1c docs)
+      - [ ] RESUME HERE (session restart 2026-09-27): sc-build on b04c0a9+
+            was in flight — rerun `sc-build`; if it fails, fix; close #17
+            (build-failure from 8f9eb43) once it passes
+      - [ ] Live-check /api/v1/hbas on R230 once deployed (not yet there)
+      - [ ] v0.13.0 release (Cargo.toml, Cargo.lock, this file), sc-build,
+            golden once, close #2 with what was verified
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
