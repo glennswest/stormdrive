@@ -230,6 +230,7 @@ window.uploadImage=async()=>{
   }catch(e){ $('upinfo').textContent=''; fail(e); }
   refresh();
 };
+window.forgetDrive=(id,name)=>{ if(confirm(`Forget missing drive ${name}? Its record and trend go.`)) act(api(`api/v1/drives/${id}`,{method:'DELETE'})); };
 window.deleteImage=name=>{ if(confirm(`Delete image ${name} from the store?`)) act(api(`api/v1/firmware/images/${encodeURIComponent(name)}`,{method:'DELETE'})); };
 window.firmwareOne=(id,name,fw)=>{
   const img=$('fwimg').value;
@@ -375,6 +376,8 @@ function actionsCell(d){
     b.push(`<button onclick="leaveFleet('${d.id}','${esc(d.name)}')">Leave fleet</button>`);
   else if(idle && d.usable && !d.in_use_by && d.designation!=='failed' && d.designation!=='reserved')
     b.push(`<button onclick="joinFleet('${d.id}','${esc(d.name)}')">Join fleet</button>`);
+  if(d.activity==='missing' && d.membership!=='fleet')
+    b.push(`<button onclick="forgetDrive('${d.id}','${esc(d.name)}')">Forget</button>`);
   if(idle && d.usable){
     b.push(`<button onclick="runTest('${d.id}','${esc(d.name)}','smoke')">Smoke</button>`);
     b.push(`<button onclick="runTest('${d.id}','${esc(d.name)}','read_scan')">Scan</button>`);

@@ -147,6 +147,10 @@ fn drive_component(d: &Drive) -> ComponentSummary {
             metrics.push(if h < u.promisable_bytes / 10 { m.tone("warn") } else { m });
         }
     }
+    // The bay's previous occupant (#15), so a replacement is visible as one.
+    if let Some(old) = d.replaces {
+        metrics.push(Metric::new("replaces", old.0.to_string()).tone("muted"));
+    }
     // The overcommit setting (#13): shown when on, or when there are slabs
     // it applies to.
     if d.overcommit.enabled || d.usage.as_ref().is_some_and(|u| !u.slabs.is_empty()) {
@@ -266,6 +270,10 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         d.format_blocker().is_none() && present,
         true,
     ));
+    // A pulled drive's record, once it is not needed (#15).
+    if !present {
+        actions.push(act("forget", "Forget", "DELETE", base.clone(), d.membership == Membership::Out, true));
+    }
     // Body-free, so a renderer can offer it; any other ratio goes through
     // PUT /api/v1/drives/{id}/overcommit.
     actions.push(if d.overcommit.enabled {
@@ -661,6 +669,18 @@ mod tests {
         assert!(m("used").is_some());
         assert_eq!(m("slabs").unwrap().value, "1");
         assert_eq!(m("free").unwrap().tone.as_deref(), Some("warn"), "under a tenth left");
+    }
+
+    #[test]
+    fn a_missing_drive_can_be_forgotten_unless_it_is_in_the_fleet() {
+        let mut d = drive();
+        assert!(!drive_component(&d).actions.iter().any(|a| a.id == "forget"), "present: nothing to forget");
+        d.activity = Activity::Missing;
+        let c = drive_component(&d);
+        let f = c.actions.iter().find(|a| a.id == "forget").unwrap();
+        assert_eq!((f.method.as_str(), f.enabled), ("DELETE", true));
+        d.membership = Membership::Fleet;
+        assert!(!drive_component(&d).actions.iter().find(|a| a.id == "forget").unwrap().enabled);
     }
 
     #[test]
