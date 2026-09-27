@@ -294,17 +294,23 @@ mod tests {
         let all = ids(160);
         let mut sch = Schedule::new(interval);
         let t0 = Instant::now();
-        let mut per_drive: HashMap<DriveId, usize> = HashMap::new();
+        let mut per_drive: HashMap<DriveId, Vec<u64>> = HashMap::new();
         let mut worst_second = 0;
-        for s in 0..180 {
+        for s in 0..=180 {
             let due = sch.take_due(t0 + Duration::from_secs(s), &all);
             worst_second = worst_second.max(due.len());
             for id in due {
-                *per_drive.entry(id).or_default() += 1;
+                per_drive.entry(id).or_default().push(s);
             }
         }
         assert_eq!(per_drive.len(), 160);
-        assert!(per_drive.values().all(|&n| n == 3), "each drive once per interval: {per_drive:?}");
+        for (id, at) in &per_drive {
+            // First due within the first interval (its phase, rounded up to
+            // the next whole-second step), then exactly one interval apart.
+            assert!(at[0] <= 60, "{id:?} first due at {}", at[0]);
+            assert!(at.len() >= 3, "{id:?} due at {at:?}");
+            assert!(at.windows(2).all(|w| w[1] - w[0] == 60), "{id:?} due at {at:?}");
+        }
         // 160/60 ≈ 2.7 a second on average; hashing is not perfectly even.
         assert!(worst_second <= 10, "a burst of {worst_second} in one second");
     }
