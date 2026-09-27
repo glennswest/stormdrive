@@ -600,6 +600,7 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             pushed_overcommit: None,
+            replaces: None,
             drain: None,
             usage: None,
         }

@@ -224,6 +224,16 @@ impl Location {
         }
     }
 
+    /// The bay as a key, for "is this drive in the same bay as that one":
+    /// shelf + bay, or the PCIe slot. None when the drive has no bay.
+    pub fn bay_key(&self) -> Option<String> {
+        match (self.bay, &self.pcie_slot) {
+            (Some(b), _) => Some(format!("{}/bay/{b}", self.shelf.as_ref().and_then(|s| s.key()).unwrap_or_default())),
+            (None, Some(s)) => Some(format!("slot/{s}")),
+            _ => None,
+        }
+    }
+
     /// Did the drive physically move (or get placed for the first time)
     /// between `self` and `now`? Shelf, bay, HBA and PCIe slot — the
     /// failure-domain labels — are what count; detail filling in is not a
@@ -423,6 +433,10 @@ pub struct Drive {
     /// A drain in progress or finished, as stormblock last reported it.
     #[serde(default)]
     pub drain: Option<DrainRecord>,
+    /// The missing drive this one took the bay of (#15): the replace half
+    /// of the failure workflow, found by bay, not by anyone typing it in.
+    #[serde(default)]
+    pub replaces: Option<DriveId>,
     /// Capacity, the stormblock slabs on the drive and how much is left
     /// (#12). None until stormblock's slab listing has answered once.
     #[serde(default)]
@@ -675,9 +689,20 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             pushed_overcommit: None,
+            replaces: None,
             drain: None,
             usage: None,
         }
+    }
+
+    #[test]
+    fn bay_keys_name_a_bay_on_a_shelf_or_a_pcie_slot() {
+        let shelf = Shelf { logical_id: Some("5000abc".into()), ..Default::default() };
+        let l = Location { shelf: Some(shelf), bay: Some(7), ..Default::default() };
+        assert_eq!(l.bay_key().as_deref(), Some("5000abc/bay/7"));
+        let l = Location { pcie_slot: Some("142".into()), ..Default::default() };
+        assert_eq!(l.bay_key().as_deref(), Some("slot/142"));
+        assert_eq!(Location::default().bay_key(), None);
     }
 
     #[test]

@@ -194,9 +194,13 @@ async fn tick(
         merge_shelves(state, shelves).await;
         let hbas = tokio::task::spawn_blocking(crate::hba::scan).await?;
         merge_hbas(state, hbas).await;
+        let started = std::time::Instant::now();
         let cfg = state.config.discovery.clone();
         let observed = tokio::task::spawn_blocking(move || discovery::scan(&cfg)).await?;
+        let seen = observed.len();
         merge_observed(state, observed).await;
+        let cached = discovery::probe_cache().lock().map(|c| c.len()).unwrap_or_default();
+        state.poller.record_discovery(started.elapsed().as_millis() as u64, seen, cached);
     }
 
     if !collect {
@@ -445,10 +449,10 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
     let now = SystemTime::now();
     let shelves = state.shelves.read().await.clone();
     let mut inv = state.inventory.write().await;
-    let mut seen: Vec<DriveId> = Vec::new();
+    let mut seen: std::collections::HashSet<DriveId> = std::collections::HashSet::new();
     let mut events = Vec::new();
     for (id, group) in group_observed(observed) {
-        seen.push(id);
+        seen.insert(id);
         let paths: Vec<String> = group.iter().map(|o| o.path.clone()).collect();
         let primary = &group[0];
         match inv.drives.get_mut(&id) {
@@ -532,6 +536,23 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         primary.model, primary.serial, primary.capacity_bytes
                     ),
                 ));
+                let replaces = replaced_in_bay(&inv.drives, &location);
+                if let Some(old) = replaces.and_then(|o| inv.drives.get(&o)) {
+                    events.push((
+                        Some(id),
+                        Severity::Info,
+                        "replaced",
+                        format!(
+                            "{name} ({}) in {} replaces {} ({}, {:?}{})",
+                            primary.serial,
+                            location.place(),
+                            old.name,
+                            old.serial,
+                            old.health.status(),
+                            if old.membership == Membership::Fleet { ", still in the fleet" } else { "" },
+                        ),
+                    ));
+                }
                 inv.drives.insert(
                     id,
                     crate::drive::Drive {
@@ -562,6 +583,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         pushed_labels: Vec::new(),
                         pushed_health: None,
                         pushed_overcommit: None,
+                        replaces,
                         drain: None,
                         usage: None,
                     },
@@ -585,6 +607,22 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
     for (id, sev, kind, msg) in events {
         log.push(id, sev, kind, msg);
     }
+}
+
+/// The missing drive whose bay a new drive has taken, if any (#15): the
+/// most recently seen one, not already replaced.
+pub fn replaced_in_bay(
+    drives: &HashMap<DriveId, crate::drive::Drive>,
+    at: &crate::drive::Location,
+) -> Option<DriveId> {
+    let key = at.bay_key()?;
+    let taken: std::collections::HashSet<DriveId> = drives.values().filter_map(|d| d.replaces).collect();
+    drives
+        .values()
+        .filter(|d| d.activity == Activity::Missing && !taken.contains(&d.id))
+        .filter(|d| d.location.bay_key().as_deref() == Some(key.as_str()))
+        .max_by_key(|d| d.last_seen)
+        .map(|d| d.id)
 }
 
 /// Each drive's usage (#12) from stormblock's slab listing. When the
@@ -715,6 +753,39 @@ mod tests {
         assert_eq!(evaluate(&cfg(), &s, Some(2)).0, HealthStatus::Warning);
         assert_eq!(evaluate(&cfg(), &s, Some(5)).0, HealthStatus::Good);
         assert_eq!(evaluate(&cfg(), &s, None).0, HealthStatus::Good);
+    }
+
+    #[test]
+    fn a_new_drive_in_a_missing_drives_bay_replaces_it() {
+        let mk = |serial: &str, slot: &str, missing: bool, seen: u64| -> crate::drive::Drive {
+            let mut d: crate::drive::Drive = serde_json::from_value(serde_json::json!({
+                "id": DriveId::derive(None, "M", serial), "path": "/dev/x", "name": "x", "paths": [],
+                "kind": "nvme_ssd", "model": "M", "serial": serial, "firmware": "1", "wwid": null,
+                "capacity_bytes": 1, "block_size": 4096,
+                "first_seen": UNIX_EPOCH, "last_seen": UNIX_EPOCH + Duration::from_secs(seen),
+            }))
+            .unwrap();
+            d.location.pcie_slot = Some(slot.into());
+            if missing {
+                d.activity = Activity::Missing;
+            }
+            d
+        };
+        let mut drives = HashMap::new();
+        for d in [mk("OLD1", "17", true, 10), mk("OLD2", "17", true, 20), mk("LIVE", "18", false, 30), mk("GONE", "18", true, 5)] {
+            drives.insert(d.id, d);
+        }
+        let slot = |s: &str| crate::drive::Location { pcie_slot: Some(s.into()), ..Default::default() };
+        let old2 = DriveId::derive(None, "M", "OLD2");
+        assert_eq!(replaced_in_bay(&drives, &slot("17")), Some(old2), "the most recently seen one");
+        assert_eq!(replaced_in_bay(&drives, &slot("18")), Some(DriveId::derive(None, "M", "GONE")), "only a missing drive is replaced");
+        assert_eq!(replaced_in_bay(&drives, &slot("19")), None);
+        assert_eq!(replaced_in_bay(&drives, &crate::drive::Location::default()), None, "no bay, no guess");
+
+        let mut new = mk("NEW", "17", false, 40);
+        new.replaces = Some(old2);
+        drives.insert(new.id, new);
+        assert_eq!(replaced_in_bay(&drives, &slot("17")), Some(DriveId::derive(None, "M", "OLD1")), "one replacement per drive");
     }
 
     #[test]

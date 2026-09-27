@@ -150,7 +150,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ws/components", get(ws_components))
         .route("/api/v1/monitor", get(monitor_stats))
         .route("/api/v1/drives", get(list_drives))
-        .route("/api/v1/drives/{id}", get(get_drive))
+        .route("/api/v1/drives/{id}", get(get_drive).delete(forget_drive))
         .route("/api/v1/drives/{id}/health", get(get_drive_health))
         .route("/api/v1/drives/{id}/locate", post(set_locate))
         // Parameter-less action routes: a stormview renderer invokes
@@ -305,6 +305,33 @@ async fn get_drive(
         .resolve(&id)
         .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
     Ok(Json(serde_json::to_value(d).map_err(|e| ApiError::internal(e.to_string()))?))
+}
+
+/// Forget a drive that is gone (#15): at 160 bays, pulled drives would
+/// otherwise pile up in the inventory forever. Only a missing drive, and
+/// not one stormblock still holds — leave the fleet (or drain) first.
+async fn forget_drive(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    let (name, serial) = {
+        let mut inv = s.inventory.write().await;
+        let d = inv.drives.get(&did).expect("resolved id present");
+        if d.activity != Activity::Missing {
+            return Err(ApiError::conflict(format!("{} is present; only a missing drive can be forgotten", d.name)));
+        }
+        if d.membership == Membership::Fleet {
+            return Err(ApiError::conflict(format!("{} is still in the fleet; leave the fleet first", d.name)));
+        }
+        let out = (d.name.clone(), d.serial.clone());
+        inv.drives.remove(&did);
+        inv.trends.remove(&did);
+        out
+    };
+    s.events.write().await.push(Some(did), Severity::Info, "forgotten", format!("{name} ({serial}): forgotten (operator)"));
+    s.persist().await;
+    Ok(Json(json!({ "id": did, "forgotten": true })))
 }
 
 async fn get_drive_health(

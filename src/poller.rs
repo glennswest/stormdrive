@@ -135,6 +135,12 @@ pub struct PollStats {
     /// capacity one cycle uses. Past 100 % the drives are sampled less often
     /// than the interval says.
     pub load_pct: Option<f64>,
+    /// The last discovery pass (sysfs walk, probes of new devices,
+    /// location): its wall time and how many drives it saw.
+    pub discovery_ms: Option<u64>,
+    pub discovery_drives: usize,
+    /// Devices whose READ CAPACITY / slab probe answer is cached.
+    pub discovery_cached: usize,
 }
 
 /// Runs samples: bounded, timed out, never two at once on one drive.
@@ -234,6 +240,13 @@ impl Sampler {
                 Outcome::TimedOut
             }
         }
+    }
+
+    pub fn record_discovery(&self, ms: u64, drives: usize, cached: usize) {
+        let mut s = self.stats.lock().unwrap();
+        s.discovery_ms = Some(ms);
+        s.discovery_drives = drives;
+        s.discovery_cached = cached;
     }
 
     /// Names of drives whose read has not returned, for the stats.
