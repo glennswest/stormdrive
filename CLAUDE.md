@@ -284,6 +284,19 @@ to 4096.
       a real drive: needs a vendor image for the ST1200MM0098 / X425 on
       stormblock1
 
+### #12: per-drive usage (2026-09-27) — IN PROGRESS
+
+"Look at a drive and know how much storage is left." stormblock v17.1
+`/api/v1/slabs` names each slab's drive (`drive {serial, wwn, model,
+path}`, stormblock#136) with total/free/allocated slots.
+- [ ] `usage` on each drive: capacity; slabs (id, role, tier, total,
+      allocated, free); `outside_slabs` = capacity − Σ slab total (partition
+      table, slab metadata, unpartitioned); `used` = Σ allocated; `free` =
+      capacity − used. Joined by wwn, else serial, else path. Fetched each
+      monitor tick; unknown (null) until stormblock answers once
+- [ ] `/api/v1/drives`, kube Drive status, components feed metrics, UI column
+- [ ] Tests, docs, changelog, release, sc-build, golden, close #12
+
 ### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
 
 rustkube-node mirrors each PV's placement: stormblock v17.1 names the
