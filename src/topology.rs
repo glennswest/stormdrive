@@ -13,20 +13,110 @@ use std::collections::BTreeMap;
 
 pub type Shelves = BTreeMap<String, ShelfReport>;
 
-/// Does this path component look like a PCI BDF ("0000:03:00.0")?
+/// Does this path component look like a PCI BDF ("0000:03:00.0")? The
+/// domain is 4 hex digits, or more behind Intel VMD ("10000:01:00.0"),
+/// which is how many NVMe backplanes are wired.
 pub fn is_pci_bdf(s: &str) -> bool {
     let b = s.as_bytes();
-    if b.len() != 12 {
+    if b.len() < 12 || b.len() > 16 {
         return false;
     }
+    let d = b.len() - 8; // domain digits
     let hex = |r: std::ops::Range<usize>| b[r].iter().all(|c| c.is_ascii_hexdigit());
-    hex(0..4)
-        && b[4] == b':'
-        && hex(5..7)
-        && b[7] == b':'
-        && hex(8..10)
-        && b[10] == b'.'
-        && b[11].is_ascii_hexdigit()
+    hex(0..d)
+        && b[d] == b':'
+        && hex(d + 1..d + 3)
+        && b[d + 3] == b':'
+        && hex(d + 4..d + 6)
+        && b[d + 6] == b'.'
+        && b[d + 7].is_ascii_hexdigit()
+}
+
+/// NVMe location at scale (#15): 160 E3.S/U.2 drives sit behind PCIe
+/// switches (often inside a VMD domain), with no SES enclosure to name a
+/// bay. What sysfs offers instead is the hotplug slot each drive is in
+/// (`/sys/bus/pci/slots/<n>`, `n` being the platform's slot number, ACPI
+/// `_SUN`, which is what the chassis label says) and, on newer kernels,
+/// the slot's NPEM LEDs. `sys` is the sysfs root, so the walk is testable.
+pub mod nvme {
+    use super::is_pci_bdf;
+    use std::path::{Path, PathBuf};
+
+    fn read_trim(p: &Path) -> Option<String> {
+        std::fs::read_to_string(p).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    /// The namespace's device path under `/sys/devices`. Under native NVMe
+    /// multipath `/sys/block/nvme0n1` is a virtual subsystem head with no
+    /// PCIe in its path; its `multipath/` directory links to the
+    /// per-controller paths (`nvme0c0n1`), and the first of those (sorted,
+    /// so stable) is followed to the controller.
+    pub fn device_path(sys: &Path, name: &str) -> Option<PathBuf> {
+        let real = std::fs::canonicalize(sys.join("block").join(name)).ok()?;
+        if bdfs(&real).next().is_some() {
+            return Some(real);
+        }
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(sys.join("block").join(name).join("multipath"))
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+        paths.iter().find_map(|p| std::fs::canonicalize(p).ok().filter(|r| bdfs(r).next().is_some()))
+    }
+
+    /// Every PCI function on the path, root port first.
+    pub fn bdfs(real: &Path) -> impl Iterator<Item = String> + '_ {
+        real.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .filter(|c| is_pci_bdf(c))
+    }
+
+    /// The hotplug slot on the drive's PCI chain: the one whose `address`
+    /// (`domain:bus:dev`, no function) is a device on the chain, nearest
+    /// the drive first.
+    pub fn slot(sys: &Path, real: &Path) -> Option<String> {
+        let slots: Vec<(String, String)> = std::fs::read_dir(sys.join("bus/pci/slots"))
+            .ok()?
+            .flatten()
+            .filter_map(|e| Some((read_trim(&e.path().join("address"))?, e.file_name().to_string_lossy().to_string())))
+            .collect();
+        let chain: Vec<String> = bdfs(real).collect();
+        chain.iter().rev().find_map(|bdf| {
+            let want = bdf.rsplit_once('.').map(|(a, _)| a)?;
+            slots.iter().find(|(addr, _)| addr == want).map(|(_, n)| n.clone())
+        })
+    }
+
+    /// A slot number is the bay: `_SUN` is the number printed on the
+    /// chassis. Only a plain number; a label like `NVMe-A3` stays a slot.
+    pub fn bay_of_slot(slot: &str) -> Option<u32> {
+        slot.parse().ok()
+    }
+
+    /// Where the drive's locate LED is: the slot's `attention` indicator
+    /// (pciehp), else an NPEM `…:enclosure:locate` LED on a port of the
+    /// chain (Linux 6.12+).
+    pub fn locate_led(sys: &Path, real: &Path, slot: Option<&str>) -> Option<PathBuf> {
+        if let Some(s) = slot {
+            let att = sys.join("bus/pci/slots").join(s).join("attention");
+            if att.exists() {
+                return Some(att);
+            }
+        }
+        let chain: Vec<String> = bdfs(real).collect();
+        let mut leds: Vec<(String, PathBuf)> = std::fs::read_dir(sys.join("class/leds"))
+            .ok()?
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                let bdf = n.strip_suffix(":enclosure:locate")?.to_string();
+                Some((bdf, e.path().join("brightness")))
+            })
+            .collect();
+        leds.sort();
+        chain.iter().rev().find_map(|bdf| leds.iter().find(|(b, _)| b == bdf).map(|(_, p)| p.clone()))
+    }
 }
 
 /// Parse SCSI VPD page 0x80 (unit serial number): 4-byte header
@@ -206,28 +296,34 @@ mod linux {
             });
         }
         if name.starts_with("nvme") {
-            loc.pcie_addr = loc.controller.as_ref().and_then(|c| c.pcie_addr.clone());
-            if let Some(bdf) = &loc.pcie_addr {
-                loc.pcie_slot = pci_physical_slot(bdf);
+            let sys = Path::new("/sys");
+            if let Some(dev) = super::nvme::device_path(sys, name) {
+                // A multipath head's own path has no PCIe; its controller's does.
+                if loc.controller.as_ref().map_or(true, |c| c.pcie_addr.is_none()) {
+                    loc.controller = controller_of(&dev);
+                }
+                loc.pcie_slot = super::nvme::slot(sys, &dev);
+                if loc.bay.is_none() {
+                    loc.bay = loc.pcie_slot.as_deref().and_then(super::nvme::bay_of_slot);
+                }
             }
+            loc.pcie_addr = loc.controller.as_ref().and_then(|c| c.pcie_addr.clone());
         }
         loc
-    }
-
-    /// /sys/bus/pci/slots/<label>/address holds "0000:03:00" (no function).
-    fn pci_physical_slot(bdf: &str) -> Option<String> {
-        let want = bdf.split('.').next()?;
-        for slot in std::fs::read_dir("/sys/bus/pci/slots").ok()?.flatten() {
-            if read_trim(&slot.path().join("address")).as_deref() == Some(want) {
-                return Some(slot.file_name().to_string_lossy().to_string());
-            }
-        }
-        None
     }
 
     pub fn set_locate(name: &str, loc: &Location, shelves: &Shelves, on: bool) -> std::io::Result<()> {
         if let Some((_, slot_dir)) = find_enclosure_slot(name) {
             return std::fs::write(slot_dir.join("locate"), if on { "1" } else { "0" });
+        }
+        // NVMe: the slot's attention indicator or an NPEM LED.
+        if name.starts_with("nvme") {
+            let sys = Path::new("/sys");
+            if let Some(led) = super::nvme::device_path(sys, name)
+                .and_then(|dev| super::nvme::locate_led(sys, &dev, loc.pcie_slot.as_deref()))
+            {
+                return std::fs::write(led, if on { "1" } else { "0" });
+            }
         }
         // No ses module: talk SES ourselves through the shelf's ESP.
         let key = loc.shelf.as_ref().and_then(|s| s.key());
@@ -286,6 +382,64 @@ mod tests {
         assert!(!is_pci_bdf("host3"));
         assert!(!is_pci_bdf("0000-03-00.0"));
         assert!(!is_pci_bdf("00000:3:00.0"));
+    }
+
+    #[test]
+    fn vmd_domains_are_bdfs_too() {
+        assert!(is_pci_bdf("10000:01:00.0"));
+        assert!(is_pci_bdf("10001:e1:1f.7"));
+        assert!(!is_pci_bdf("10000:1:00.0"));
+        assert!(!is_pci_bdf("pci10000:00"));
+    }
+
+    /// A 160-bay NVMe chassis in miniature: two drives behind a PCIe
+    /// switch inside a VMD domain, one of them under native multipath;
+    /// slots numbered as the chassis labels them; one slot with a pciehp
+    /// attention indicator, the other with an NPEM LED.
+    #[cfg(unix)]
+    #[test]
+    fn nvme_behind_a_switch_gets_its_slot_bay_and_led() {
+        use std::os::unix::fs::symlink;
+        let sys = std::env::temp_dir().join(format!("stormdrive-nvme-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sys);
+        let mk = |p: std::path::PathBuf| {
+            std::fs::create_dir_all(&p).unwrap();
+            p
+        };
+        let w = |p: std::path::PathBuf, v: &str| std::fs::write(p, v).unwrap();
+        let sw = sys.join("devices/pci0000:00/0000:00:01.0/pci10000:00/10000:00:02.0/10000:01:00.0");
+        // Drive in bay 17, plain: /sys/block/nvme5n1 → …/nvme/nvme5/nvme5n1.
+        let d17 = mk(sw.join("10000:02:00.0/10000:03:00.0/nvme/nvme5/nvme5n1"));
+        // Drive in bay 142, multipath: the head is virtual.
+        let c142 = mk(sw.join("10000:02:01.0/10000:04:00.0/nvme/nvme9/nvme9c9n1"));
+        let head = mk(sys.join("devices/virtual/nvme-subsystem/nvme-subsys9/nvme9n1"));
+        mk(head.join("multipath"));
+        symlink(&c142, head.join("multipath/nvme9c9n1")).unwrap();
+        mk(sys.join("block"));
+        symlink(&d17, sys.join("block/nvme5n1")).unwrap();
+        symlink(&head, sys.join("block/nvme9n1")).unwrap();
+        let s17 = mk(sys.join("bus/pci/slots/17"));
+        w(s17.join("address"), "10000:03:00\n");
+        w(s17.join("attention"), "0");
+        w(mk(sys.join("bus/pci/slots/142")).join("address"), "10000:04:00\n");
+        w(mk(sys.join("bus/pci/slots/unused")).join("address"), "0000:7f:00\n");
+        mk(sys.join("class/leds/10000:02:01.0:enclosure:locate"));
+
+        let dev17 = nvme::device_path(&sys, "nvme5n1").unwrap();
+        assert_eq!(nvme::slot(&sys, &dev17).as_deref(), Some("17"));
+        assert_eq!(nvme::bay_of_slot("17"), Some(17));
+        assert_eq!(nvme::locate_led(&sys, &dev17, Some("17")), Some(sys.join("bus/pci/slots/17/attention")));
+
+        let dev142 = nvme::device_path(&sys, "nvme9n1").expect("multipath head followed to its controller");
+        assert!(dev142.ends_with("10000:04:00.0/nvme/nvme9/nvme9c9n1"));
+        assert_eq!(nvme::slot(&sys, &dev142).as_deref(), Some("142"));
+        assert_eq!(
+            nvme::locate_led(&sys, &dev142, Some("142")),
+            Some(sys.join("class/leds/10000:02:01.0:enclosure:locate/brightness")),
+            "no attention file: the NPEM LED on the switch port above it"
+        );
+        assert_eq!(nvme::bay_of_slot("NVMe-A3"), None);
+        let _ = std::fs::remove_dir_all(&sys);
     }
 
     #[test]
