@@ -371,12 +371,11 @@ with stable id. Found:
       pass; `GET /api/v1/hbas`, `firmware` on topology controllers, `hba:`
       components in the feed, UI panel; tests, docs, v0.13.0, golden
       - [x] Code + docs pushed (8f9eb43, 64c29f1 borrow fix, 5b44e1c docs)
-      - [ ] RESUME HERE (session restart 2026-09-27): sc-build on 64c29f1+
-            was in flight — rerun `sc-build`; if it fails, fix; close #17
-            (build-failure from 8f9eb43) once it passes
-      - [ ] Live-check /api/v1/hbas on R230 once deployed (not yet there)
-      - [ ] v0.13.0 release (Cargo.toml, Cargo.lock, this file), sc-build,
-            golden once, close #2 with what was verified
+      - [x] sc-build passes on 4a69a06 (114/114); #17 closed
+      - [x] v0.13.0 tagged (46ecff9)
+      - [ ] RESUME HERE: sc-build on 46ecff9 in flight; then golden once,
+            close #2 (live /api/v1/hbas check rides the release — the
+            R230 runs 0.11.0 today)
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD

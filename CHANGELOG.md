@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-09-27
+- **docs:** work plan — #2: v0.13.0 tagged, sc-build + golden pending
+
 ## [v0.13.0] — 2026-09-27
 
 ### 2026-09-27
