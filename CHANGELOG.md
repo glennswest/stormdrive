@@ -3,6 +3,17 @@
 ## [Unreleased]
 
 ### 2026-09-27
+- **feat:** HBA inventory (#2 — owner's decision: HBA firmware version
+  collection is stormdrive's, BIOS is stormipmi's): every PCIe SCSI
+  controller from `/sys/class/scsi_host`, grouped per PCIe function, with
+  driver, PCI ids, board name, SAS address and firmware / option-ROM BIOS
+  / NVDATA versions. `GET /api/v1/hbas`, `hba` on topology controllers,
+  `hba:<bdf>` components in the feed, an HBA panel in the UI, and `hba`
+  events when a card appears, goes, or its firmware changes.
+- **docs:** work plan — #2 live check on the R230 (0.11.0): system disk
+  shows `in_use_by`, kind `sata_hdd`, destructive actions disabled.
+
+### 2026-09-27
 - **feat:** per-drive `usage` (#12): capacity; each stormblock slab on the
   drive (id, role, tier, total, allocated, free), joined from
   `/api/v1/slabs` by WWN, else serial, else path (stormblock#136);

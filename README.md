@@ -48,6 +48,9 @@ curl -s http://localhost:9092/api/v1/placement | python3 -m json.tool
 curl -s http://localhost:9092/api/v1/placement/naa.50014ee2bab11f8d
 curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:9092/api/v1/placement?since=<generation>"
 
+# HBAs and the firmware they run (reported, never flashed)
+curl -s http://localhost:9092/api/v1/hbas | python3 -m json.tool
+
 # NetApp shelves: identity, PSU/fan/temperature elements, slot map
 curl -s http://localhost:9092/api/v1/shelves | python3 -m json.tool
 # 520-byte drives (kernel: "Unsupported sector size") → 4096, one or many

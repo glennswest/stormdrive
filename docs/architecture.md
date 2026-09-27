@@ -237,6 +237,25 @@ goes bad or recovers. Control is limited to IDENT (bay and shelf locate
 LEDs) built from a fresh status page so the generation code matches and
 no other request bit rides along.
 
+### HBAs (`hba.rs`)
+
+Inventory only — stormdrive reports an HBA's firmware and never flashes
+it; the node's own BIOS belongs to stormipmi (owner's decision on #2,
+2026-09-24). Each discovery tick reads `/sys/class/scsi_host/host*`,
+follows each link to its PCIe function (the last BDF in the path; USB
+mass storage and non-PCI hosts are skipped) and groups hosts per function,
+so an AHCI controller's per-port hosts are one HBA. Per HBA: driver, PCI
+vendor:device and subsystem ids, board name/assembly/tracer, host SAS
+address, and the versions the driver exposes — firmware (`version_fw`
+mpt3sas, `firmware_version` smartpqi/aacraid, `firmware_revision` hpsa,
+`fw_version` qla2xxx, `fwrev` lpfc), option-ROM `version_bios` and
+`version_nvdata_persistent` (mpt3sas). AHCI and virtio report none.
+Served at `/api/v1/hbas`, as `hba` on each topology controller (a card
+with no drives still appears there), as `hba:<bdf>` components in the
+feed (has_many drives), and as the UI's HBA panel. A card appearing,
+going away or coming back with different firmware/BIOS/NVDATA is an
+`hba` event.
+
 ### Sector-size reformat (`format.rs`)
 NetApp-formatted drives arrive at 520 (or 528) bytes per sector. Linux
 refuses them — `sd: Unsupported sector size 520` — and the block node
@@ -361,6 +380,8 @@ POST /api/v1/shelves/{key}/format      {"block_size", "all"?} — every
 GET  /api/v1/components                stormview feed: drives + shelves
 GET  /ws/components                    the same feed, pushed on change
 GET  /api/v1/topology                  controller → shelf → drive tree
+GET  /api/v1/hbas                      HBAs: driver, PCI ids, firmware,
+                                       option-ROM BIOS, NVDATA (inventory)
 GET  /api/v1/placement                 where every drive + shelf is, for
                                        mirrors; generation, ETag, ?since=G /
                                        If-None-Match → 304
