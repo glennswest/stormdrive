@@ -296,7 +296,12 @@ path}`, stormblock#136) with total/free/allocated slots.
       capacity − used. Joined by wwn, else serial, else path. Fetched each
       monitor tick; unknown (null) until stormblock answers once
 - [x] `/api/v1/drives`, kube Drive status, components feed metrics, UI column
-- [ ] Tests, docs, changelog, release, sc-build, golden, close #12
+- [x] Tests (usage::tests: R230 system disk adds up, wwn→serial→path
+      join, no-slab drive), docs (architecture "Per-drive usage"), changelog
+- [x] Released in v0.13.0 (46ecff9); sc-build 114/114
+- [ ] Golden (shared with #2, retry in flight after a forge
+      "no NVMe device appeared for volume" failure), then close #12;
+      live reading rides the release (R230 runs 0.11.0)
 
 ### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
 

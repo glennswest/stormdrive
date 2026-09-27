@@ -5,6 +5,7 @@
 
 ### 2026-09-27
 - **docs:** work plan — #2: v0.13.0 tagged, sc-build + golden pending
+- **docs:** work plan — #12: shipped in v0.13.0, golden pending
 
 ## [v0.13.0] — 2026-09-27
 
