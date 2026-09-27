@@ -42,7 +42,7 @@ button:disabled{opacity:.4;cursor:default}
 .row{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
 #err{color:var(--err);font-size:12px;margin:8px 0;display:none}
 .wrap{overflow-x:auto}
-#shelves{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:10px;margin-bottom:14px}
+#shelves,#hbas{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:10px;margin-bottom:14px}
 .shelf{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
 .shelf .hd{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
 .shelf .hd b{font-size:13px}
@@ -63,6 +63,9 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer}
 
 <h2>Shelves</h2>
 <div id="shelves"><div class="dim">no shelves</div></div>
+
+<h2>HBAs</h2>
+<div id="hbas"><div class="dim">no HBAs</div></div>
 
 <h2>Firmware images</h2>
 <div class="toolbar" id="images">
@@ -265,6 +268,21 @@ function statusChip(s){
   const cls={ok:'c-ok',noncritical:'c-warn',critical:'c-err',unrecoverable:'c-err',not_installed:'c-mut',unknown:'c-mut'}[s]||'c-mut';
   return chip((s||'unknown').replace('_',' '),cls);
 }
+function hbaCard(h){
+  const on=lastDrives.filter(d=>d.location&&d.location.controller&&d.location.controller.pcie_addr===h.pcie_addr).length;
+  const v=(k,x)=>x?`<span>${k} <b class="mono">${esc(x)}</b></span>`:'';
+  return `<div class="shelf">
+    <div class="hd">
+      <div><b>${esc(h.board_name||h.driver||'HBA')}</b> <span class="dim mono">${esc(h.pcie_addr)}</span></div>
+      <div>${chip(h.driver||'?','c-mut')}</div>
+    </div>
+    <div class="stats">
+      <span>drives <b>${on}</b></span>
+      ${v('firmware',h.firmware)}${v('bios',h.bios)}${v('nvdata',h.nvdata)}
+      ${v('pci',h.pci_id)}${v('sas',h.sas_address)}${v('hosts',(h.scsi_hosts||[]).join(' '))}
+    </div>
+  </div>`;
+}
 function shelfCard(s){
   const needs=(s.drives||[]).filter(d=>d.needs_reformat&&d.membership!=='fleet').length;
   const fleet=(s.drives||[]).filter(d=>d.membership==='fleet').length;
@@ -375,9 +393,10 @@ function desigCell(d){
   return `<select onchange="setDesig('${d.id}',this.value)">${opts}</select>`;
 }
 
-let lastShelves=[], lastEvents=[], lastHealth={};
+let lastShelves=[], lastEvents=[], lastHealth={}, lastHbas=[];
 function render(){
   $('shelves').innerHTML = lastShelves.map(shelfCard).join('') || '<div class="dim">no shelves (no SES enclosure reachable)</div>';
+  $('hbas').innerHTML = lastHbas.map(hbaCard).join('') || '<div class="dim">no HBAs</div>';
   $('rows').innerHTML = lastDrives.map(d=>`<tr class="${sel.has(d.id)?'sel':''}">
     <td><input type="checkbox" ${sel.has(d.id)?'checked':''} ${selectable(d)?'':'disabled'} onchange="toggleSel('${d.id}',this.checked)"></td>
     <td class="mono">${esc(d.name)}${d.paths&&d.paths.length>1?' '+chip(d.paths.length+' paths','c-acc'):''}</td>
@@ -403,10 +422,10 @@ function render(){
 
 async function refresh(){
   try{
-    const [h,dr,sh,ev,im] = await Promise.all([
+    const [h,dr,sh,ev,im,hb] = await Promise.all([
       api('api/v1/health'), api('api/v1/drives'), api('api/v1/shelves'), api('api/v1/events'),
-      api('api/v1/firmware/images').catch(()=>({images:[]}))]);
-    lastHealth=h; lastDrives=dr.drives; lastShelves=sh.shelves; lastEvents=ev.events; lastImages=im.images||[];
+      api('api/v1/firmware/images').catch(()=>({images:[]})), api('api/v1/hbas').catch(()=>({hbas:[]}))]);
+    lastHealth=h; lastDrives=dr.drives; lastShelves=sh.shelves; lastEvents=ev.events; lastImages=im.images||[]; lastHbas=hb.hbas||[];
     const needs=lastDrives.filter(d=>d.needs_reformat).length;
     const fmt=lastDrives.filter(d=>d.activity==='formatting').length;
     $('node').textContent = `${h.node} · v${h.version} · ${dr.drives.length} drives · ${sh.shelves.length} shelves`

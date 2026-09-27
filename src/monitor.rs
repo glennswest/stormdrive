@@ -165,6 +165,8 @@ async fn tick(
         // this scan when only a logical id is visible.
         let shelves = tokio::task::spawn_blocking(ses::scan).await?;
         merge_shelves(state, shelves).await;
+        let hbas = tokio::task::spawn_blocking(crate::hba::scan).await?;
+        merge_hbas(state, hbas).await;
         let cfg = state.config.discovery.clone();
         let observed = tokio::task::spawn_blocking(move || discovery::scan(&cfg)).await?;
         merge_observed(state, observed).await;
@@ -351,6 +353,19 @@ async fn merge_shelves(state: &Arc<AppState>, fresh: topology::Shelves) {
         let mut log = state.events.write().await;
         for (sev, msg) in events {
             log.push(None, sev, "shelf", msg);
+        }
+    }
+}
+
+/// Replace the HBA table with this scan's; a card appearing, going away
+/// or coming back with different firmware is an event.
+async fn merge_hbas(state: &Arc<AppState>, fresh: crate::hba::Hbas) {
+    let msgs = crate::hba::diff(&state.hbas.read().await, &fresh);
+    *state.hbas.write().await = fresh;
+    if !msgs.is_empty() {
+        let mut log = state.events.write().await;
+        for msg in msgs {
+            log.push(None, Severity::Info, "hba", msg);
         }
     }
 }

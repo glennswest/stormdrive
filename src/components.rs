@@ -297,6 +297,50 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     }
 }
 
+/// An HBA: the card, and the firmware it runs — inventory only (#2).
+fn hba_component(h: &crate::hba::Hba, drives: &[&Drive]) -> ComponentSummary {
+    let on: Vec<&&Drive> = drives
+        .iter()
+        .filter(|d| {
+            d.location.controller.as_ref().and_then(|c| c.pcie_addr.as_deref()) == Some(h.pcie_addr.as_str())
+        })
+        .collect();
+    let mut detail = vec![h.driver.clone().unwrap_or_else(|| "hba".into())];
+    detail.push(format!("{} drive{}", on.len(), if on.len() == 1 { "" } else { "s" }));
+    if let Some(f) = &h.firmware {
+        detail.push(format!("fw {f}"));
+    }
+    let mut metrics = vec![Metric::new("drives", on.len().to_string())];
+    for (label, v) in [
+        ("firmware", &h.firmware),
+        ("bios", &h.bios),
+        ("nvdata", &h.nvdata),
+        ("driver", &h.driver),
+        ("pci id", &h.pci_id),
+        ("sas address", &h.sas_address),
+        ("serial", &h.board_tracer),
+    ] {
+        if let Some(v) = v {
+            metrics.push(Metric::new(label, v.clone()).tone("muted"));
+        }
+    }
+    metrics.push(Metric::new("pcie", h.pcie_addr.clone()).tone("muted"));
+    ComponentSummary {
+        id: format!("hba:{}", h.pcie_addr),
+        kind: "hba".into(),
+        label: format!("{} · {}", h.display(), h.pcie_addr),
+        health: Health::Ok,
+        detail: detail.join(" · "),
+        metrics,
+        actions: Vec::new(),
+        relations: vec![
+            Relation::has_many("drives", on.iter().map(|d| format!("drive:{}", d.id)).collect()),
+            Relation::belongs_to("system", "system"),
+        ],
+        link: None,
+    }
+}
+
 fn ses_health(st: crate::ses::ElementStatus) -> Health {
     use crate::ses::ElementStatus as E;
     match st {
@@ -341,6 +385,7 @@ fn shelf_hbas(
 /// Assemble the full feed: system rollup, shelves, drives.
 pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
     let ses = state.shelves.read().await.clone();
+    let hbas = state.hbas.read().await.clone();
     let inv = state.inventory.read().await;
     let mut drives: Vec<&Drive> = inv.drives.values().collect();
     drives.sort_by(|a, b| a.name.cmp(&b.name));
@@ -395,12 +440,15 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
             Metric::new("fleet", fleet.to_string()).tone("accent"),
         ],
         actions: Vec::new(),
-        relations: vec![Relation::has_many(
-            "drives",
-            drives.iter().map(|d| format!("drive:{}", d.id)).collect(),
-        )],
+        relations: vec![
+            Relation::has_many("drives", drives.iter().map(|d| format!("drive:{}", d.id)).collect()),
+            Relation::has_many("hbas", hbas.keys().map(|a| format!("hba:{a}")).collect()),
+        ],
         link: None,
     });
+    for h in hbas.values() {
+        out.push(hba_component(h, &drives));
+    }
 
     // Shelves the SES scan knows but no drive points at yet still show.
     for (key, r) in &ses {
@@ -696,6 +744,34 @@ mod tests {
         let mut d = drive();
         d.designation = Designation::Failed;
         assert_eq!(health_of(&d), Health::Error);
+    }
+
+    #[test]
+    fn hba_component_carries_firmware_and_its_drives() {
+        let mut d = drive();
+        d.location.controller = Some(Controller {
+            scsi_host: Some("host0".into()),
+            pcie_addr: Some("0000:01:00.0".into()),
+            driver: Some("mpt3sas".into()),
+        });
+        let other = drive();
+        let h = crate::hba::Hba {
+            pcie_addr: "0000:01:00.0".into(),
+            scsi_hosts: vec!["host0".into()],
+            driver: Some("mpt3sas".into()),
+            board_name: Some("SAS3008".into()),
+            firmware: Some("16.00.10.00".into()),
+            bios: Some("08.37.00.00".into()),
+            ..Default::default()
+        };
+        let c = hba_component(&h, &[&d, &other]);
+        assert_eq!(c.id, "hba:0000:01:00.0");
+        assert_eq!(c.label, "SAS3008 · 0000:01:00.0");
+        let m = |l: &str| c.metrics.iter().find(|m| m.label == l).map(|m| m.value.clone());
+        assert_eq!(m("firmware").as_deref(), Some("16.00.10.00"));
+        assert_eq!(m("bios").as_deref(), Some("08.37.00.00"));
+        assert_eq!(m("drives").as_deref(), Some("1"));
+        assert!(c.relations.iter().any(|r| r.name == "drives" && r.targets == vec![format!("drive:{}", d.id)]));
     }
 
     #[test]

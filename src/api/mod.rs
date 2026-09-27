@@ -39,6 +39,8 @@ pub struct AppState {
     pub fleet_firmware_lock: tokio::sync::Mutex<()>,
     /// Latest SES scan: every shelf the node can talk to, by logical id.
     pub shelves: RwLock<crate::topology::Shelves>,
+    /// Latest HBA scan: every PCIe SCSI controller, by PCIe address.
+    pub hbas: RwLock<crate::hba::Hbas>,
     pub inventory_path: Option<PathBuf>,
     pub node_name: String,
 }
@@ -156,6 +158,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/shelves/{key}/format", post(format_shelf))
         .route("/api/v1/shelves/{key}/format/{block_size}", post(format_shelf_by_path))
         .route("/api/v1/topology", get(topology))
+        .route("/api/v1/hbas", get(list_hbas))
         .route("/api/v1/placement", get(placement))
         .route("/api/v1/placement/{id}", get(placement_one))
         .route("/api/v1/events", get(list_events))
@@ -618,6 +621,7 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use std::collections::BTreeMap;
     let inv = s.inventory.read().await;
     let ses = s.shelves.read().await.clone();
+    let hbas = s.hbas.read().await.clone();
 
     fn drive_leaf(d: &crate::drive::Drive) -> serde_json::Value {
         json!({
@@ -682,6 +686,20 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         }
     }
 
+    // A card with nothing on it yet is still hardware on the node.
+    for h in hbas.values() {
+        let covered = controllers.values().any(|(c, _, _)| c["pcie_addr"] == h.pcie_addr.as_str());
+        if !covered {
+            let key = h.scsi_hosts.first().cloned().unwrap_or_else(|| h.pcie_addr.clone());
+            let ctrl = crate::drive::Controller {
+                scsi_host: h.scsi_hosts.first().cloned(),
+                pcie_addr: Some(h.pcie_addr.clone()),
+                driver: h.driver.clone(),
+            };
+            controllers.insert(key, (serde_json::to_value(ctrl).unwrap_or_default(), BTreeMap::new(), Vec::new()));
+        }
+    }
+
     let controllers: Vec<serde_json::Value> = controllers
         .into_iter()
         .map(|(key, (ctrl, shelves, direct))| {
@@ -700,10 +718,18 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
                     json!({ "key": key, "shelf": sh, "ses": ses_summary, "drives": drives })
                 })
                 .collect();
-            json!({ "key": key, "controller": ctrl, "shelves": shelves, "direct": direct })
+            let hba = ctrl["pcie_addr"].as_str().and_then(|a| hbas.get(a));
+            json!({ "key": key, "controller": ctrl, "hba": hba, "shelves": shelves, "direct": direct })
         })
         .collect();
     Json(json!({ "controllers": controllers, "unlocated": unlocated }))
+}
+
+/// `GET /api/v1/hbas` — every PCIe SCSI controller with its firmware,
+/// option-ROM BIOS and NVDATA versions (inventory only; #2).
+async fn list_hbas(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let hbas: Vec<crate::hba::Hba> = s.hbas.read().await.values().cloned().collect();
+    Json(json!({ "hbas": hbas }))
 }
 
 async fn components_feed(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
