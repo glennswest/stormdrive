@@ -7,6 +7,7 @@
 - **feat:** the page is rebuilt for hundreds of drives (#6): Svelte 5 + stormview DataGrid in `web/`, shelves / HBAs / NVMe / unlocated as top rows with each group's drives nested, quick and text filters, a drive/shelf/HBA side pane, and a bulk bar (tests, locate, designation, format, firmware) where ticking a group means its drives; keyed rows replace the 4 s innerHTML rebuild
 - **feat:** `/assets/app.{js,css}` (and `/ui/assets/…`) serve the committed `web/dist`; `src/ui/index.html` is gone
 - **build:** `web/rebuild.sh` builds `web/dist` on dev through sc-build (`--check` verifies the committed build); `npm test` covers `web/src/lib/model.js`
+- **test:** `npm run test:page` loads the built page in jsdom with 212 drives (two shelves, 4 direct, 160 NVMe) and checks grouping, expand, group selection, the pane, the filter and keyed refresh
 - **docs:** work plan — #7 golden `golden-stormdrive-9d1fa8491d44` (stormcos#131); #6 survey: what shipped, what is #5/#18, the UI at scale
 - **docs:** work plan — #7 done: sc-build 132/132 + clippy on 024dc54
 - **docs:** README rewritten from the code (#7): what it does today, sc-build, every flag and config key with its default, the full API including the kube and body-free routes, how the golden ships it (stormcos `service_golden`, `/sys` read-only → stormcos#166), and what is not built yet

@@ -325,23 +325,27 @@ Survey against the issue's list:
       grouping) asked of the owner 2026-09-28 → **Svelte 5 + stormview
       DataGrid** in `web/`, `web/dist` committed and embedded, dist built on
       dev by sc-build (tarball over stdout), never on this VM
-- [ ] Plan (the page, `web/`):
-  - [ ] groups are the top rows: each shelf, then each HBA's direct drives,
+- [x] Plan (the page, `web/`) — 55688e8 + page test:
+  - [x] groups are the top rows: each shelf, then each HBA's direct drives,
         then unlocated; each group's drives in a nested DataGrid
         (collapsed groups render nothing; keyed rows diff, no rebuild)
-  - [ ] compact drive columns (DataGrid text/health/metrics/actions only);
+  - [x] compact drive columns (DataGrid text/health/metrics/actions only);
         click a drive → detail pane with designation, overcommit, tests,
         format, firmware, locate, usage, progress, health messages
-  - [ ] filter box + quick filters (needs reformat, attention, out of
+  - [x] filter box + quick filters (needs reformat, attention, out of
         fleet, busy); ticking a group = all its drives
-  - [ ] bulk bar: format 4096/512, firmware, smoke/scan test, designation,
+  - [x] bulk bar: format 4096/512, firmware, smoke/scan test, designation,
         locate on/off — server batch where it exists (format, firmware),
         per-drive calls otherwise (bulk test/join is #5)
-  - [ ] shelf pane (elements), firmware image store, events
-  - [ ] `web/src/lib/model.js` pure grouping/filter, `node --test`
-  - [ ] dist built on dev, committed; Rust serves `web/dist` (`/`, `/ui`,
+  - [x] shelf pane (elements), firmware image store, events
+  - [x] `web/src/lib/model.js` pure grouping/filter, `node --test`; page
+        smoke test in jsdom with 212 drives (`npm run test:page`)
+  - [x] dist built on dev (`web/rebuild.sh`), committed; Rust serves `web/dist` (`/`, `/ui`,
         `/ui/`, `/assets/*`, `/ui/assets/*`); `src/ui/index.html` goes
-  - [ ] docs, changelog, v0.16.0, sc-build, golden
+  - [x] docs, changelog; stormview#12/#13/#14 filed (nested select-all,
+        leaf sections, exports condition)
+  - [ ] v0.16.0, sc-build + clippy + `web/rebuild.sh --check`, close #6,
+        golden
 - [ ] Metrics per drive — #18
 
 ### #12: per-drive usage (2026-09-27) — DONE

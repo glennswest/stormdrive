@@ -188,7 +188,7 @@ portable tests only. What ships is the release build:
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-The unit tests live beside the code (132 after #7). Page parsers, sense
+The unit tests live beside the code (133 at v0.16.0). Page parsers, sense
 decoding, the threshold engine, placement hashing and the token lookup are
 tested on synthetic data. A stand-in engine covers the stormblock client.
 There is no test container yet (#11).
@@ -204,7 +204,11 @@ git push && web/rebuild.sh --check  # rebuild on dev and fail unless the committ
 
 `npm test` runs `node --test` over `web/src/lib/model.js`: grouping,
 filters, group-means-its-drives selection, and the eligibility rules that
-mirror the server's guards. stormview comes from GitHub `main`, pinned by
+mirror the server's guards. `npm run test:page` loads the built
+`dist/assets/app.js` in jsdom against a mocked API with 212 drives (two
+24-bay shelves, 4 direct, 160 NVMe). It checks that the page groups,
+expands, selects, opens the pane and filters, and that a row keeps its
+element across the 4 s refresh. stormview comes from GitHub `main`, pinned by
 `web/package-lock.json`.
 
 ## Running it
