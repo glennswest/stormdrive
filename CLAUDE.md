@@ -391,7 +391,7 @@ stormblock v17 (stormblock#107) requires `Authorization: Bearer` on all of
 - [x] Golden `golden-stormdrive-fa8dbebdd485` (0.11.0 @ 98bd1d2), release
       request stormcos#123, posted on stormcos#104; #14 closed. #2 resumes
 
-### #2: first look at a real node (R230, 2026-09-24) — IN PROGRESS
+### #2: first look at a real node (R230, 2026-09-24) — DONE
 
 stormdrive 0.9.0 on the Dell R230 (`192.168.30.2:9092`, stormcos 11.3x).
 Verified over HTTP: health, summary, drives, topology, events, components,
@@ -422,7 +422,7 @@ with stable id. Found:
 - [x] Live on the R230 (0.11.0, 2026-09-27): sda `in_use_by` stormblock
       (partitions 2, 3), kind `sata_hdd`, Join/Destructive/Format 4K
       disabled in the feed
-- [ ] `hba.rs`: every PCIe SCSI HBA from /sys/class/scsi_host (driver,
+- [x] `hba.rs`: every PCIe SCSI HBA from /sys/class/scsi_host (driver,
       version_fw, version_bios, nvdata, board name/assembly/tracer, host
       SAS address), grouped by PCIe function; refreshed each discovery
       pass; `GET /api/v1/hbas`, `firmware` on topology controllers, `hba:`
@@ -431,12 +431,9 @@ with stable id. Found:
       - [x] sc-build passes on 4a69a06 (114/114); #17 closed
       - [x] v0.13.0 tagged (46ecff9)
       - [x] sc-build passes on 46ecff9 (114/114)
-      - [ ] RESUME HERE (now v0.15.0, 8a86c76, covers #2/#12/#13/#15): golden blocked — two requests failed at the seal
-            ("no NVMe device appeared"): dev.g8.lo has no nvme-tcp since
-            its reboot (stormcentral#111, owner/root). #2 and #12 proposed
-            --after it, status posted on both. When #111 closes: request
-            the golden once, then close #2 and #12 (live checks ride the
-            release)
+      - [x] Golden `golden-stormdrive-01a422df544f` (0.15.0 @ 9bb1abb,
+            contains 46ecff9), release request stormcos#131; #2 closed
+            2026-09-28. `/api/v1/hbas` on the R230 rides the release
 
 ### Phase 1: Discovery + inventory
 - [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
