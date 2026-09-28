@@ -97,6 +97,8 @@ src/
   components.rs   stormview feed: drives, shelves, HBAs with actions
   api/mod.rs      axum REST :9092, summary card, embeds web/dist (the page)
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} (stormblock#80)
+test/             test container (#11): /test short|medium|long, pick.rs = safety
+tests/suites.rs   the three suites against this daemon on every cargo test
 web/              the page: Svelte 5 + stormview DataGrid (#6); web/dist is
                   committed and embedded; rebuild on dev with web/rebuild.sh
 ```
@@ -322,22 +324,30 @@ drain or `failed` designation. Writes are limited to reversible,
 restored-on-exit ones (designation spare↔original on an out-of-fleet drive,
 overcommit round-trip, smoke/read-scan+cancel which only read), plus
 requests the server must *refuse* (checked before anything starts).
-- [ ] crate `test/` (workspace member): env, report, api client, suites
-- [ ] short: health/version, drives (stable ids, verdicts), summary,
+- [x] crate `test/` (workspace member): env, report, api client, suites
+- [x] short: health/version, drives (stable ids, verdicts), summary,
       placement + 304, components, kube list, events, monitor, page
-- [ ] medium: error envelope/404/400s, refusals (409) on guarded drives,
+- [x] medium: error envelope/404/400s, refusals (409) on guarded drives,
       resolve by wwn/serial/path, designation + overcommit round-trips with
       events, smoke test to a verdict, read-scan cancel, kube watch, usage
       from stormblock on slab-holding drives, shelf/NVMe checks (skip
       without: requires sas-shelf / nvme)
-- [ ] long: waves until the window ends — API readers sized from the drive
+- [x] long: waves until the window ends — API readers sized from the drive
       count + a smoke test on every idle usable drive; per-wave latency,
       monitor sample cost, stuck/timeouts, drives left busy, event growth;
       a wave slower than 2× the first or residue growing = fail
-- [ ] harness: cargo test in the workspace runs the real daemon (no drives,
+- [x] harness: cargo test in the workspace runs the real daemon (no drives,
       stormblock off) and all three suites against it (sc-build)
-- [ ] Containerfile, build.sh, stormdrive-test.yaml (metadata), docs
-- [ ] a real run on C2NR0Q2 via `stormcentral test run`; close #11; golden
+- [x] Containerfile, build.sh, stormdrive-test.yaml (metadata), docs
+- [x] Verified on dev (a5894a0): harness short 9 pass/2 skip, medium 6/12,
+      long 3/0 against the real daemon (no drives there, so the drive
+      checks skip); 9 unit tests in test/ (pick safety rules, wave judge);
+      `test/build.sh` builds a 3.4 MB FROM-scratch static image; bogus
+      suite / unreachable node exit 2
+- [ ] Live: runs 06827cdeed (short) and 68f6fbbf00 (medium) queued on
+      C2NR0Q2 (R230; unreachable and its queue stuck on "wait for the
+      apiserver" at queue time) — check with `stormcentral test show <id>`
+- [ ] close #11; golden
 
 ### #8: a presentation of its purpose and functionality (2026-09-28) — DONE
 

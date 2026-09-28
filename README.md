@@ -191,7 +191,42 @@ cargo build --release --target x86_64-unknown-linux-musl
 The unit tests live beside the code (133 at v0.16.0). Page parsers, sense
 decoding, the threshold engine, placement hashing and the token lookup are
 tested on synthetic data. A stand-in engine covers the stormblock client.
-There is no test container yet (#11).
+
+### Test containers (`test/`, #11)
+
+stormdrive's suites follow stormcentral's
+[test standard](https://github.com/glennswest/stormcentral/blob/main/docs/test-standard.md):
+
+- **Image:** one image, `/test short|medium|long`, built from
+  `test/Containerfile` (`FROM scratch`). `test/build.sh` builds the static
+  musl binary on the build box.
+- **Output:** JSON lines on stdout, then a summary. Exit 0 means passed, 1 a
+  test failed, 2 could not run.
+- **Target:** the suites drive the node's stormdrive at `STORM_NODE:9092`
+  through its API. Checks of features newer than the node's release are
+  skipped, not failed.
+
+| Suite | Budget | What it proves |
+|---|---|---|
+| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled; card, placement (+304), feed, kube Drives, events, HBAs, the page |
+| `medium` | < 30 min | 404 envelope, malformed requests refused (400); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost, page under `/ui/` |
+| `long` | the night window | waves until the window ends: 4 + drives/8 API readers (4–64) and a smoke test on every idle, usable drive; p50/p95, errors, drives left busy, stuck or timed-out health reads, event growth. A wave slower than 2× the first (+250 ms), or leaving residue, fails |
+
+**Never destructive.** The suites run on real machines with real drives,
+and `test/src/pick.rs` (unit-tested) decides what they may touch:
+
+- **Refusals:** a request the server must refuse goes only to a drive whose
+  record shows the guard the server checks *first*.
+- **Writes:** only reversible ones, each restored even when a suite times out.
+- **Tests:** they only read.
+
+`test/stormdrive-test.yaml` states the suites' metadata and requirements.
+
+`cargo test` also runs `tests/suites.rs`: all three suites against this
+daemon, started on the build box with stormblock off and no drives. That
+proves the API contract and the reporting on every sc-build. The
+drive-touching checks skip there; they meet real drives on the test machines
+(`stormcentral test run stormdrive <suite>`).
 
 **The page** is Svelte + Vite in `web/`. Its build, `web/dist`, is committed
 and embedded with `include_str!`, so cargo alone builds the daemon. The

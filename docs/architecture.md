@@ -780,5 +780,8 @@ convention), and CLI flags override the file.
 - sysfs, ioctl, SG_IO and netlink code runs only on Linux, and is exercised
   by running the daemon on a node: R230 for SATA behind mpt3sas, stormblock1
   for the NetApp shelf.
-- **Not yet:** the test containers the stormcos test standard asks for
-  (#11).
+- **Test containers** (`test/`, #11): short / medium / long suites that
+  drive a node's stormdrive over its API, run by stormcentral on every test
+  machine. They are never destructive; `test/src/pick.rs` holds the rules.
+  `tests/suites.rs` runs all three against the real daemon on every
+  sc-build. See the README's "Test containers".
