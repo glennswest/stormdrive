@@ -285,7 +285,7 @@ to 4096.
       a real drive: needs a vendor image for the ST1200MM0098 / X425 on
       stormblock1
 
-### #12: per-drive usage (2026-09-27) — IN PROGRESS
+### #12: per-drive usage (2026-09-27) — DONE
 
 "Look at a drive and know how much storage is left." stormblock v17.1
 `/api/v1/slabs` names each slab's drive (`drive {serial, wwn, model,
@@ -299,8 +299,9 @@ path}`, stormblock#136) with total/free/allocated slots.
 - [x] Tests (usage::tests: R230 system disk adds up, wwn→serial→path
       join, no-slab drive), docs (architecture "Per-drive usage"), changelog
 - [x] Released in v0.13.0 (46ecff9); sc-build 114/114
-- [ ] Golden (shared with #2) blocked on stormcentral#111, then close #12;
-      live reading rides the release (R230 runs 0.11.0)
+- [x] Golden `golden-stormdrive-01a422df544f` (0.15.0 @ 9bb1abb, contains
+      46ecff9), release request stormcos#131; #12 closed 2026-09-28. Live
+      reading rides the release (R230 runs 0.11.0)
 
 ### #15: 160+ drives per node (2026-09-27) — DONE
 
