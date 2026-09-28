@@ -369,7 +369,8 @@ Steps:
 - [x] v0.17.0 (e06f9df); sc-build on da27975: 154 + 9 + harness (medium's
       worker-refusals passes: 6 malformed jobs refused, no job created),
       clippy --workspace clean, `web/rebuild.sh --check` identical; #5
-      closed; golden. Not run on a real drive: the disk operations wait on
+      closed; golden `golden-stormdrive-e388a5764082` (c7d0463), stormcos#131.
+      Not run on a real drive: the disk operations wait on
       #30 (stormblock1) / #31 (NVMe)
 
 ### Comment mining (2026-09-28)
