@@ -1,7 +1,11 @@
 # StormDrive Architecture
 
-**Status:** design v1, 2026-08-26. Written against the stormblock review
-([stormblock-review.md](stormblock-review.md)).
+**Status:** checked against the code at v0.15.0, 2026-09-28 (#7). The first
+version was written 2026-08-26 as a design against the stormblock review
+([stormblock-review.md](stormblock-review.md)). A section marked
+**Design — not built** describes intent the code does not have yet. Every
+other section describes what the code does. The route table, every config key
+and how the golden ships are in the [README](../README.md).
 
 ## Position in the stack
 
@@ -71,9 +75,17 @@ placement mechanism express "spread across shelves", "across racks", and
 exactly what cross-cluster RAID needs (stormblock#72).
 
 Separation of duties: **stormblock never has to learn hardware, stormdrive
-never touches data.** stormdrive reads identify/log/mode pages and sysfs; it
-never reads or writes a drive's data blocks. The one write-class thing it does
-to a drive is firmware download/commit, and that only through the sequencer.
+never touches a fleet drive's data.** For its own bookkeeping stormdrive
+reads a drive's sysfs, identify, log and mode pages, and the first sectors of
+the disk and of each GPT partition (the slab probe). It writes to a drive only
+when an operator asks. Three operations do that:
+
+- a destructive test;
+- a sector-size format;
+- a firmware download.
+
+The first two refuse a fleet drive, a mounted drive, and a drive that holds a
+stormblock slab.
 
 One stormdrive per node, next to that node's stormblock. Cross-node views
 belong to whatever aggregates node APIs (stormd cards per node now; a fleet
@@ -81,57 +93,71 @@ view later).
 
 ## Drive model
 
+`src/drive.rs`, abridged (serde names are snake_case):
+
 ```rust
-DriveId(Uuid)          // uuid5(STORMDRIVE_NS, wwid | model+serial) — stable
-                       // across opens, reboots, and path changes
+DriveId(Uuid)          // uuid5(stormdrive ns, wwid | "model:serial") — stable
+                       // across opens, reboots, path changes and re-bays
 Drive {
     id: DriveId,
-    path: String,              // current /dev node (may change; id doesn't)
-    kind: DriveKind,           // NvmeSsd | SasSsd | SasHdd | SataSsd | SataHdd | Unknown
+    path, name: String,        // primary /dev node + kernel name (may change)
+    paths: Vec<String>,        // every /dev node (dual-IOM: two); path = first
+    kind: DriveKind,           // nvme_ssd | sas_ssd | sas_hdd | sata_ssd | sata_hdd | unknown
     model, serial, firmware: String,
     wwid: Option<String>,
     capacity_bytes: u64,
-    block_size: u32,
+    block_size, physical_block_size: u32,  // from READ CAPACITY: 520 on NetApp drives
+    usable: bool,              // false = kernel refused the sector size
+    in_use_by: Option<String>, // a stormblock slab found on the disk
     location: Location,
-    state: DriveState,
+    membership, designation, activity,     // see below
+    overcommit: Overcommit,    // {enabled, ratio}, operator-set (#13)
     health: HealthReport,
+    usage: Option<Usage>,      // from stormblock's slab listing (#12)
+    format: Option<FormatRecord>, firmware_update: Option<FirmwareRecord>,
+    drain: Option<DrainRecord>, replaces: Option<DriveId>,
+    pushed_labels, pushed_health,          // what stormblock last accepted
     first_seen, last_seen: SystemTime,
 }
 Location {                         // controller → shelf → bay hierarchy
     controller: Option<Controller>,  // { scsi_host, pcie_addr, driver }
-    shelf: Option<Shelf>,            // { id, vendor, model, serial, sas_address }
-                                     //   identity = the SES processor's SCSI
-                                     //   device; serial from VPD page 0x80 is
-                                     //   the canonical key (a dual-IOM shelf
-                                     //   is two enclosure devices, one serial)
-    bay: Option<u32>,                // slot index within the shelf
+    shelf: Option<Shelf>,            // { id, logical_id, vendor, model, serial,
+                                     //   sas_address }; key = enclosure logical id
+    bay: Option<u32>,
     sas_address: Option<String>,     // the drive's own
-    pcie_addr / pcie_slot,           // NVMe drives
+    sas_phy: Option<u32>, expander: Option<String>,
+    pcie_addr, pcie_slot: Option<String>,  // NVMe drives
 }
 // Lifecycle is three ORTHOGONAL fields, not one state ladder:
 Membership  = out | fleet          // is the drive handed to stormblock?
 Designation = none | reserved | spare | failed   // operator-set; applies
                                                  // both in fleet and out
-Activity    = idle | testing | joining | draining | missing
-HealthStatus = Unknown | Good | Warning | Failing | Failed
+Activity    = idle | testing | draining | formatting | updating_firmware | missing
+HealthStatus = unknown | good | warning | failing | failed
 HealthReport {
     status, temperature_c, power_on_hours, media_errors,
-    available_spare_pct, wear_pct,            // NVMe percentage_used / SSD endurance
+    available_spare_pct, wear_pct,            // NVMe available spare / percentage used
     critical_warning: u8,                     // NVMe bitfield, 0 elsewhere
     messages: Vec<String>, collected_at,
 }
 ```
 
-The flow: discovery finds drives (membership `out`); the UI moves them to
-the **fleet** (register with stormblock, optionally format a slab with a
-tier derived from the drive kind). Independently, a drive can be **tested**
-(destructive kinds only out of fleet and unmounted), or designated
-**reserved** (never join), **spare** (standing by; still joinable when
-pressed into service), or **failed** (operator verdict — health can reach
-the same conclusion on its own; the two are kept separate). `missing`
-means the inventory remembers a drive the node can't see. A `failed`
-designation on an in-fleet drive raises a drain-needed warning; automating
-the drain itself waits on stormblock#70.
+Discovery finds a drive with membership `out`. An operator (UI, API or
+feed action) moves it to the **fleet**: stormblock registers it, and a slab
+can be formatted on it with a tier. Independently of membership:
+
+- A drive can be **tested**. The destructive kind needs an out-of-fleet,
+  unmounted drive with no slab.
+- A drive can be designated **reserved**: it never joins and is never
+  formatted.
+- A drive can be designated **spare**: standing by, and still joinable.
+- A drive can be designated **failed**. This is the operator's verdict; health
+  can reach the same conclusion on its own, and the two are kept separate.
+  Designating a fleet drive `failed` reports it failed to stormblock and,
+  with `drain_on_failing`, starts a drain that retires the drive when it is
+  empty.
+
+`missing` means the inventory remembers a drive the node can't see.
 
 The inventory (all `Drive` records + wear-trend samples) persists to
 `<data_dir>/inventory.json` with atomic tmp+rename writes, so identity,
@@ -151,8 +177,9 @@ path failover is actually needed.
 ### Discovery (`discovery/`)
 - Full scan on startup and every `discovery.interval_secs`: walk
   `/sys/block`, skip virtual/managed devices (`loop* ram* zram* dm-* md*
-  sr* fd* nbd* ublkb*` — ublkb is stormblock's own export surface), apply
-  config include/exclude globs.
+  sr* fd* nbd* ublkb* zd* pmem* drbd*` — ublkb is stormblock's own export
+  surface), apply config include/exclude globs, and skip a drive with a
+  mounted partition unless `discovery.manage_mounted`.
 - **Who holds it** (`contents.rs`): the node's own system disk is *seen*,
   not skipped — it is the drive whose firmware most needs updating — but it
   is read for stormblock slabs (`STRMSLAB` at LBA 0, or at the first LBA of
@@ -206,24 +233,33 @@ path failover is actually needed.
   percentage used, POH, unsafe shutdowns, media errors, error-log count.
   (Reference implementation: stormblock `main.rs:2342`, which decodes the
   same page for must-gather.)
-- **SAS/SATA** (`smart/scsi.rs`): phase 1 is sysfs (`device/state`,
-  `ioerr_cnt`, hwmon temp). Phase 2 adds SG_IO log-sense: Informational
+- **SAS/SATA** (`smart/scsi.rs`): sysfs only — `device/state`,
+  `device/ioerr_cnt` (commands that failed, which the feed and UI label "io
+  errs", not media errors) and the hwmon temperature (drivetemp or the SAS
+  driver). No command goes to the drive.
+- **Design — not built:** SG_IO log sense for SAS/SATA: Informational
   Exceptions (0x2F — the drive's own predicted-failure verdict), Temperature
-  (0x0D), Solid State Media (0x11 — percentage used endurance), plus ATA
-  SMART READ DATA passthrough for SATA behind SAS HBAs.
-- **Threshold engine** (config-driven):
-  `Warning` — temp ≥ warn, spare ≤ spare_warn, wear ≥ wear_warn, media-error
-  growth over window. `Failing` — NVMe critical_warning reliability bit,
-  SCSI IE predicted failure, spare ≤ spare_crit, sustained error growth.
-  `Failed` — device errors on identify/log reads, kernel offlined it
-  (`device/state != running`), read-only NVMe bit. Transitions are
-  hysteresis-guarded (N consecutive samples) so one bad poll doesn't flap.
-- **Wear trending**: per-drive ring of (time, wear_pct, media_errors)
-  samples (512) persisted with the inventory. A sample is recorded when
-  either value changes, or daily when neither does (#15). Recording every
-  poll made 160 drives × 512 samples ≈ 5 MB of inventory, rewritten every
-  tick, and the ring only covered 8.5 hours. Linear projection gives "days
-  to wear-out" in the API and UI.
+  (0x0D), Solid State Media (0x11 — endurance used), and ATA SMART READ DATA
+  passthrough for SATA behind SAS HBAs.
+- **Threshold engine** (`monitor::evaluate`, a pure function):
+  - `failed`: the kernel's `device/state` is not `running`, the NVMe log
+    read failed, or the read timed out (all `kernel_ok = false`). Also the
+    NVMe read-only bit.
+  - `failing`: NVMe reliability-degraded or spare-below-threshold bit, spare
+    ≤ `spare_crit_pct`, or wear ≥ `wear_crit_pct`.
+  - `warning`: NVMe volatile-backup or temperature bit, spare ≤
+    `spare_warn_pct`, wear ≥ `wear_warn_pct`, temperature ≥ `temp_warn_c`
+    (≥ `temp_crit_c` is still `warning`, with a different message), or
+    media errors higher than the previous sample's.
+  - A worse verdict must repeat `hysteresis` samples in a row before it
+    sticks. A better one applies at once.
+- **Wear trending**: SSDs (and any drive reporting wear) keep a ring of
+  (time, wear_pct, media_errors) samples (512) persisted with the inventory.
+  A sample is recorded when either value changes, or daily when neither does
+  (#15). Recording every poll made 160 drives × 512 samples ≈ 5 MB of
+  inventory, rewritten every tick, and the ring only covered 8.5 hours.
+  `GET /api/v1/drives/{id}/health` returns it raw. **Design — not built:** a
+  projected "days to wear-out" from the trend.
 - **Persisting** (#15): compact JSON, serialised under the inventory lock
   and written outside it (tmp + rename), skipped when unchanged. One async
   mutex spans both, so two persists never land out of order.
@@ -359,17 +395,19 @@ A batch request validates every drive before starting any. There is no
 cancel. The result is persisted on the drive (`format`) and reported
 as an event; the drive is `usable` again once the kernel re-reads it.
 
-- NVMe: controller BDF from the sysfs device path; physical slot from
-  `/sys/bus/pci/slots/*/address` matching.
-- SAS addresses and expander chain from `/sys/class/sas_device` /
-  `sas_end_device` when present (mpt3sas exposes these).
-- Output doubles as **failure-domain labels** (`enclosure=...`, `bay=...`,
-  `hba=...`) — the per-drive layer stormblock's topology roadmap item needs;
-  handed over when drives are registered (pending the stormblock issue).
+### Sequencing — Design, not built
 
-### Sequencing (`sequence.rs`)
-One node-wide queue of **disruptive operations** (firmware update, drain,
-retire, qualification). Invariants:
+There is no `sequence.rs`. What exists today is narrower:
+
+- one test, one format and one firmware update per drive (the activity
+  guard);
+- fleet drives, and a drive `in_use_by` stormblock, update firmware one at a
+  time behind a node-wide lock (`fleet_firmware_lock`).
+
+Drains run in stormblock, one per drive, as many as are asked for.
+
+The design is one node-wide queue of **disruptive operations** (firmware
+update, drain, retire, qualification). Its invariants:
 - At most one disruptive op in flight per node.
 - Pre-flight: target drive's health, and stormblock's view — no degraded
   redundancy, no slab under evacuation, `serve/v1/ready` green (when
@@ -404,23 +442,29 @@ health-gated, abort-on-regression.
   drives are refused unless `force`. One, many, or every drive of a
   model (`POST /api/v1/firmware {drives|model, image}`), validated
   all-or-nothing before any starts. The last update is persisted on the
-  drive (`firmware_update`). This is the sequencer's first customer;
-  redundancy checks against stormblock (is a rebuild running? is the
-  volume already degraded?) are the next gate to add.
+  drive (`firmware_update`). **Not built:** a redundancy check against
+  stormblock before a fleet drive resets (is a rebuild running? is the
+  volume already degraded?).
 
-### Thermal (`thermal.rs`)
-- Phase: observe → alert → actuate. Per-drive temps from SMART; enclosure
-  temp/fan elements from SES pages later.
-- Alerting through the shared threshold engine and event stream.
-- Actuation (SES cooling-element control via SG_IO) is deliberately last and
-  gated behind explicit config — the review found no precedent in the
-  ecosystem and fan policy is chassis-specific.
+### Thermal
+There is no `thermal.rs`. What exists:
+
+- **Drive temperatures** come from the health sample and go through the
+  threshold engine (`temp_warn_c`, `temp_crit_c` → `warning`) and the event
+  stream.
+- **Shelf temperatures, fans and PSUs** come from the SES status page. A
+  shelf element that goes bad or recovers is a `shelf` event.
+- The summary card shows the hottest drive or shelf sensor.
+
+**Design — not built:** actuation (SES cooling-element control via SG_IO). It
+is deliberately last and gated behind explicit config, because the review
+found no precedent in the ecosystem and fan policy is chassis-specific.
 
 ### Events (`events.rs`)
-In-memory ring (persisted tail in the inventory file), each entry
-`{time, drive_id?, severity, kind, message}`. Served at
-`GET /api/v1/events?since=`. The stormd proxy can't do WebSockets, so the UI
-polls this; SSE can come later for direct consumers.
+In-memory ring of 4096, each entry `{seq, time, drive_id?, severity, kind,
+message}`. It is **not persisted**: a restart starts it empty at seq 1.
+Served at `GET /api/v1/events?since=<seq>`. The UI polls it. The components
+feed has its own WebSocket (`/ws/components`).
 
 ## API (axum, `0.0.0.0:9092`)
 

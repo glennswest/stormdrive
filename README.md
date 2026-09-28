@@ -171,7 +171,7 @@ portable tests only. What ships is the release build:
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-The unit tests live beside the code (131 at v0.15.0). Page parsers, sense
+The unit tests live beside the code (132 after #7). Page parsers, sense
 decoding, the threshold engine, placement hashing and the token lookup are
 tested on synthetic data. A stand-in engine covers the stormblock client.
 There is no test container yet (#11).
