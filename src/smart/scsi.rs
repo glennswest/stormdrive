@@ -1,7 +1,8 @@
-//! SAS/SATA health, phase 1: sysfs (`device/state`, `device/ioerr_cnt`,
-//! hwmon temperature via drivetemp). Phase 2 adds SG_IO log-sense pages
+//! SAS/SATA health from sysfs only: `device/state`, `device/ioerr_cnt`
+//! (failed commands, not media errors) and the hwmon temperature (drivetemp
+//! or the SAS driver). No command is sent to the drive. SG_IO log sense
 //! (Informational Exceptions 0x2F, Temperature 0x0D, SSD wear 0x11) and ATA
-//! SMART passthrough — see the work plan.
+//! SMART passthrough are not built yet (#22).
 
 use super::Sample;
 

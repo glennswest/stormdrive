@@ -1,8 +1,10 @@
 //! StormDrive — physical drive management for the Storm ecosystem.
 //!
 //! The layer below stormblock: discovery, health/wear/thermal monitoring,
-//! physical location, firmware inventory, and the hand-off of qualified
-//! drives to stormblock. See docs/architecture.md.
+//! physical location (HBA, shelf, bay, PCIe slot), drive tests, sector-size
+//! reformat, firmware updates, and the hand-off of drives to stormblock
+//! (labels, health, drains, overcommit). See README.md and
+//! docs/architecture.md.
 
 pub mod api;
 pub mod components;

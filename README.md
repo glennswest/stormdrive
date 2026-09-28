@@ -319,6 +319,17 @@ stormd-based golden with:
   restarted on exit, with an HTTP liveness probe on `/api/v1/health`, and
   stormd's own API on :9192.
 
+A commit reaches a node only through that path:
+
+1. A golden is built from a pushed commit.
+2. stormcos composes the golden into a release.
+3. Nodes clone the release copy-on-write. Nothing pulls an image.
+
+`Cargo.lock` pins the one git dependency, `stormview` (branch `main`). A fix
+there arrives only after `cargo update -p stormview` and a commit here. How
+goldens and releases work is written up in stormcos
+[`docs/goldens.md`](https://github.com/glennswest/stormcos/blob/main/docs/goldens.md).
+
 stormcos starts it on every node profile (`boot.d/40-services`). It runs with
 the host network, the host's `/dev`, the host's `/sys` **read-only**, its
 data volume at `/var/lib/stormdrive`, and the engine token from

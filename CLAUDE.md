@@ -40,32 +40,24 @@ The short form — stormblock today has:
 StormDrive owns everything in that list. StormBlock stays the *consumer* of
 drives; StormDrive is the *curator* of them.
 
-## Build on dev, never on this Mac
+## Build and test with sc-build
 
-Same rule as every project here: **every `cargo build/test/check` runs on
-`root@dev.g8.lo`** (`/root/stormdrive`). The drive path is Linux-only
-(sysfs, ioctls, SG_IO, netlink uevents) behind `cfg(target_os = "linux")`;
-a macOS build skips exactly the code most likely to be wrong.
+Per the cross-project rules (`~/src/CLAUDE.md`): commit, push, then
+`sc-build` from this checkout. It builds the pushed commit on dev.g8.lo in a
+scratch volume and deletes it; there is no checkout on dev, and nothing here
+needs root.
 
 ```
-commit  →  push  →  ssh root@dev.g8.lo 'cd /root/stormdrive && git pull && \
-    CARGO_TARGET_DIR=/build/cargo/stormdrive cargo test'
+git push && sc-build                                   # cargo build && cargo test
+sc-build 'cargo clippy --all-targets -- -D warnings'
 ```
 
-Target dirs live on dev's 2 TB spinning drive (`/build/cargo/<project>`),
-never on the 198 GB SSD root — see ~/CLAUDE.md "Nothing lives on the SSD
-between builds".
-
-The repo is public (matching stormblock); `/root/stormdrive` on dev pulls
-`origin` from GitHub over https.
-
-After building on dev, clean up: `rm -rf /root/stormdrive/target/debug` when
-done; check `df -h /` before and after.
-
-```bash
-# Release build (what ships)
-cargo build --release --target x86_64-unknown-linux-musl
-```
+The drive path is Linux-only (sysfs, ioctls, SG_IO, netlink uevents) behind
+`cfg(target_os = "linux")`. A non-Linux build skips exactly the code most
+likely to be wrong. What ships is `cargo build --release --target
+x86_64-unknown-linux-musl`, built by stormcentral into the golden
+(`stormcentral component build stormdrive --url http://stormcentral.g8.lo`;
+stormdrive is a *service* component).
 
 ## Architecture
 
@@ -73,34 +65,42 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ```
 src/
-  main.rs         CLI entry, config load, daemon startup
+  main.rs         CLI (--config, --listen, --data-dir), state, spawns monitor + API
   lib.rs          module tree
-  config.rs       stormdrive.toml parsing + validation
-  drive.rs        Drive model: stable identity, kind, location, state, health
-  inventory.rs    persistent drive registry (<data_dir>/inventory.json)
-  discovery/      sysfs enumeration + hotplug (udev netlink) [Linux]
-  smart/          health collectors: NVMe admin ioctl, SCSI/ATA via sysfs+SG_IO [Linux]
-  monitor.rs      poll loop: rescan, collect, evaluate thresholds, transition states
-  events.rs       event ring + severity model
-  topology.rs     location resolution: enclosure/bay (SES sysfs), PCIe path, SAS address
-  firmware.rs     firmware inventory (update engine: Phase 5)
-  thermal.rs      thermal policy (report/alert now; actuation later)
-  sequence.rs     maintenance sequencer: one disruptive op at a time, health-gated
+  config.rs       stormdrive.toml parsing + validation (example file is tested)
+  drive.rs        Drive model: stable identity, kind, location, lifecycle, health,
+                  overcommit, join/format/test/firmware guards
+  inventory.rs    persistent registry (<data_dir>/inventory.json) + trends
+  discovery/      sysfs enumeration, classification, probe cache [Linux]
+  hotplug.rs      NETLINK_KOBJECT_UEVENT listener → debounced discovery pass
+  contents.rs     slab probe (STRMSLAB at LBA 0 / GPT partition starts) → in_use_by
+  smart/          health samples: NVMe Get Log Page 0x02; SAS/SATA sysfs only
+  poller.rs       health scheduler: per-drive phase, bounded, timed out, costed
+  monitor.rs      loop: discovery, SES/HBA scans, threshold engine, trends,
+                  usage + reconcile, events
+  events.rs       in-memory event ring (4096, not persisted)
+  topology.rs     location: SAS/SES/mpt3sas bays, NVMe PCIe slots, locate LEDs
+  hba.rs          PCIe SCSI HBA inventory (firmware, BIOS, NVDATA versions)
   scsi.rs         raw SCSI over SG_IO: INQUIRY/VPD, READ CAPACITY(16), MODE SENSE/
-                  SELECT, FORMAT UNIT, TEST UNIT READY progress, RECEIVE/SEND
-                  DIAGNOSTIC; sense decoding is portable + unit-tested
-  ses.rs          SES-2 enclosure pages (config 0x01, status 0x02, descriptors
-                  0x07, additional status 0x0A): shelf identity, PSU/fan/temp/
-                  voltage/current/slot elements, shelf + bay IDENT control
-  format.rs       sector-size reformat jobs: MODE SELECT block length + FORMAT
-                  UNIT (IMMED), progress via TUR sense, kernel rescan after
-  stormblock.rs   client for stormblock :9090 (add drive w/ labels+uuid, slabs, health, drain)
-  fleet.rs        the loop: labels, health push, drains → retire, auto-add
-  placement.rs    where every drive + shelf is, hashed generation (#10)
+                  SELECT, FORMAT UNIT, TUR progress, RECEIVE/SEND DIAGNOSTIC,
+                  WRITE BUFFER; sense decoding portable + unit-tested
+  ses.rs          SES-2 pages 0x01/0x02/0x07/0x0A, shelf reports, IDENT control
+  format.rs       sector-size reformat jobs (520 → 512/4096)
+  firmware.rs     image store + WRITE BUFFER / NVMe download+commit jobs
+  drivetest.rs    smoke / read_scan / destructive_sample
+  stormblock.rs   engine client (:9090, bearer token): drives, labels, slabs,
+                  health, drain, overcommit
+  fleet.rs        the loop: labels, health push, overcommit push, drains →
+                  retire, auto-add
   usage.rs        per-drive used/free joined from stormblock's slabs (#12)
-  api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} — Kubernetes-shaped (stormblock#80)
-  api/            axum REST :9092  (/api/v1/*, /api/v1/summary for stormd)
+  placement.rs    where every drive + shelf is, hashed generation (#10)
+  components.rs   stormview feed: drives, shelves, HBAs with actions
+  api/mod.rs      axum REST :9092, summary card, embedded UI (src/ui/index.html)
+  api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} (stormblock#80)
 ```
+
+Not in the tree (design only, see docs/architecture.md): a sequencer, a
+thermal actuator, SCSI log sense.
 
 **Ports:** stormdrive listens on **:9092** (stormblock has :9090, stormd
 :9080).
@@ -146,11 +146,13 @@ node-and-above stays with stormblock. Shared label vocabulary: `site`,
 `shelf`, `bay`, `pcie_slot` (ours). See docs/architecture.md "Position in
 the distributed hierarchy"; stormblock#72 carries the placement ask.
 
-- **stormblock** (`http://127.0.0.1:9090`): `POST /api/v1/drives {path}`,
-  `POST /api/v1/slabs {device_path,tier}`, `GET /api/v1/drives/{id}/smart`,
-  `DELETE /api/v1/drives/{id}`. Drain/evacuate over HTTP does not exist yet —
-  filed as a stormblock issue; until then stormdrive reports and recommends
-  but cannot trigger evacuation remotely.
+- **stormblock** (`http://127.0.0.1:9090`, `Authorization: Bearer`, v17+):
+  `GET/POST /api/v1/drives {path,labels,uuid}`, `DELETE /api/v1/drives/{id}`,
+  `PUT …/{id}/labels`, `GET …/{id}/slabs`, `POST …/{id}/health`,
+  `GET/POST/DELETE …/{id}/drain`, `GET/POST /api/v1/slabs`, and
+  `PUT …/{id}/overcommit` (stormblock#152 — not on stormblock main as of
+  2026-09-28; 404 → retried every 10 min). Checked against stormblock
+  `src/mgmt/api/drives.rs` for #7.
 - **stormd UI**: `[process.ui]` block (label/proxy/summary) in the node's
   stormd config. Phase 1 ships `GET /api/v1/summary` in stormd's
   `RemoteSummary` shape (`health`/`detail`/`metrics`) for the dashboard card;
@@ -162,7 +164,7 @@ the distributed hierarchy"; stormblock#72 carries the placement ask.
 
 ## Work Plan
 
-### Phase 0: Project bootstrap — IN PROGRESS
+### Phase 0: Project bootstrap — DONE
 - [x] stormblock deep review (docs/stormblock-review.md)
 - [x] Architecture design (docs/architecture.md)
 - [x] Repo, CLAUDE.md, README, CHANGELOG, .gitignore
@@ -175,7 +177,7 @@ the distributed hierarchy"; stormblock#72 carries the placement ask.
       open, slab↔drive link, HTTP drain, failure-domain labels)
 - [x] Tag v0.1.0
 
-### Phase 1b: Fleet membership, designations, drive testing (2026-08-26) — IN PROGRESS
+### Phase 1b: Fleet membership, designations, drive testing (2026-08-26) — DONE (v0.2.0)
 
 Glenn's direction: discovery finds drives; the UI then moves them to the
 **fleet** (= handed to stormblock). Independently of fleet membership a
@@ -205,7 +207,7 @@ operator-set), `activity` (idle|testing|joining|draining|missing).
       passed on real disk, UI served. Not yet exercised: destructive test
       on real hardware, join/leave against a live stormblock)
 
-### Phase 1c: NetApp shelf topology (2026-08-26) — IN PROGRESS
+### Phase 1c: NetApp shelf topology (2026-08-26) — DONE (v0.3.0)
 
 Glenn's direction: testing happens on **NetApp SAS shelves** behind
 stormblock, more shelves over time — so the hierarchy is
@@ -242,7 +244,7 @@ Consequences:
       metrics, shelf `hba` per path — so a renderer orders a shelf grid by
       bay and names the card without a regex over `detail`
 
-### Phase 1e: NetApp shelf management + 520→4096 reformat (2026-09-05) — IN PROGRESS
+### Phase 1e: NetApp shelf management + 520→4096 reformat (2026-09-05) — code DONE (v0.7.0/0.8.0); live pass open
 
 Glenn fired up the first NetApp shelf on **stormblock1**: LSI SAS3008
 (mpt3sas) → NETAPP DS22412IOM12A (DS224C, IOM12), single path today.
@@ -289,15 +291,18 @@ to 4096.
 
 Owner: "every component needs to update its doc from code." Pattern:
 stormbootx b1347d9 / stormuefi b15dcba.
-- [ ] README from the source: what it does today, sc-build, every flag and
-      config key with defaults, ports, health/metrics, how it ships
-- [ ] docs/architecture.md: design-only parts marked, stale parts fixed
-- [ ] CLAUDE.md: build section (sc-build, not ssh root@dev), module map,
-      work plan phases checked against the code
-- [ ] Example config + stormd snippet match config.rs
-- [ ] Cross-refs (stormblock/stormd/stormview ports, APIs) checked in
-      their code
-- [ ] Issues for anything the docs promise that the code does not do
+- [x] README from the source: what it does today, sc-build, every flag and
+      config key with defaults, ports, health/metrics, how it ships (#4)
+- [x] docs/architecture.md: design-only parts marked, stale parts fixed
+- [x] CLAUDE.md: build section (sc-build), module map, phases vs the code
+- [x] Example config matches config.rs (now a test)
+- [x] Cross-refs checked: stormblock routes (drives.rs), stormd
+      `[process.ui]` + 400 ms summary timeout, stormcos service_golden +
+      40-services (found /sys ro → stormcos#166)
+- [x] Issues for promises the code does not keep: #21 (SIGTERM), #22 (SAS
+      log sense), #23 (wear projection), #24 (firmware redundancy gate),
+      #25 (events not persisted); existing #18 (/metrics), #19 (auth)
+- [ ] sc-build on the final commit, close #7 (+ #4), golden
 
 ### #12: per-drive usage (2026-09-27) — DONE
 
@@ -451,32 +456,31 @@ with stable id. Found:
             contains 46ecff9), release request stormcos#131; #2 closed
             2026-09-28. `/api/v1/hbas` on the R230 rides the release
 
-### Phase 1: Discovery + inventory
-- [ ] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
-- [ ] Stable identity: WWID → uuid5, fallback model+serial
-- [ ] Inventory persistence with atomic writes; Missing-state detection
-- [ ] Exclusion policy (config + built-in list above)
-- [ ] Hotplug: netlink kobject uevent listener (add/remove without polling)
-- [ ] `GET /api/v1/drives`, `GET /api/v1/drives/{id}`
+### Phase 1: Discovery + inventory — DONE (checked against the code, #7)
+- [x] sysfs enumeration: /sys/block scan, classify NVMe/SAS/SATA, SSD/HDD
+- [x] Stable identity: WWID → uuid5, fallback model+serial
+- [x] Inventory persistence with atomic writes; Missing-state detection
+- [x] Exclusion policy (config + built-in list above)
+- [x] Hotplug: netlink kobject uevent listener (#15)
+- [x] `GET /api/v1/drives`, `GET /api/v1/drives/{id}`
 
-### Phase 2: Monitoring (health, wear, thermal)
-- [ ] NVMe: Get Log Page 0x02 via NVME_IOCTL_ADMIN_CMD (temp, spare,
-      percentage_used, media errors, critical warnings, POH)
-- [ ] SCSI/SATA: sysfs (state, ioerr_cnt, hwmon) first; SG_IO log pages
-      (Informational Exceptions 0x2F, Temperature 0x0D, SSD wear 0x11) next
-- [ ] Threshold engine → health state machine (Good/Warning/Failing/Failed)
-- [ ] Wear trending: persisted samples, projected life
-- [ ] Event ring + `GET /api/v1/events`
-- [ ] Prometheus `/metrics` (stormdrive_drive_healthy, _temperature_celsius,
-      _wear_pct, _media_errors, _available_spare_pct)
-- [ ] `GET /api/v1/summary` for the stormd card
+### Phase 2: Monitoring (health, wear, thermal) — mostly DONE
+- [x] NVMe: Get Log Page 0x02 via NVME_IOCTL_ADMIN_CMD
+- [x] SCSI/SATA: sysfs (state, ioerr_cnt, hwmon)
+- [ ] SCSI/SATA: SG_IO log pages (0x2F, 0x0D, 0x11) + ATA SMART — #22
+- [x] Threshold engine → health state machine, hysteresis
+- [x] Wear trending: persisted samples (on change or daily)
+- [ ] Wear-out projection — #23
+- [x] Event ring + `GET /api/v1/events` (in memory; persistence is #25)
+- [ ] Prometheus `/metrics` — #18
+- [x] `GET /api/v1/summary` for the stormd card
 
-### Phase 3: Location awareness
-- [ ] SES enclosure mapping via /sys/class/enclosure (enclosure id, bay)
-- [ ] Locate/fault LED: `POST /api/v1/drives/{id}/locate` (sysfs slot attrs)
-- [ ] NVMe: PCIe BDF chain + physical slot (/sys/bus/pci/slots)
-- [ ] SAS address/expander topology
-- [ ] Location → failure-domain labels for stormblock placement
+### Phase 3: Location awareness — DONE
+- [x] SES enclosure mapping (/sys/class/enclosure, or SES pages + mpt3sas)
+- [x] Locate LED: sysfs slot, SES IDENT, PCIe attention, NPEM
+- [x] NVMe: PCIe BDF chain + physical slot, VMD, multipath heads (#15)
+- [x] SAS address, phy, expander (#10)
+- [x] Location → failure-domain labels pushed to stormblock
 
 ### Phase 4: StormBlock integration — DONE (0.5.0, against stormblock v11)
 - [x] Client: list/add (with labels + uuid)/relabel/remove drives, slabs by
@@ -500,12 +504,12 @@ with stable id. Found:
 - [x] SCSI: WRITE BUFFER mode 0x0E/0x0F, 0x07 fallback
 - [x] Fleet drives one at a time, health-gated
 - [ ] Redundancy check via stormblock before a fleet drive resets (no
-      rebuild in flight, volume not already degraded)
+      rebuild in flight, volume not already degraded) — #24
 - [ ] Shelf (IOM) firmware via SES download microcode page 0x0E
 
 ### Phase 6: Thermal management
-- [ ] Per-drive + per-enclosure thermal view
-- [ ] Threshold alerts (warn/critical from config)
+- [x] Per-drive + per-enclosure thermal view (health temps, SES shelf panel)
+- [x] Threshold alerts (warn/critical from config → warning + event)
 - [ ] SES fan/cooling element control (SG_IO SES-2 control page) — actuation,
       gated behind explicit config
 
@@ -522,17 +526,17 @@ drive-management plane — confirm before building:
 - [ ] Erase certificates in the event log (what was erased, how, verified
       when)
 
-### Phase 7: UI extension (stormd newer UI)
-- [ ] Embedded SPA (Svelte, stormd style tokens), relocatable base path
-- [ ] Drive grid with location, health, wear; enclosure/bay view
-- [ ] Locate-LED buttons, event stream, firmware inventory
-- [ ] `[process.ui]` deploy snippet with proxy + summary
+### Phase 7: UI extension (stormd newer UI) — DONE as a vanilla-JS page
+- [x] Embedded page (vanilla JS, not Svelte; stormd style tokens),
+      relocatable base path (`src/ui/index.html`)
+- [x] Drive table with location, health, wear; shelves + HBA panels
+- [x] Locate-LED buttons, event feed, firmware upload/update
+- [x] `[process.ui]` deploy snippet (`deploy/stormd-ui.toml`); the stormcos
+      golden does not use it (reached via HTTPRoute + stormconsole)
 
 ### Open questions (to resolve with Glenn)
-- **Migrations:** the drain flow needs a stormblock-side API
-  (evacuate-by-drive). Filed as a stormblock issue; the exact contract (who
-  drives retries, what "empty" means for a drive with multiple slabs) is to
-  be worked out.
+- ~~Migrations~~: resolved — stormblock v11 drain API (stormblock#70),
+  wired in Phase 4.
 - **Thermal actuation** scope: alert-only vs fan control vs workload
   throttling.
 - **Qualification/burn-in** for new drives before handing to stormblock —

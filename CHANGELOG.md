@@ -7,6 +7,10 @@
 - **docs:** README rewritten from the code (#7): what it does today, sc-build, every flag and config key with its default, the full API including the kube and body-free routes, how the golden ships it (stormcos `service_golden`, `/sys` read-only → stormcos#166), and what is not built yet
 - **docs:** `deploy/stormdrive.example.toml` gains `monitor.max_concurrent`, `monitor.sample_timeout_secs` and `[firmware]`; `[api] api_token` marked not enforced (#19)
 - **test:** the example config must parse to the defaults (`config::tests::example_config_is_the_defaults`)
+- **docs:** CLAUDE.md: sc-build replaces the ssh-to-dev build section, module map matches `src/`, Phase 0–3/6/7 checklists match the code, stormblock contract list current
+- **docs:** docs/architecture.md checked against v0.15.0: drive model, threshold engine, SAS health (sysfs only), events (not persisted), summary card, API design points, deployment, testing; sequencer, wear projection, thermal actuation and SCSI log sense marked design-only (#22–#25)
+- **docs:** README says how it ships in a golden and links stormcos `docs/goldens.md` (#4)
+- **docs:** module comments: `smart/scsi.rs` (sysfs only, #22), `events.rs` (every event kind; not persisted, #25), `lib.rs`
 - **docs:** work plan — #13 done: overcommit ships in golden `golden-stormdrive-01a422df544f`, stormcos#131; enforcement is stormblock#152
 - **docs:** work plan — #2 done: HBA inventory ships in golden `golden-stormdrive-01a422df544f`, stormcos#131
 - **docs:** work plan — #12 done: usage ships in golden `golden-stormdrive-01a422df544f`, stormcos#131

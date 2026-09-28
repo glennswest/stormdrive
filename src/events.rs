@@ -1,5 +1,6 @@
 //! Event ring: what happened to which drive, when. The UI and any external
-//! poller read it via `GET /api/v1/events?since=<seq>`.
+//! poller read it via `GET /api/v1/events?since=<seq>`. In memory only: a
+//! restart starts it empty at seq 1 (#25).
 
 use crate::drive::DriveId;
 use serde::{Deserialize, Serialize};
@@ -20,7 +21,9 @@ pub struct Event {
     pub time: SystemTime,
     pub drive_id: Option<DriveId>,
     pub severity: Severity,
-    /// Machine-readable kind: discovered, missing, health, state, stormblock.
+    /// Machine-readable kind: discovered, missing, replaced, forgotten,
+    /// location, health, designation, overcommit, fleet, drain, test,
+    /// format, firmware, shelf, hba, stormblock.
     pub kind: String,
     pub message: String,
 }
