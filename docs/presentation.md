@@ -9,7 +9,7 @@ description: Physical drive management for a storage node — purpose and functi
 <!--
 Render: npx @marp-team/marp-cli docs/presentation.md          (HTML)
         npx @marp-team/marp-cli --pdf docs/presentation.md    (PDF)
-Every claim here is checkable against the code as of v0.16.0 (src/, web/)
+Every claim here is checkable against the code as of v0.17.0 (src/, web/)
 and the docs rewritten from it (#7). README.md is the full reference;
 docs/architecture.md says how each part works.
 -->
