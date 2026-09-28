@@ -287,7 +287,7 @@ to 4096.
       a real drive: needs a vendor image for the ST1200MM0098 / X425 on
       stormblock1
 
-### #7: docs rewritten from the code (2026-09-28) — IN PROGRESS
+### #7: docs rewritten from the code (2026-09-28) — DONE
 
 Owner: "every component needs to update its doc from code." Pattern:
 stormbootx b1347d9 / stormuefi b15dcba.
@@ -302,7 +302,8 @@ stormbootx b1347d9 / stormuefi b15dcba.
 - [x] Issues for promises the code does not keep: #21 (SIGTERM), #22 (SAS
       log sense), #23 (wear projection), #24 (firmware redundancy gate),
       #25 (events not persisted); existing #18 (/metrics), #19 (auth)
-- [ ] sc-build on the final commit, close #7 (+ #4), golden
+- [x] sc-build (132/132) + clippy -D warnings pass on 024dc54; #7 and #4
+      closed; golden requested
 
 ### #12: per-drive usage (2026-09-27) — DONE
 
