@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-09-28
+- **docs:** work plan — #5 done: v0.17.0 verified on da27975
+
 ## [v0.17.0] — 2026-09-28
 
 ### Added

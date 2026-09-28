@@ -314,7 +314,7 @@ stormbootx b1347d9 / stormuefi b15dcba.
       closed; golden `golden-stormdrive-9d1fa8491d44` (850d6f9), release
       request stormcos#131
 
-### #5: the drive worker (2026-09-28) — IN PROGRESS
+### #5: the drive worker (2026-09-28) — DONE (v0.17.0)
 
 Owner: a worker inside stormdrive, API + console, no CLI: low-level format,
 partition, stormblock format; one drive or hundreds; progress, per-drive
@@ -366,7 +366,11 @@ Steps:
 - [x] docs; medium suite `worker-refusals` (dry run only); page counts
       sanitizing as busy; issues #36 (ATA security erase), #37 (Decide:
       scheduling), #38 (page UI for jobs)
-- [ ] v0.17.0, sc-build + clippy + web check, close #5, golden
+- [x] v0.17.0 (e06f9df); sc-build on da27975: 154 + 9 + harness (medium's
+      worker-refusals passes: 6 malformed jobs refused, no job created),
+      clippy --workspace clean, `web/rebuild.sh --check` identical; #5
+      closed; golden. Not run on a real drive: the disk operations wait on
+      #30 (stormblock1) / #31 (NVMe)
 
 ### Comment mining (2026-09-28)
 
