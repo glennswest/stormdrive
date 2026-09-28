@@ -1286,6 +1286,10 @@ mod tests {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 assert!(!stderr.to_lowercase().contains("corrupt"), "sfdisk: {stderr}");
                 eprintln!("sfdisk read it: {}", String::from_utf8_lossy(&out.stdout));
+                let verify = std::process::Command::new("sfdisk").arg("--verify").arg(&path).output().unwrap();
+                let said = format!("{}{}", String::from_utf8_lossy(&verify.stdout), String::from_utf8_lossy(&verify.stderr));
+                assert!(verify.status.success() && !said.to_lowercase().contains("error:"), "sfdisk --verify: {said}");
+                eprintln!("sfdisk --verify: {}", said.trim());
             }
             other => eprintln!("sfdisk not usable here ({:?}); our own parser checked it", other.map(|o| o.status)),
         }
