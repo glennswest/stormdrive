@@ -3,6 +3,20 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.16.0] — 2026-09-28
+
+### Added
+- The page rebuilt for hundreds of drives (#6): Svelte 5 + stormview DataGrid in `web/`; shelves, HBAs, NVMe and unlocated drives as top rows with each group's drives nested; quick and text filters; a drive / shelf / HBA side pane; a bulk bar (tests, locate, designation, format, firmware) where ticking a group means its drives; keyed rows instead of a 4 s innerHTML rebuild
+- `/assets/app.{js,css}` (and `/ui/assets/…`) serve the committed `web/dist`
+- `web/rebuild.sh` (build on dev through sc-build, `--check`), `npm test`, `npm run test:page` (212-drive jsdom smoke test)
+- Test: the example config must parse to the defaults
+
+### Changed
+- `src/ui/index.html` (the vanilla page) is gone
+
+### Documentation
+- README, docs/architecture.md, CLAUDE.md and the example config rewritten from the code (#7); how the golden ships it (#4)
+
 ### 2026-09-28
 - **feat:** the page is rebuilt for hundreds of drives (#6): Svelte 5 + stormview DataGrid in `web/`, shelves / HBAs / NVMe / unlocated as top rows with each group's drives nested, quick and text filters, a drive/shelf/HBA side pane, and a bulk bar (tests, locate, designation, format, firmware) where ticking a group means its drives; keyed rows replace the 4 s innerHTML rebuild
 - **feat:** `/assets/app.{js,css}` (and `/ui/assets/…`) serve the committed `web/dist`; `src/ui/index.html` is gone

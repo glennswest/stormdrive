@@ -24,7 +24,7 @@ HBAs, SAS shelves (SES), PCIe slots                     │  inventory.json
           drain, overcommit (Bearer token)        stormblock :9090
 ```
 
-## What it does today (v0.15.0)
+## What it does today (v0.16.0)
 
 Everything below is in the code on `main`. Items the code does **not** do yet
 are listed under [Not yet](#not-yet).
