@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let node_name = config.node_name();
+    let data_dir = config.data_dir.clone();
     let stormblock = StormBlockClient::new(config.stormblock.clone());
     let listen = config.listen_addr.clone();
     let poller = stormdrive::poller::Sampler::new(
@@ -81,9 +82,12 @@ async fn main() -> anyhow::Result<()> {
         node_name,
         poller,
         persisted: Default::default(),
+        worker: stormdrive::worker::Worker::load(data_dir.as_deref()),
     });
 
     tokio::spawn(stormdrive::monitor::run(state.clone()));
+    // Jobs that were in flight when we stopped: watch or interrupt them.
+    tokio::spawn(stormdrive::worker::recover(state.clone()));
 
     let app = stormdrive::api::router(state.clone());
     let listener = tokio::net::TcpListener::bind(&listen).await?;

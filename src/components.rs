@@ -164,6 +164,17 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     if !d.path.is_empty() {
         metrics.push(Metric::new("dev", d.path.clone()).tone("muted"));
     }
+    // Where it is on its way into the fleet (#5), unless it is there.
+    let prep = crate::worker::prep(d, None);
+    let phase = prep["phase"].as_str().unwrap_or_default();
+    if !matches!(phase, "enrolled" | "missing") {
+        let m = Metric::new("prep", phase);
+        metrics.push(match phase {
+            "unusable" => m.tone("warn"),
+            "formatting" | "sanitizing" => m.tone("accent"),
+            _ => m.tone("muted"),
+        });
+    }
     if let Some(w) = &d.wwid {
         metrics.push(Metric::new("wwid", w.clone()).tone("muted"));
     }

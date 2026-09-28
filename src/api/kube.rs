@@ -133,6 +133,7 @@ fn drive_object(d: &Drive, node: &str) -> Value {
             "health": d.health,
             "drain": d.drain,
             "usage": d.usage,
+            "prep": crate::worker::prep(d, None),
             "overcommit": d.overcommit,
             "pushedLabels": d.pushed_labels,
             "firstSeen": d.first_seen.duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0),

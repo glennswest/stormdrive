@@ -193,6 +193,15 @@ fn sysfs_sectors(_name: &str) -> u64 {
     0
 }
 
+/// Have the kernel re-read a drive's geometry after a low-level format
+/// (also one stormdrive only watched the end of, after a restart).
+pub fn rescan(name: &str) {
+    rescan_block(name);
+    if sysfs_sectors(name) == 0 {
+        readd_block(name);
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn rescan_block(name: &str) {
     if let Err(e) = std::fs::write(format!("/sys/block/{name}/device/rescan"), "1") {

@@ -47,3 +47,7 @@ api_token = ""              # parsed, NOT enforced yet: the API is open (#19)
 [firmware]
 chunk_kib = 32              # WRITE BUFFER / NVMe download chunk
 max_image_mib = 256         # largest image PUT /api/v1/firmware/images accepts
+
+[worker]                    # the drive worker (POST /api/v1/worker/jobs)
+max_per_hba = 8             # low-level steps at once behind one HBA
+enroll_per_domain = 1       # enrolls at once per failure domain (shelf, else HBA)

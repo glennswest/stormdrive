@@ -16,6 +16,7 @@ pub struct Config {
     pub stormblock: StormBlockConfig,
     pub api: ApiConfig,
     pub firmware: FirmwareConfig,
+    pub worker: WorkerConfig,
 }
 
 impl Default for Config {
@@ -29,6 +30,7 @@ impl Default for Config {
             stormblock: StormBlockConfig::default(),
             api: ApiConfig::default(),
             firmware: FirmwareConfig::default(),
+            worker: WorkerConfig::default(),
         }
     }
 }
@@ -50,6 +52,25 @@ impl Default for FirmwareConfig {
             chunk_kib: 32,
             max_image_mib: 256,
         }
+    }
+}
+
+/// The drive worker (#5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkerConfig {
+    /// Low-level steps (format, sanitize, partition) running at once behind
+    /// one HBA (an NVMe drive is its own). The drive does the work; the
+    /// host only polls, so a shelf's worth in parallel is the normal case.
+    pub max_per_hba: usize,
+    /// `enroll` steps running at once per failure domain (shelf, else HBA):
+    /// what changes stormblock's pool goes one at a time per domain.
+    pub enroll_per_domain: usize,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self { max_per_hba: 8, enroll_per_domain: 1 }
     }
 }
 
@@ -199,6 +220,9 @@ impl Config {
         }
         if self.monitor.max_concurrent == 0 || self.monitor.sample_timeout_secs == 0 {
             anyhow::bail!("monitor.max_concurrent and monitor.sample_timeout_secs must be non-zero");
+        }
+        if self.worker.max_per_hba == 0 || self.worker.enroll_per_domain == 0 {
+            anyhow::bail!("worker.max_per_hba and worker.enroll_per_domain must be non-zero");
         }
         if self.monitor.hysteresis == 0 {
             anyhow::bail!("monitor.hysteresis must be >= 1");

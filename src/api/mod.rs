@@ -54,6 +54,8 @@ pub struct AppState {
     /// Held across serialise + write, so two persists never land out of
     /// order.
     pub persisted: tokio::sync::Mutex<Option<u64>>,
+    /// The drive worker's jobs and lanes (#5).
+    pub worker: crate::worker::Worker,
 }
 
 impl AppState {
@@ -198,6 +200,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/hbas", get(list_hbas))
         .route("/api/v1/placement", get(placement))
         .route("/api/v1/placement/{id}", get(placement_one))
+        // The drive worker (#5): prepare drives at fleet scale.
+        .route("/api/v1/worker/jobs", get(list_jobs).post(create_job))
+        .route("/api/v1/worker/jobs/{id}", get(get_job))
+        .route("/api/v1/worker/jobs/{id}/cancel", post(cancel_job))
+        .route("/api/v1/worker/jobs/{id}/resume", post(resume_job))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
         // Kubernetes-shaped resources, served by this daemon (stormblock#80).
@@ -331,6 +338,7 @@ async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
             v["firmware_run"] = serde_json::to_value(&*run).unwrap_or_default();
         }
         v["needs_reformat"] = json!(d.needs_reformat());
+        v["prep"] = prep_of(&s, d);
         drives.push(v);
     }
     Json(json!({ "drives": drives }))
@@ -344,7 +352,53 @@ async fn get_drive(
     let d = inv
         .resolve(&id)
         .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
-    Ok(Json(serde_json::to_value(d).map_err(|e| ApiError::internal(e.to_string()))?))
+    let mut v = serde_json::to_value(d).map_err(|e| ApiError::internal(e.to_string()))?;
+    v["prep"] = prep_of(&s, d);
+    Ok(Json(v))
+}
+
+/// Where a drive is on its way into the fleet (#5), with the progress of
+/// whatever low-level step is running on it.
+pub(crate) fn prep_of(s: &AppState, d: &crate::drive::Drive) -> serde_json::Value {
+    let pct = s.worker.progress_of(d.id).and_then(|(_, p)| p).or_else(|| {
+        s.formats.try_read().ok().and_then(|f| f.get(&d.id).and_then(|h| h.run.lock().unwrap().progress_pct))
+    });
+    crate::worker::prep(d, pct)
+}
+
+async fn create_job(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<crate::worker::Request>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let dry = req.dry_run;
+    match crate::worker::submit(&s, req).await {
+        Ok(v) => Ok(Json(v)),
+        Err(e) if e.starts_with("nothing to run") => Err(ApiError::conflict(e)),
+        Err(e) if e.contains("not found") => Err(ApiError::not_found(e)),
+        Err(e) => Err(ApiError::bad_request(if dry { format!("dry run: {e}") } else { e })),
+    }
+}
+
+async fn list_jobs(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({ "jobs": s.worker.list() }))
+}
+
+async fn get_job(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
+    s.worker.get(&id).map(Json).ok_or_else(|| ApiError::not_found(format!("job {id:?}")))
+}
+
+async fn cancel_job(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::worker::cancel(&s, &id).await.map(Json).map_err(ApiError::not_found)
+}
+
+async fn resume_job(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::worker::resume(&s, &id).await.map(Json).map_err(|e| {
+        if e.contains("not found") {
+            ApiError::not_found(e)
+        } else {
+            ApiError::conflict(e)
+        }
+    })
 }
 
 /// Forget a drive that is gone (#15): at 160 bays, pulled drives would

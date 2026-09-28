@@ -251,6 +251,12 @@ mod linux {
         if st != 0 {
             return Err(format!("sanitize: status 0x{st:x}"));
         }
+        nvme_sanitize_wait(path, progress)
+    }
+
+    /// Watch a sanitize the controller is running (also one started before
+    /// stormdrive restarted) through the Sanitize Status log.
+    pub fn nvme_sanitize_wait(path: &str, progress: Progress) -> Result<(), String> {
         let start = Instant::now();
         loop {
             std::thread::sleep(POLL);
@@ -285,24 +291,37 @@ mod linux {
             }
             Err(e) => return Err(format!("sanitize: {e}")),
         }
-        progress(None, "sanitizing");
+        drop(dev);
+        scsi_wait(sg, true, progress)
+    }
+
+    /// Poll TEST UNIT READY until a sanitize (or, with `sanitize` false, a
+    /// FORMAT UNIT) the drive is running is done — also one that was started
+    /// before stormdrive restarted.
+    pub fn scsi_wait(sg: &str, sanitize: bool, progress: Progress) -> Result<(), String> {
+        use crate::scsi::Device;
+        let dev = Device::open(sg).map_err(|e| format!("open: {e}"))?;
+        let phase = if sanitize { "sanitizing" } else { "formatting" };
+        progress(None, phase);
         let start = Instant::now();
         loop {
             std::thread::sleep(POLL);
-            match interpret_sanitize_tur(&dev.test_unit_ready()) {
+            let tur = dev.test_unit_ready();
+            let r = if sanitize { interpret_sanitize_tur(&tur) } else { crate::format::interpret_tur(&tur) };
+            match r {
                 Ok(None) => return Ok(()),
-                Ok(Some(pct)) => progress(pct, "sanitizing"),
+                Ok(Some(pct)) => progress(pct, phase),
                 Err(e) => return Err(e),
             }
             if start.elapsed() > MAX_WAIT {
-                return Err("sanitize did not finish in 48 h".into());
+                return Err(format!("{phase} did not finish in 48 h"));
             }
         }
     }
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{nvme_caps, nvme_format, nvme_sanitize, scsi_sanitize_run};
+pub use linux::{nvme_caps, nvme_format, nvme_sanitize, nvme_sanitize_wait, scsi_sanitize_run, scsi_wait};
 
 #[cfg(not(target_os = "linux"))]
 pub fn nvme_caps(_: &str) -> Result<NvmeCaps, String> {
@@ -318,6 +337,14 @@ pub fn nvme_sanitize(_: &str, _: SanitizeMethod, _: Progress) -> Result<(), Stri
 }
 #[cfg(not(target_os = "linux"))]
 pub fn scsi_sanitize_run(_: &str, _: SanitizeMethod, _: Progress) -> Result<(), String> {
+    Err("SG_IO is Linux-only".into())
+}
+#[cfg(not(target_os = "linux"))]
+pub fn nvme_sanitize_wait(_: &str, _: Progress) -> Result<(), String> {
+    Err("NVMe admin commands are Linux-only".into())
+}
+#[cfg(not(target_os = "linux"))]
+pub fn scsi_wait(_: &str, _: bool, _: Progress) -> Result<(), String> {
     Err("SG_IO is Linux-only".into())
 }
 
