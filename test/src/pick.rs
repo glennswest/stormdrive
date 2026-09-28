@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn refusals_only_on_drives_whose_first_guard_holds() {
         let out = d(json!({"id": "out"}));
-        assert!(guarded(&[out.clone()]).is_none(), "a free drive is never sent a destructive request");
+        assert!(guarded(std::slice::from_ref(&out)).is_none(), "a free drive is never sent a destructive request");
         let sys = d(json!({"id": "sys", "in_use_by": "stormblock"}));
         let fleet = d(json!({"id": "fleet", "membership": "fleet"}));
         assert_eq!(s(guarded(&[out.clone(), sys.clone(), fleet]).unwrap(), "id"), "fleet");
