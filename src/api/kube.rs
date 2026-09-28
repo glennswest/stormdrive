@@ -211,7 +211,7 @@ async fn patch_drive(
             format!("{}: {from:?} → {des:?} (kube)", drive.name),
         );
         if des == Designation::Failed && drive.membership == Membership::Fleet && s.stormblock.enabled() {
-            let _ = s.stormblock.report_health(&drive.path, "failed", Some("operator designation"), false).await;
+            let _ = s.stormblock.report_health(&drive.stormblock_path(), "failed", Some("operator designation"), false).await;
             if let Some(d) = s.inventory.write().await.drives.get_mut(&did) {
                 d.pushed_health = Some("failed".into());
             }
@@ -539,6 +539,7 @@ mod tests {
             replaces: None,
             drain: None,
             usage: None,
+            fleet_partition: None,
         }
     }
 

@@ -342,11 +342,14 @@ impl StormBlockClient {
     }
 
     /// POST /api/v1/slabs {device_path, tier} — format the drive as a slab.
-    pub async fn format_slab(&self, device_path: &str, tier: &str) -> anyhow::Result<Value> {
-        let req = self
-            .http
-            .post(self.url("/api/v1/slabs"))
-            .json(&serde_json::json!({ "device_path": device_path, "tier": tier }));
+    /// `role`: `data` or `system` (stormblock's default is `system`); None
+    /// leaves it to the engine, as a whole-disk join always has.
+    pub async fn format_slab(&self, device_path: &str, tier: &str, role: Option<&str>) -> anyhow::Result<Value> {
+        let mut body = serde_json::json!({ "device_path": device_path, "tier": tier });
+        if let Some(r) = role {
+            body["role"] = serde_json::json!(r);
+        }
+        let req = self.http.post(self.url("/api/v1/slabs")).json(&body);
         Ok(self
             .send(req, false)
             .await?

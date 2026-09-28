@@ -325,8 +325,11 @@ pub enum Activity {
     Testing,
     /// Being evacuated ahead of removal (needs stormblock#70 to automate).
     Draining,
-    /// A FORMAT UNIT is running (sector-size change, see format.rs).
+    /// A low-level format is running: SCSI FORMAT UNIT (format.rs) or NVMe
+    /// Format NVM, or the drive worker is writing a partition table (#5).
     Formatting,
+    /// A sanitize (block / crypto / overwrite erase) is running (#5).
+    Sanitizing,
     /// A firmware image is being downloaded/activated (firmware.rs).
     UpdatingFirmware,
     /// Inventory remembers it; the node cannot see it.
@@ -441,6 +444,22 @@ pub struct Drive {
     /// (#12). None until stormblock's slab listing has answered once.
     #[serde(default)]
     pub usage: Option<crate::usage::Usage>,
+    /// The drive worker enrolled this drive through a partition (#5): the
+    /// partition number stormblock holds, instead of the whole disk. Kept
+    /// as a number so a renamed disk (`sdb` → `sdc`) still resolves.
+    #[serde(default)]
+    pub fleet_partition: Option<u32>,
+}
+
+impl Drive {
+    /// The path stormblock knows this drive by: its enrolled partition, or
+    /// the whole disk.
+    pub fn stormblock_path(&self) -> String {
+        match self.fleet_partition {
+            Some(n) => format!("/dev/{}", crate::gpt::partition_name(&self.name, n)),
+            None => self.path.clone(),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -692,6 +711,7 @@ mod tests {
             replaces: None,
             drain: None,
             usage: None,
+            fleet_partition: None,
         }
     }
 

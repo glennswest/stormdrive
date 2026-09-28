@@ -120,6 +120,7 @@ mod tests {
             replaces: None,
             drain: None,
             usage: None,
+            fleet_partition: None,
         }
     }
 

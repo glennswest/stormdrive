@@ -76,7 +76,7 @@ async fn sync_labels(state: &Arc<AppState>) {
             .values()
             .filter(|d| d.membership == Membership::Fleet && d.activity != Activity::Missing)
             .filter(|d| d.pushed_labels != d.stormblock_labels())
-            .map(|d| (d.id, d.name.clone(), d.path.clone(), d.stormblock_labels(), d.id.0))
+            .map(|d| (d.id, d.name.clone(), d.stormblock_path(), d.stormblock_labels(), d.id.0))
             .collect()
     };
     for (id, name, path, labels, uuid) in due {
@@ -108,7 +108,7 @@ async fn sync_overcommit(state: &Arc<AppState>, fs: &mut FleetState) {
             .filter(|d| d.activity != Activity::Missing)
             .filter(|d| d.membership == Membership::Fleet || d.usage.as_ref().is_some_and(|u| !u.slabs.is_empty()))
             .filter(|d| d.pushed_overcommit != Some(d.overcommit))
-            .map(|d| (d.id, d.name.clone(), d.path.clone(), d.overcommit, d.wwid.clone(), d.serial.clone()))
+            .map(|d| (d.id, d.name.clone(), d.stormblock_path(), d.overcommit, d.wwid.clone(), d.serial.clone()))
             .collect()
     };
     for (id, name, path, oc, wwn, serial) in due {
@@ -140,7 +140,7 @@ async fn push_health(state: &Arc<AppState>) {
             .map(|d| {
                 // An operator's Failed designation counts as failed too.
                 let word = if d.designation == Designation::Failed { "failed" } else { d.stormblock_health() };
-                (d.id, d.name.clone(), d.path.clone(), word, d.health.messages.join("; "))
+                (d.id, d.name.clone(), d.stormblock_path(), word, d.health.messages.join("; "))
             })
             .filter(|(id, _, _, word, _)| {
                 // Only on change.
@@ -195,7 +195,7 @@ pub async fn start_drain(
     let (name, path, membership, existing) = {
         let inv = state.inventory.read().await;
         let d = inv.drives.get(&id).ok_or_else(|| anyhow::anyhow!("drive {id} not in inventory"))?;
-        (d.name.clone(), d.path.clone(), d.membership, d.drain.clone())
+        (d.name.clone(), d.stormblock_path(), d.membership, d.drain.clone())
     };
     if membership != Membership::Fleet {
         anyhow::bail!("{name}: not in the fleet, nothing to drain");
@@ -240,7 +240,7 @@ pub async fn cancel_drain(state: &Arc<AppState>, id: DriveId) -> anyhow::Result<
     let (name, path) = {
         let inv = state.inventory.read().await;
         let d = inv.drives.get(&id).ok_or_else(|| anyhow::anyhow!("drive {id} not in inventory"))?;
-        (d.name.clone(), d.path.clone())
+        (d.name.clone(), d.stormblock_path())
     };
     state.stormblock.cancel_drain(&path).await?;
     let mut inv = state.inventory.write().await;
@@ -265,7 +265,7 @@ async fn poll_drains(state: &Arc<AppState>) {
         inv.drives
             .values()
             .filter(|d| d.drain.as_ref().is_some_and(|r| r.state == "running"))
-            .map(|d| (d.id, d.name.clone(), d.path.clone(), d.drain.as_ref().map(|r| r.then_leave).unwrap_or(false)))
+            .map(|d| (d.id, d.name.clone(), d.stormblock_path(), d.drain.as_ref().map(|r| r.then_leave).unwrap_or(false)))
             .collect()
     };
     for (id, name, path, then_leave) in running {
@@ -343,7 +343,7 @@ async fn retire(state: &Arc<AppState>, id: DriveId) {
     let (name, path) = {
         let inv = state.inventory.read().await;
         match inv.drives.get(&id) {
-            Some(d) => (d.name.clone(), d.path.clone()),
+            Some(d) => (d.name.clone(), d.stormblock_path()),
             None => return,
         }
     };
@@ -353,6 +353,7 @@ async fn retire(state: &Arc<AppState>, id: DriveId) {
                 let mut inv = state.inventory.write().await;
                 if let Some(d) = inv.drives.get_mut(&id) {
                     d.membership = Membership::Out;
+                    d.fleet_partition = None;
                     d.activity = Activity::Idle;
                     d.pushed_labels.clear();
                     d.pushed_health = None;
@@ -448,13 +449,15 @@ pub async fn join(
         let has_slab = !state.stormblock.drive_slabs(path).await.unwrap_or_default().is_empty();
         if !has_slab {
             let tier = tier.unwrap_or_else(|| state.stormblock.tier_for(kind));
-            state.stormblock.format_slab(path, &tier).await?;
+            state.stormblock.format_slab(path, &tier, None).await?;
             slab_tier = Some(tier);
         }
     }
     let mut inv = state.inventory.write().await;
     if let Some(d) = inv.drives.get_mut(&id) {
         d.membership = Membership::Fleet;
+        // A whole-disk join; the worker's partition enroll sets it after.
+        d.fleet_partition = None;
         d.pushed_labels = labels.to_vec();
         d.pushed_health = None;
         d.pushed_overcommit = None;

@@ -82,6 +82,7 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     match d.activity {
         Activity::Idle => {}
         Activity::UpdatingFirmware => detail.push("updating firmware".into()),
+        Activity::Sanitizing => detail.push("sanitizing".into()),
         a => detail.push(format!("{a:?}").to_lowercase()),
     }
     if let Some(f) = &d.firmware_update {
@@ -611,6 +612,7 @@ mod tests {
             replaces: None,
             drain: None,
             usage: None,
+            fleet_partition: None,
         }
     }
 

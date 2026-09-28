@@ -487,7 +487,7 @@ async fn fleet_action(
                 // asked, this refuses rather than strand the data.
                 let slabs = s
                     .stormblock
-                    .drive_slabs(&drive.path)
+                    .drive_slabs(&drive.stormblock_path())
                     .await
                     .map_err(|e| ApiError::upstream(format!("stormblock unreachable: {e:#}")))?;
                 let occupied = slabs.iter().any(|sl| {
@@ -514,13 +514,14 @@ async fn fleet_action(
                 }
             }
             s.stormblock
-                .delete_drive(&drive.path, body.force)
+                .delete_drive(&drive.stormblock_path(), body.force)
                 .await
                 .map_err(|e| ApiError::upstream(format!("remove drive: {e:#}")))?;
             {
                 let mut inv = s.inventory.write().await;
                 if let Some(d) = inv.drives.get_mut(&did) {
                     d.membership = Membership::Out;
+                    d.fleet_partition = None;
                 }
             }
             s.events.write().await.push(
@@ -612,7 +613,7 @@ async fn set_designation(
     if body.designation == Designation::Failed && membership == Membership::Fleet && s.stormblock.enabled() {
         // Operator says failed: the engine stops trusting it now, and it is
         // drained and retired without waiting for a health poll to agree.
-        let path = s.inventory.read().await.drives.get(&did).map(|d| d.path.clone()).unwrap_or_default();
+        let path = s.inventory.read().await.drives.get(&did).map(|d| d.stormblock_path()).unwrap_or_default();
         if let Err(e) = s.stormblock.report_health(&path, "failed", Some("operator designation"), false).await {
             tracing::warn!(drive = %name, "failed designation not reported to stormblock: {e:#}");
         } else if let Some(d) = s.inventory.write().await.drives.get_mut(&did) {
@@ -1562,7 +1563,7 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             _ => {}
         }
         match d.activity {
-            Activity::Testing | Activity::Formatting | Activity::UpdatingFirmware => testing += 1,
+            Activity::Testing | Activity::Formatting | Activity::Sanitizing | Activity::UpdatingFirmware => testing += 1,
             Activity::Missing => bad += 1,
             Activity::Draining => warn += 1,
             Activity::Idle => {}

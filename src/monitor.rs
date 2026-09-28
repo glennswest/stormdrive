@@ -482,7 +482,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                 d.name = primary.name.clone();
                 d.paths = paths;
                 d.firmware = primary.firmware.clone();
-                if d.activity != Activity::Formatting {
+                if !matches!(d.activity, Activity::Formatting | Activity::Sanitizing) {
                     // Mid-format the drive answers NOT READY and sysfs says
                     // 0 blocks; the format job owns these fields until it
                     // is done.
@@ -583,6 +583,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         replaces,
                         drain: None,
                         usage: None,
+                        fleet_partition: None,
                     },
                 );
             }
@@ -643,8 +644,10 @@ async fn reconcile_stormblock(state: &Arc<AppState>) -> anyhow::Result<()> {
     let mut inv = state.inventory.write().await;
     let mut events = Vec::new();
     for d in inv.drives.values_mut() {
+        let sb_path = d.stormblock_path();
         let in_sb = listed.iter().any(|sd| {
             sd.get("path").and_then(|v| v.as_str()) == Some(d.path.as_str())
+                || sd.get("path").and_then(|v| v.as_str()) == Some(sb_path.as_str())
                 || (!d.serial.is_empty()
                     && sd.get("serial").and_then(|v| v.as_str()) == Some(d.serial.as_str()))
         });
