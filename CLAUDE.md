@@ -323,6 +323,23 @@ Survey against the issue's list:
       grouping) asked of the owner 2026-09-28 → **Svelte 5 + stormview
       DataGrid** in `web/`, `web/dist` committed and embedded, dist built on
       dev by sc-build (tarball over stdout), never on this VM
+- [ ] Plan (the page, `web/`):
+  - [ ] groups are the top rows: each shelf, then each HBA's direct drives,
+        then unlocated; each group's drives in a nested DataGrid
+        (collapsed groups render nothing; keyed rows diff, no rebuild)
+  - [ ] compact drive columns (DataGrid text/health/metrics/actions only);
+        click a drive → detail pane with designation, overcommit, tests,
+        format, firmware, locate, usage, progress, health messages
+  - [ ] filter box + quick filters (needs reformat, attention, out of
+        fleet, busy); ticking a group = all its drives
+  - [ ] bulk bar: format 4096/512, firmware, smoke/scan test, designation,
+        locate on/off — server batch where it exists (format, firmware),
+        per-drive calls otherwise (bulk test/join is #5)
+  - [ ] shelf pane (elements), firmware image store, events
+  - [ ] `web/src/lib/model.js` pure grouping/filter, `node --test`
+  - [ ] dist built on dev, committed; Rust serves `web/dist` (`/`, `/ui`,
+        `/ui/`, `/assets/*`, `/ui/assets/*`); `src/ui/index.html` goes
+  - [ ] docs, changelog, v0.16.0, sc-build, golden
 - [ ] Metrics per drive — #18
 
 ### #12: per-drive usage (2026-09-27) — DONE
