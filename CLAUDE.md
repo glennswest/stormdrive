@@ -308,6 +308,37 @@ stormbootx b1347d9 / stormuefi b15dcba.
       closed; golden `golden-stormdrive-9d1fa8491d44` (850d6f9), release
       request stormcos#131
 
+### #11: short / medium / long test containers (2026-09-28) — IN PROGRESS
+
+Per stormcentral `docs/test-standard.md`: `test/Containerfile` (FROM
+scratch, static `/test`), `test/build.sh` (musl build on the build box),
+`/test short|medium|long`, JSON lines + summary, exit 0/1/2. Test machine
+today: C2NR0Q2 (R230, 192.168.30.2); stormcentral writes the Job itself.
+Pattern: stormstorage's `test/` (workspace member, same deps).
+
+**Safety first — these run on real machines with real drives:** nothing
+destructive, ever. No join/leave, format, firmware, destructive test, forget,
+drain or `failed` designation. Writes are limited to reversible,
+restored-on-exit ones (designation spare↔original on an out-of-fleet drive,
+overcommit round-trip, smoke/read-scan+cancel which only read), plus
+requests the server must *refuse* (checked before anything starts).
+- [ ] crate `test/` (workspace member): env, report, api client, suites
+- [ ] short: health/version, drives (stable ids, verdicts), summary,
+      placement + 304, components, kube list, events, monitor, page
+- [ ] medium: error envelope/404/400s, refusals (409) on guarded drives,
+      resolve by wwn/serial/path, designation + overcommit round-trips with
+      events, smoke test to a verdict, read-scan cancel, kube watch, usage
+      from stormblock on slab-holding drives, shelf/NVMe checks (skip
+      without: requires sas-shelf / nvme)
+- [ ] long: waves until the window ends — API readers sized from the drive
+      count + a smoke test on every idle usable drive; per-wave latency,
+      monitor sample cost, stuck/timeouts, drives left busy, event growth;
+      a wave slower than 2× the first or residue growing = fail
+- [ ] harness: cargo test in the workspace runs the real daemon (no drives,
+      stormblock off) and all three suites against it (sc-build)
+- [ ] Containerfile, build.sh, stormdrive-test.yaml (metadata), docs
+- [ ] a real run on C2NR0Q2 via `stormcentral test run`; close #11; golden
+
 ### #8: a presentation of its purpose and functionality (2026-09-28) — DONE
 
 `docs/presentation.md`, Marp, 8–15 slides, every claim from the code (v0.16.0)
