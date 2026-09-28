@@ -310,6 +310,56 @@ stormbootx b1347d9 / stormuefi b15dcba.
       closed; golden `golden-stormdrive-9d1fa8491d44` (850d6f9), release
       request stormcos#131
 
+### #5: the drive worker (2026-09-28) — IN PROGRESS
+
+Owner: a worker inside stormdrive, API + console, no CLI: low-level format,
+partition, stormblock format; one drive or hundreds; progress, per-drive
+state, a job record; safe. Exists already: SCSI FORMAT UNIT 520→512/4096
+(format.rs), join with a whole-disk slab (fleet.rs).
+
+Design (`src/worker.rs` + helpers), one job = a selection × a list of steps:
+- **Select:** `drives` (handles), `shelf` (+ `bays` "0-11,14"), `model`,
+  `unusable` (needs_reformat), all ANDed; one of them required.
+- **Steps**, in order, per drive:
+  - `format {block_size}`: SCSI FORMAT UNIT (existing), or NVMe Format NVM
+    (0x80) with the LBA format whose data size matches (Identify NS 0x06)
+  - `sanitize {method: block|crypto|overwrite}`: NVMe Sanitize (0x84,
+    progress Get Log 0x81; refused when the controller has other
+    namespaces) or SCSI SANITIZE (0x48, IMMED, progress in TUR sense
+    04/1B; SAT maps it to ATA SANITIZE). ATA SECURITY ERASE (password
+    dance) is not built → issue
+  - `partition {role: data|system}`: zero head/tail, one GPT partition
+    1 MiB → end, type SLAB_DATA / SLAB (stormblock's GUIDs), BLKRRPART
+  - `enroll {tier?, role}`: open the partition (or whole disk) in
+    stormblock with labels + uuid, format a slab with role + tier;
+    the drive's `stormblock_path` records which path stormblock holds
+- **Safety:** never a fleet drive. A drive with a stormblock slab or a
+  filesystem (ext*, xfs, btrfs, vfat, ntfs, swap, LVM, zfs — on the disk
+  or any GPT partition) is refused unless `destroy` names it by stable id,
+  WWN or serial (not /dev name) — data_slab_on's identity rule. Checked at
+  submit and again before each destructive step. `dry_run` reports the plan.
+- **Schedule:** low-level steps bounded per HBA (`worker.max_per_hba`,
+  default 8), parallel otherwise (owner's first comment); `enroll` one at
+  a time per failure domain (shelf, else HBA) (second comment). Whether
+  low-level steps should also be one per domain → Decide issue.
+- **State:** jobs persisted in `<data_dir>/jobs.json`; per-drive
+  `prep` phase unusable → formatting/sanitizing n% → ready → enrolled on
+  `/api/v1/drives`, kube Drive status, feed. After a restart: a SCSI
+  format/sanitize still running on the drive is re-attached and polled;
+  anything else in flight is `interrupted` (reported, never re-run blind);
+  queued steps wait for `POST …/resume`.
+- **API:** `POST /api/v1/worker/jobs`, `GET /api/v1/worker/jobs[/{id}]`,
+  `POST /api/v1/worker/jobs/{id}/cancel` (queued steps only),
+  `POST …/{id}/resume`.
+
+Steps:
+- [ ] plan (this) · [ ] fs/slab signature probe · [ ] GPT writer + crc32
+- [ ] NVMe identify/format/sanitize builders + parsers · [ ] SCSI SANITIZE
+- [ ] selector + guards + scheduler (pure, tested) · [ ] worker runtime,
+      persistence, restart · [ ] enroll via partition + stormblock_path in
+      fleet/reconcile · [ ] API, feed, kube · [ ] docs, test suites (dry-run
+      refusals), changelog, version · [ ] sc-build, close #5, golden
+
 ### Comment mining (2026-09-28)
 
 Findings in issue comments since 2026-09-18 that nobody had filed:
