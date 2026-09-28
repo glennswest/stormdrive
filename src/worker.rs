@@ -930,6 +930,21 @@ fn read_geometry(name: &str) -> Option<(u64, u32)> {
     Some((sectors * 512, lbs))
 }
 
+/// Clear the first and last 4 MiB — what was there stops being there, not
+/// just stops being described (old tables, superblocks, md/LVM labels) —
+/// then write both copies of the table and sync.
+#[cfg(unix)]
+pub fn write_layout(f: &std::fs::File, capacity: u64, layout: &crate::gpt::Layout) -> Result<(), String> {
+    use std::os::unix::fs::FileExt;
+    let zero = vec![0u8; (4u64 << 20).min(capacity / 2) as usize];
+    let tail = capacity.saturating_sub(zero.len() as u64);
+    f.write_all_at(&zero, 0).map_err(|e| format!("clear head: {e}"))?;
+    f.write_all_at(&zero, tail).map_err(|e| format!("clear tail: {e}"))?;
+    f.write_all_at(&layout.primary, 0).map_err(|e| format!("write GPT: {e}"))?;
+    f.write_all_at(&layout.backup, layout.backup_offset).map_err(|e| format!("write backup GPT: {e}"))?;
+    f.sync_all().map_err(|e| format!("sync: {e}"))
+}
+
 /// Clear the old signatures, write a GPT with one partition, have the kernel
 /// read it, and wait for the partition node. (partition number, bytes)
 fn write_partition(name: &str, path: &str, role: Role) -> Result<(u32, u64), String> {
@@ -944,18 +959,9 @@ fn write_partition(name: &str, path: &str, role: Role) -> Result<(u32, u64), Str
     )?;
     #[cfg(target_os = "linux")]
     {
-        use std::os::unix::fs::FileExt;
         use std::os::unix::io::AsRawFd;
         let f = std::fs::OpenOptions::new().read(true).write(true).open(path).map_err(|e| format!("open {path}: {e}"))?;
-        // What was there stops being there, not just stops being described:
-        // the first and last 4 MiB go (old tables, superblocks, md/LVM labels).
-        let zero = vec![0u8; 4 << 20];
-        let tail = capacity.saturating_sub(zero.len() as u64);
-        f.write_all_at(&zero, 0).map_err(|e| format!("clear head: {e}"))?;
-        f.write_all_at(&zero, tail).map_err(|e| format!("clear tail: {e}"))?;
-        f.write_all_at(&layout.primary, 0).map_err(|e| format!("write GPT: {e}"))?;
-        f.write_all_at(&layout.backup, layout.backup_offset).map_err(|e| format!("write backup GPT: {e}"))?;
-        f.sync_all().map_err(|e| format!("sync: {e}"))?;
+        write_layout(&f, capacity, &layout)?;
         // BLKRRPART = _IO(0x12, 95)
         const BLKRRPART: u64 = 0x125F;
         let r = unsafe { libc::ioctl(f.as_raw_fd(), BLKRRPART as _) };
@@ -1245,6 +1251,45 @@ mod tests {
         assert!(matches!(recover_action(&dj(DjState::Running, DriveKind::SasHdd), Some(&part())), Recover::Interrupt(_)));
         assert!(matches!(recover_action(&dj(DjState::Queued, DriveKind::SasHdd), Some(&FMT)), Recover::Interrupt(_)), "never started blind");
         assert_eq!(recover_action(&dj(DjState::Done, DriveKind::SasHdd), None), Recover::Leave);
+    }
+
+    /// The table on a file, read back by our parser and — where the build
+    /// box has util-linux — by sfdisk, which checks both headers and CRCs.
+    #[cfg(unix)]
+    #[test]
+    fn a_written_table_is_a_table_to_sfdisk() {
+        use std::io::Read;
+        let path = std::env::temp_dir().join(format!("stormdrive-gpt-{}.img", std::process::id()));
+        let cap = 64u64 << 20;
+        let f = std::fs::OpenOptions::new().create(true).truncate(true).read(true).write(true).open(&path).unwrap();
+        f.set_len(cap).unwrap();
+        // An old xfs superblock that must be gone afterwards.
+        std::os::unix::fs::FileExt::write_all_at(&f, b"XFSB", 1 << 20).unwrap();
+        let l = crate::gpt::layout(cap, 512, crate::gpt::TYPE_SLAB_DATA, "stormblock-data", [7; 16], [9; 16]).unwrap();
+        write_layout(&f, cap, &l).unwrap();
+        let mut buf = vec![];
+        std::fs::File::open(&path).unwrap().read_to_end(&mut buf).unwrap();
+        let h = crate::contents::parse_gpt_header(&buf[512..1024]).unwrap();
+        let parts = crate::contents::parse_gpt_entries(&buf[1024..1024 + 16384], &h);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].first_lba * 512, 1 << 20);
+        assert_eq!(crate::contents::fs_signature(&buf[1 << 20..(1 << 20) + crate::contents::SIGNATURE_BYTES]), None, "old signature cleared");
+        match std::process::Command::new("sfdisk").arg("--json").arg(&path).output() {
+            Ok(out) if out.status.success() => {
+                let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+                let t = &v["partitiontable"];
+                assert_eq!(t["label"], "gpt");
+                let p = &t["partitions"][0];
+                assert_eq!(p["start"], 2048);
+                assert_eq!(p["type"].as_str().unwrap().to_uppercase(), "7D3E5A91-6C24-4B8F-A05D-2E9147BC6F38");
+                assert_eq!(p["name"], "stormblock-data");
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                assert!(!stderr.to_lowercase().contains("corrupt"), "sfdisk: {stderr}");
+                eprintln!("sfdisk read it: {}", String::from_utf8_lossy(&out.stdout));
+            }
+            other => eprintln!("sfdisk not usable here ({:?}); our own parser checked it", other.map(|o| o.status)),
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
