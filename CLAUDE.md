@@ -308,6 +308,16 @@ stormbootx b1347d9 / stormuefi b15dcba.
       closed; golden `golden-stormdrive-9d1fa8491d44` (850d6f9), release
       request stormcos#131
 
+### #8: a presentation of its purpose and functionality (2026-09-28) — IN PROGRESS
+
+`docs/presentation.md`, Marp, 8–15 slides, every claim from the code (v0.16.0)
+and the #7 docs. Relationships from `stormcentral check`: stormdrive
+(storage) → stormblock, stormview, stormd; depended on by stormcos,
+stormstorage; consumers checked in code: stormconsole's drive plugin
+(every node's :9092), rustkube-node#60 (placement).
+- [ ] deck written; render checked with marp-cli on dev (sc-build)
+- [ ] README links it; changelog; close #8; golden
+
 ### #6: ready for many more drives (2026-09-28) — DONE (v0.16.0)
 
 Survey against the issue's list:
