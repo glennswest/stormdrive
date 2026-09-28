@@ -17,8 +17,8 @@ and how the golden ships are in the [README](../README.md).
 │  stormdrive  :9092           │  REST  │  stormblock  :9090          │
 │  the drive curator           │──────▶ │  the drive consumer         │
 │  discovery · health · wear   │        │  slabs · volumes · targets  │
-│  thermal · firmware ·        │        │                             │
-│  location · sequencing       │        │                             │
+│  location · firmware ·       │        │                             │
+│  tests · format · fleet      │        │                             │
 └──────────────┬───────────────┘        └──────────────┬──────────────┘
                │ sysfs · ioctl · SG_IO · netlink       │ O_DIRECT/io_uring
                ▼                                        ▼
@@ -468,66 +468,31 @@ feed has its own WebSocket (`/ws/components`).
 
 ## API (axum, `0.0.0.0:9092`)
 
-```
-GET  /                                 embedded UI (also /ui, /ui/; the page
-                                       detects stormd's proxy prefix itself)
-GET  /api/v1/health                    liveness {status, version}
-GET  /api/v1/drives                    inventory (running test inlined; each
-                                       drive's `usage`: capacity, slabs, left)
-GET  /api/v1/drives/{id}               id = DriveId, wwid (any case), path or
-                                       name, serial — in that order
-GET  /api/v1/drives/{id}/health        latest HealthReport + trend
-POST /api/v1/drives/{id}/locate        {"on": true|false} → SES slot LED
-POST /api/v1/drives/{id}/fleet         {"action":"join","format_slab":bool,
-                                        "tier"?} | {"action":"leave","force"?}
-GET  /api/v1/monitor                    health-poll cost + stuck drives (#15)
-DELETE /api/v1/drives/{id}              forget a missing, out-of-fleet drive (#15)
-POST /api/v1/drives/{id}/designation   {"designation":"none|reserved|spare|failed"}
-GET|PUT|POST /api/v1/drives/{id}/overcommit  {"enabled":false} | {"enabled":true,"ratio":2.0}
-POST /api/v1/drives/{id}/overcommit/{off|<ratio>}   body-free form
-POST /api/v1/drives/{id}/test          {"kind":"smoke|read_scan|destructive_sample"}
-GET  /api/v1/drives/{id}/test          current/last run (progress, errors)
-POST /api/v1/drives/{id}/test/cancel
-POST /api/v1/drives/{id}/format        {"block_size": 512|4096} → FORMAT UNIT
-GET  /api/v1/drives/{id}/format        current run + last result
-POST /api/v1/format                    {"drives":[handles], "block_size"} —
-                                       all-or-nothing validation, then parallel
-GET  /api/v1/format                    every format run on this node
-GET  /api/v1/firmware/images           image store (name, size, sha256)
-PUT  /api/v1/firmware/images/{name}    raw body upload; DELETE removes
-POST /api/v1/drives/{id}/firmware      {"image", "force"?} → WRITE BUFFER /
-                                       NVMe download+commit
-GET  /api/v1/drives/{id}/firmware      version, current run, last result
-POST /api/v1/firmware                  {"drives":[…] and/or "model", "image"}
-GET  /api/v1/firmware                  every update run on this node
-GET  /api/v1/shelves                   SES shelves: identity, status, elements
-GET  /api/v1/shelves/{key}             key = logical id | serial | sysfs id
-POST /api/v1/shelves/{key}/locate      {"on": bool, "bay"?: n} → SES IDENT
-POST /api/v1/shelves/{key}/format      {"block_size", "all"?} — every
-                                       out-of-fleet drive that needs it
-GET  /api/v1/components                stormview feed: drives + shelves
-GET  /ws/components                    the same feed, pushed on change
-GET  /api/v1/topology                  controller → shelf → drive tree
-GET  /api/v1/hbas                      HBAs: driver, PCI ids, firmware,
-                                       option-ROM BIOS, NVDATA (inventory)
-GET  /api/v1/placement                 where every drive + shelf is, for
-                                       mirrors; generation, ETag, ?since=G /
-                                       If-None-Match → 304
-GET  /api/v1/placement/{id}            one drive's placement record
-GET  /api/v1/events?since=<seq>
-GET  /api/v1/summary                   stormd RemoteSummary card
-GET  /metrics                          Prometheus (phase 2)
-```
-Errors use stormblock's `{error, code}` envelope shape for familiarity.
-Auth: same posture as the rest of the ecosystem for now (none on the node
-LAN); token support goes in the config from day one (`api_token`, off by
-default) so it can be turned on without a format change.
+The route table, request bodies and handle resolution are in the
+[README](../README.md#api). Some design points:
+
+- **Every action has a body-free form** (`…/locate/on`, `…/fleet/join`,
+  `…/designation/spare`, …), because a stormview renderer invokes method +
+  path with no body. The body-free join never formats a slab. That
+  destructive choice needs the JSON body.
+- **Kubernetes-shaped resources** (`src/api/kube.rs`, stormblock#80):
+  `/apis/storage.storm.io/v1/{drives,enclosures}` with API discovery,
+  `?watch=1` (newline-delimited `{type, object}`), `labelSelector`, and
+  `PATCH` of a Drive's writable spec (`designation`, `fleet`, `drain`,
+  `locate`). Each writable field maps onto an existing REST verb. Every object
+  is a projection of the inventory; there is no second store.
+- Errors use stormblock's `{error, code}` envelope.
+- **Auth: none.** `[api] api_token` is in the config schema from day one, so
+  turning auth on is not a format change, but nothing checks it yet (#19).
+- **No `/metrics` yet** (#18). At 160 drives × ~6 gauges it would be ~1,000
+  series per node.
 
 ### The components feed (`/api/v1/components`, `/ws/components`)
-Every drive and shelf as a stormview `ComponentSummary`, so stormd, stormsh
-and stormconsole render this daemon with no per-UI code: a `belongs_to
-shelf` relation groups drives into shelf grids, and the actions are real
-parameter-less API routes.
+Every drive, shelf and HBA as a stormview `ComponentSummary`, so stormd,
+stormsh and stormconsole render this daemon with no per-UI code. A `belongs_to
+shelf` relation groups drives into shelf grids, an HBA `has_many` drives, and
+the actions are real parameter-less API routes. `/ws/components` recomputes
+the feed every 2 s and sends it when it changed.
 
 Placement is published as **metrics, not prose**. `detail` is a sentence for
 a TUI and is free to change wording; a renderer that has to *place* a drive
@@ -658,10 +623,18 @@ name.
   drives.
 
 ### The stormd card (`/api/v1/summary`)
-Answer within 400 ms (stormd's timeout) from cached state — never collect on
-demand. Health mapping: any Failed/Missing-Active → `error`; any
-Failing/Warning/Draining → `warn`; otherwise `ok`. Metrics: drives total,
-active, warnings, hottest °C, worst wear %.
+It answers within stormd's 400 ms timeout from cached state and never
+collects on demand. The shape is `{health, detail, metrics}`:
+
+- `error`: any drive health Failing/Failed, designated failed, or missing,
+  or any shelf with a bad overall status.
+- `warn`: any drive health Warning, any drive draining, or any unusable
+  (520-byte) drive.
+- `idle`: no drives.
+- `ok`: otherwise.
+
+Metrics: Drives, Fleet, and Hottest °C and Worst wear % when known. Spare,
+Attention, Reformat and Shelves appear only when non-zero.
 
 ## StormBlock integration (`stormblock.rs`, `fleet.rs`)
 
@@ -727,58 +700,46 @@ starts behind our back.
 
 ## Config (`/etc/stormdrive/stormdrive.toml`)
 
-```toml
-listen_addr = "0.0.0.0:9092"
-data_dir    = "/var/lib/stormdrive"
-node_name   = ""                    # default: hostname
-
-[discovery]
-interval_secs = 30
-exclude = []                        # extra glob patterns; built-ins always apply
-include = []                        # explicit allow-list (empty = all eligible)
-
-[monitor]
-interval_secs   = 60
-temp_warn_c     = 55
-temp_crit_c     = 70
-spare_warn_pct  = 20
-spare_crit_pct  = 10
-wear_warn_pct   = 80
-hysteresis      = 3                 # consecutive samples before a transition
-max_concurrent  = 8                 # health reads in flight at once
-sample_timeout_secs = 10            # a read slower than this is a failed sample
-
-[stormblock]
-enabled  = true
-url      = "http://127.0.0.1:9090"
-auto_add = false                    # phase 4; explicit opt-in
-token_file = ""                     # engine bearer token; empty = stormblock CLI lookup order
-tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", hdd = "cool" }
-
-[api]
-api_token = ""                      # empty = no auth (matches ecosystem posture)
-```
-
-Missing file → defaults (stormblock convention). CLI flags override file.
+Every key, with its default, is in the [README](../README.md#configuration)
+and in [deploy/stormdrive.example.toml](../deploy/stormdrive.example.toml). A
+test (`config::tests::example_config_is_the_defaults`) fails when the example
+and `Config::default()` disagree. A missing file means defaults (stormblock
+convention), and CLI flags override the file.
 
 ## Deployment
 
-- musl static binary, `x86_64-unknown-linux-musl` (aarch64 later for JBOD
-  heads), built on dev.g8.lo.
-- systemd unit `stormdrive.service` (After=network-online, wants
-  stormblock-target ordering but must run without it), or as a stormd
-  `[[process]]` in containerized deployments — the stormd path is what
-  lights up the UI extension.
-- Needs root (sysfs writes for LEDs, admin ioctls, SG_IO); CAP_SYS_ADMIN +
-  CAP_SYS_RAWIO is the tightening target once the ioctl set is final.
+- A static musl binary, `x86_64-unknown-linux-musl`, built by `sc-build`
+  and, for release, by stormcentral into a golden.
+- **On stormcos:** a stormd-based service golden. stormcos's
+  `service_golden` recipe writes the config (`listen_addr` 0.0.0.0:9092,
+  `data_dir` /var/lib/stormdrive) and a stormd config with an HTTP liveness
+  probe on `/api/v1/health`. The container gets:
+  - the host network;
+  - the host's `/dev`;
+  - the host's `/sys`, read-only, which blocks sysfs LED and rescan writes
+    (stormcos#166);
+  - `/run/stormblock` for the engine token.
 
-## Testing strategy
+  It is started on every node profile. See the README's "How it ships".
+- **Elsewhere:** the systemd unit in `deploy/systemd/` (After
+  network-online and stormblock-target, runs fine without stormblock), or a
+  stormd `[[process]]` with the `[process.ui]` block in
+  `deploy/stormd-ui.toml` for the dashboard card and proxied page.
+- It needs root, or at least CAP_SYS_ADMIN + CAP_SYS_RAWIO, for SG_IO and
+  the NVMe admin ioctl, and a writable sysfs for LEDs and rescans.
 
-- Pure-logic (threshold engine, state machine, identity derivation, trend
-  projection, config) — portable unit tests.
-- sysfs parsing against fixture trees (copied from real nodes into
-  `tests/fixtures/sys/`) — portable.
-- ioctl/SG_IO/netlink paths — Linux-only tests on dev.g8.lo, tagged like
-  stormblock's (the 45-test delta lesson).
-- Against a live stormblock: integration tests using FileDevice-backed
-  stormblock on dev.
+## Testing
+
+- **Unit tests beside the code** (`cargo test`, 132 after #7):
+  - on synthetic data: the threshold engine and damper, identity
+    derivation, multipath grouping, replacement by bay, config and the
+    example file, SCSI sense/CDB/page parsers, SES page assembly, the slab
+    and GPT probe, usage joins, overcommit, placement hashing, the poller's
+    schedule and timeouts, and the HBA sysfs parsing;
+  - the stormblock client against a stand-in engine (token absent, minted,
+    rotated).
+- sysfs, ioctl, SG_IO and netlink code runs only on Linux, and is exercised
+  by running the daemon on a node: R230 for SATA behind mpt3sas, stormblock1
+  for the NetApp shelf.
+- **Not yet:** the test containers the stormcos test standard asks for
+  (#11).
