@@ -350,6 +350,7 @@ requests the server must *refuse* (checked before anything starts).
       proposed --after stormcentral#63
 - [x] clippy --workspace -D warnings + sc-build pass on 6e34251 (133 + 2
       harness + 9); #27 (clippy build-failure) closed; #11 closed; golden
+      `golden-stormdrive-452835d3e854` (7661bc8), stormcos#131
 
 ### #8: a presentation of its purpose and functionality (2026-09-28) — DONE
 
