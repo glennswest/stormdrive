@@ -1262,6 +1262,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "stormdrive-test",
  "stormview",
  "thiserror 1.0.69",
  "tokio",
@@ -1269,6 +1270,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "stormdrive-test"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
