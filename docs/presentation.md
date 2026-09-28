@@ -152,6 +152,11 @@ Lifecycle is three separate fields:
   - MODE SELECT + FORMAT UNIT over SG_IO, progress polled with TEST UNIT READY.
   - One drive, a list, or a whole shelf; a batch is checked all-or-nothing
     first.
+- **The drive worker** (v0.17.0): one request takes a selection (drives, a
+  shelf and bays, a model, "all unusable") through format → sanitize →
+  partition → enroll. It is parallel per HBA, enrolls one at a time per
+  shelf, refuses any drive holding data unless named by id, WWN or serial,
+  and survives a restart.
 - **Firmware:** an image store, WRITE BUFFER for SAS/SATA, Download + Commit
   for NVMe.
   - One drive, a list, or every drive of a model.
@@ -172,7 +177,7 @@ Lifecycle is three separate fields:
 | Liveness · card | `GET /api/v1/health` `{status, version, node}` · `GET /api/v1/summary` (stormd card) |
 | Drives | `GET /api/v1/drives[/{id}]` · id = uuid, WWID, `/dev` path, name or serial |
 | Actions | `POST …/{id}/fleet` `locate` `designation` `overcommit` `test` `format` `firmware` · `GET/POST/DELETE …/{id}/drain` |
-| Batches | `POST /api/v1/format` · `POST /api/v1/firmware` · `POST /api/v1/shelves/{key}/format` |
+| Batches | `POST /api/v1/worker/jobs` (the drive worker) · `POST /api/v1/format` · `POST /api/v1/firmware` · `POST /api/v1/shelves/{key}/format` |
 | Where things are | `/api/v1/topology` · `/api/v1/shelves` · `/api/v1/hbas` · `/api/v1/placement` (generation + ETag → 304) |
 | Watchers | `/api/v1/events?since=` · `/api/v1/monitor` (poll cost) |
 | Renderers | `/api/v1/components` + `/ws/components` (stormview feed; body-free action routes) |
@@ -235,7 +240,7 @@ no auth (#19) yet.
 |---|---|
 | `/metrics`: SMART, temperature, wear and errors per drive | #18 |
 | Auth / TLS on :9092 (`[api] api_token` is parsed, not enforced) | #19 |
-| The drive worker: bulk test/join, NVMe format, sanitize, per-failure-domain sequencing | #5 |
+| Drive worker: ATA security erase · jobs on the page · scheduling default | #36 · #38 · decision #37 |
 | Shelf (IOM) firmware · a vendor firmware image source | #35 · #29 |
 | SAS/SATA health: SCSI log sense, ATA SMART | #22 |
 | Wear-out projection · persisted events | #23 · #25 |

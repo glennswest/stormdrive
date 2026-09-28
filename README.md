@@ -133,6 +133,42 @@ are listed under [Not yet](#not-yet).
   - A batch is checked all-or-nothing before any drive starts.
   - Only out-of-fleet, idle, unmounted, not reserved, no slab, not NVMe.
   - There is no cancel.
+- **The drive worker** (`src/worker.rs`, `src/erase.rs`, `src/gpt.rs`,
+  #5). It prepares drives at fleet scale with one request:
+  `POST /api/v1/worker/jobs {select, steps, destroy?, dry_run?}`.
+  - **Select:** `drives` (handles), `shelf` with optional `bays` (`"0-11,14"`),
+    `model`, `unusable` (520/528-byte drives). The given filters are ANDed.
+  - **Steps**, in this order, each at most once:
+    1. `format {block_size}`: SCSI FORMAT UNIT (the existing format job) or
+       NVMe Format NVM with the LBA format of that data size.
+    2. `sanitize {method: block|crypto|overwrite}`: NVMe Sanitize (refused
+       while other namespaces share the controller) or SCSI SANITIZE
+       (which SAT maps to ATA SANITIZE).
+    3. `partition {role: data|system}`: clears the first and last 4 MiB,
+       then writes a GPT with one 1 MiB-aligned partition of stormblock's
+       slab type (the same GUIDs as a node disk).
+    4. `enroll {tier?, role}`: opens the partition (or the whole disk) in
+       stormblock with its labels and stable uuid, then formats a slab of
+       that role and tier.
+  - **Safety:** it never touches a fleet, busy, reserved, missing or
+    mounted drive. A drive holding a stormblock slab or a filesystem (ext*,
+    xfs, btrfs, vfat, ntfs, swap, LVM2, LUKS, md, on the disk or any GPT
+    partition) is refused a destructive step, unless `destroy` names it by
+    stable id, WWN or serial (never by `/dev` name). Guards run at submit
+    and again before each step. `dry_run` returns the plan (runnable and
+    refused drives, with reasons) and changes nothing.
+  - **Scheduling:** low-level steps run in parallel, at most
+    `worker.max_per_hba` behind one HBA (an NVMe drive is its own lane).
+    `enroll` runs `worker.enroll_per_domain` at a time per failure domain
+    (shelf, else HBA). Whether low-level steps should also be one per
+    domain is #37.
+  - **State:** jobs persist in `<data_dir>/jobs.json`. Each drive has a
+    `prep` phase (`unusable`, `formatting`/`sanitizing` n%, `ready`,
+    `enrolled`) on `/api/v1/drives`, the kube Drive status and the feed.
+  - **After a restart:** a SCSI format or sanitize, or an NVMe sanitize,
+    still running on the drive is watched to the end. Anything else in
+    flight becomes `interrupted` until `POST …/resume`; it is never re-run
+    blind. `POST …/cancel` stops the steps that have not started.
 - **Firmware** (`src/firmware.rs`). It keeps an image store in
   `<data_dir>/firmware`.
   - **SAS/SATA:** WRITE BUFFER mode 0x0E then 0x0F, falling back to 0x07.
@@ -301,6 +337,8 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `api.api_token` | `""` | **parsed and not enforced**: the API is open (#19) |
 | `firmware.chunk_kib` | `32` | download chunk; raised to the drive's offset boundary |
 | `firmware.max_image_mib` | `256` | largest image upload (also the request body limit) |
+| `worker.max_per_hba` | `8` | drive-worker low-level steps at once behind one HBA |
+| `worker.enroll_per_domain` | `1` | drive-worker enrolls at once per failure domain (shelf, else HBA) |
 
 Qualified for `auto_add`: out of the fleet, designation `none`, idle, a
 health verdict that is known and not Failing/Failed, not `in_use_by`, and
@@ -344,6 +382,8 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET·POST /api/v1/drives/{id}/test`, `POST …/test/cancel` | `{"kind":"smoke\|read_scan\|destructive_sample"}` |
 | `GET·POST /api/v1/drives/{id}/format` | `{"block_size":512\|4096}` (default 4096) |
 | `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size"}` |
+| `GET·POST /api/v1/worker/jobs` | drive worker jobs · `{"select":{…},"steps":[…],"destroy"?,"dry_run"?}` |
+| `GET /api/v1/worker/jobs/{id}`, `POST …/{id}/cancel`, `POST …/{id}/resume` | one job; stop what hasn't started; continue interrupted drives |
 | `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` |
 | `GET·POST /api/v1/firmware` | all runs · `{"image","drives"?,"model"?,"force"?}` |
 | `GET /api/v1/firmware/images`, `GET·PUT·DELETE …/images/{name}` | image store; PUT takes the raw image |
@@ -429,8 +469,9 @@ These are documented as design only; the code does not do them:
   projection (#23); persisted events (#25)
 - a node-wide sequencer with a stormblock redundancy check before a fleet
   drive's firmware reset (#24)
-- the drive worker (#5): NVMe namespace format, sanitize / secure erase,
-  partitioning, per-HBA limits, per-failure-domain sequencing
+- in the drive worker: ATA SECURITY ERASE for SATA drives without ATA
+  Sanitize (#36); using it from the page (#38); the scheduling default is
+  your decision (#37)
 - SES shelf (IOM) firmware (#35)
 - waiting on your decision:
   - thermal actuation (#32)
@@ -441,6 +482,10 @@ These are documented as design only; the code does not do them:
 Built but never exercised on real hardware:
 
 - **Firmware updates:** nothing supplies an image (#29).
+- **The drive worker's disk operations** (NVMe Format NVM, both sanitizes,
+  GPT on a real disk, BLKRRPART, enroll through a partition) are tested on
+  synthetic data. The GPT layout is also checked by `sfdisk --verify` on a
+  file. On real drives: #30.
 - **The NetApp shelf path:** SES, the 520 → 4096 format, phy/expander (#30).
 - **160-bay NVMe:** #31.
 - **The test containers on a test machine:** #28.

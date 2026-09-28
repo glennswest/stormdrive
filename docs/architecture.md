@@ -396,6 +396,60 @@ A batch request validates every drive before starting any. There is no
 cancel. The result is persisted on the drive (`format`) and reported
 as an event; the drive is `usable` again once the kernel re-reads it.
 
+### The drive worker (`worker.rs`, `erase.rs`, `gpt.rs`, #5)
+One request prepares many drives: a **selection** (drives, shelf + bays,
+model, unusable) × a list of **steps** (format → sanitize → partition →
+enroll, each at most once, in that order). A job keeps one record per
+drive: state (queued, running, done, failed, refused, interrupted,
+cancelled), the current step, phase and percent, and one line per finished
+step. It persists in `<data_dir>/jobs.json`; the 64 most recent jobs are
+kept.
+
+- **Guard** (`worker::guard`, pure and unit-tested), run at submit and
+  again before every step:
+  - Refused outright: a fleet drive (leave or drain it first), busy,
+    reserved, missing, or mounted.
+  - A destructive step on a drive that holds data is refused.
+    `contents::holds` looks for a stormblock slab or a filesystem signature
+    on the disk and at every GPT partition start. The refusal holds unless
+    `destroy` names the drive by id, WWN or serial: stormblock's
+    `data_slab_on` rule, applied to identities that don't move.
+  - Partition and enroll need a usable 512/4096 geometry, unless a format
+    step comes first.
+  - Enroll needs stormblock, a healthy drive, and a designation other than
+    `failed`. A failed drive may still be sanitized.
+  - An NVMe sanitize is controller-wide, so it is refused while another
+    namespace shares the controller.
+- **Lanes:**
+  - Low-level steps take a permit from the drive's HBA semaphore
+    (`worker.max_per_hba`; an NVMe controller is its own lane).
+  - `enroll` takes one from its failure domain's semaphore (shelf, else
+    HBA; `worker.enroll_per_domain`).
+  - So a shelf formats in parallel, and joins the pool one drive at a
+    time. Whether formats should also go one per domain is #37.
+- **Steps:**
+  - SCSI format reuses `format::start` (MODE SELECT + FORMAT UNIT, TUR
+    progress, rescan, verify).
+  - NVMe format picks the LBA format with the right data size, no
+    metadata and the best relative performance (Identify Namespace), and
+    sends Format NVM without secure erase.
+  - Sanitize polls log 0x81 (NVMe) or TEST UNIT READY sense 04/1B (SCSI)
+    for progress.
+  - Partition clears the head and tail, writes both GPT copies, and waits
+    for the kernel's partition node after BLKRRPART.
+  - Enroll opens `/dev/<disk>1` (or the disk) in stormblock with labels
+    and the stable uuid, and formats a slab with `role`. The drive records
+    `fleet_partition`, so every later engine call (labels, health, drain,
+    overcommit, leave) uses the partition path (`Drive::stormblock_path`).
+- **Restart** (`worker::recover`):
+  - A SCSI format or sanitize, or an NVMe sanitize, that was running is
+    re-attached and watched to its end (the drive keeps going without us).
+  - An NVMe format or a partition that was in flight, and every queued
+    drive, becomes `interrupted` with the reason. Nothing destructive
+    re-runs until `POST …/resume`.
+- **Not built:** ATA SECURITY ERASE (#36), and a UI for jobs on the page
+  (#38; stormconsole sees the `prep` metric in the feed).
+
 ### Sequencing — Design, not built
 
 There is no `sequence.rs`. What exists today is narrower:
@@ -771,8 +825,10 @@ convention), and CLI flags override the file.
 
 ## Testing
 
-- **Unit tests beside the code** (`cargo test` over the workspace: 133 in
-  the daemon, 9 in `test/`, plus the `tests/suites.rs` harness):
+- **Unit tests beside the code** (`cargo test` over the workspace: 154 in
+  the daemon, 9 in `test/`, plus the `tests/suites.rs` harness). A GPT the
+  worker writes is also read back by `sfdisk --json` / `--verify` where the
+  build box has util-linux:
   - on synthetic data: the threshold engine and damper, identity
     derivation, multipath grouping, replacement by bay, config and the
     example file, SCSI sense/CDB/page parsers, SES page assembly, the slab

@@ -86,6 +86,10 @@ src/
                   WRITE BUFFER; sense decoding portable + unit-tested
   ses.rs          SES-2 pages 0x01/0x02/0x07/0x0A, shelf reports, IDENT control
   format.rs       sector-size reformat jobs (520 → 512/4096)
+  worker.rs       the drive worker (#5): select × steps jobs, guards, lanes,
+                  jobs.json, restart recovery, prep phase
+  erase.rs        NVMe Format NVM / Sanitize, SCSI SANITIZE (build + parse)
+  gpt.rs          one-partition GPT with stormblock's slab type GUIDs
   firmware.rs     image store + WRITE BUFFER / NVMe download+commit jobs
   drivetest.rs    smoke / read_scan / destructive_sample
   stormblock.rs   engine client (:9090, bearer token): drives, labels, slabs,
@@ -353,12 +357,16 @@ Design (`src/worker.rs` + helpers), one job = a selection × a list of steps:
   `POST …/{id}/resume`.
 
 Steps:
-- [ ] plan (this) · [ ] fs/slab signature probe · [ ] GPT writer + crc32
-- [ ] NVMe identify/format/sanitize builders + parsers · [ ] SCSI SANITIZE
-- [ ] selector + guards + scheduler (pure, tested) · [ ] worker runtime,
-      persistence, restart · [ ] enroll via partition + stormblock_path in
-      fleet/reconcile · [ ] API, feed, kube · [ ] docs, test suites (dry-run
-      refusals), changelog, version · [ ] sc-build, close #5, golden
+- [x] plan · [x] fs/slab signature probe · [x] GPT writer + crc32
+      (sfdisk --verify on a file: "No errors detected")
+- [x] NVMe identify/format/sanitize builders + parsers · [x] SCSI SANITIZE
+- [x] selector + guards + lanes (pure, tested) · [x] worker runtime,
+      jobs.json, restart · [x] enroll via partition + stormblock_path in
+      fleet/reconcile/API/kube · [x] API, feed, kube `prep`
+- [x] docs; medium suite `worker-refusals` (dry run only); page counts
+      sanitizing as busy; issues #36 (ATA security erase), #37 (Decide:
+      scheduling), #38 (page UI for jobs)
+- [ ] v0.17.0, sc-build + clippy + web check, close #5, golden
 
 ### Comment mining (2026-09-28)
 
