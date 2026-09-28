@@ -71,11 +71,11 @@ async fn drive_identity(api: &Api) -> Outcome {
 /// one has actually been sampled. Waits up to one poll interval for that.
 async fn health_verdicts(api: &Api) -> Outcome {
     let ds = crate::drives(api).await?;
-    let present: Vec<&Value> = ds.iter().filter(|d| present(d)).collect();
-    if present.is_empty() {
+    let live: Vec<&Value> = ds.iter().filter(|d| present(d)).collect();
+    if live.is_empty() {
         return Err(Why::Skip("no present drives on this node".into()));
     }
-    for d in &present {
+    for d in &live {
         let v = d["health"]["status"].as_str().unwrap_or("unknown");
         ensure(VERDICTS.contains(&v), format!("{}: verdict {v:?}", s(d, "name")))?;
     }
@@ -89,7 +89,7 @@ async fn health_verdicts(api: &Api) -> Outcome {
                 .filter(|d| ["failing", "failed"].contains(&d["health"]["status"].as_str().unwrap_or("")))
                 .map(|d| format!("{} {}", s(d, "name"), d["health"]["status"]))
                 .collect();
-            let mut detail = format!("{} of {} present drives sampled", sampled.len(), present.len());
+            let mut detail = format!("{} of {} present drives sampled", sampled.len(), live.len());
             if !bad.is_empty() {
                 // A failing drive is stormdrive doing its job, not a failed test.
                 detail.push_str(&format!("; reported: {}", bad.join(", ")));
