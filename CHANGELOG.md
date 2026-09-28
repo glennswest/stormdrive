@@ -5,6 +5,7 @@
 
 ### 2026-09-28
 - **docs:** work plan — #6 done: v0.16.0 verified on dc0195c (sc-build 133/133, clippy, web check)
+- **docs:** work plan — #6 golden `golden-stormdrive-406e52043b5f` (e95ef48), stormcos#131
 
 ## [v0.16.0] — 2026-09-28
 

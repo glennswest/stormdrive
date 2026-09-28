@@ -346,7 +346,8 @@ Survey against the issue's list:
         leaf sections, exports condition)
   - [x] v0.16.0 (dc0195c): sc-build 133/133, clippy, `web/rebuild.sh
         --check` (npm ci, 5 + 1 JS tests, dist identical); #6 closed;
-        golden requested. Not yet seen in a real browser on a node: rides
+        golden `golden-stormdrive-406e52043b5f` (e95ef48), release request
+        stormcos#131. Not yet seen in a real browser on a node: rides
         the release. Bulk test/join + per-domain sequencing stay on #5,
         metrics on #18
 - [ ] Metrics per drive — #18
