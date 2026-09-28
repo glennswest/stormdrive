@@ -1,88 +1,354 @@
 # StormDrive
 
-**Physical drive management for the Storm ecosystem.**
+**Physical drive management for one storage node.** stormdrive knows what the
+node's drives *are*: which bay they sit in, how healthy and how worn they are,
+what firmware they run, and whose data is on them. It hands drives to
+[stormblock](https://github.com/glennswest/stormblock) and tells it when to
+get data off one.
 
-StormDrive is the layer below StormBlock. StormBlock turns drives into
-network volumes; StormDrive curates the drives themselves:
+It is the layer below stormblock. stormblock turns drives into slabs and
+volumes; stormdrive curates the drives. stormdrive owns everything **below
+the node** (HBA, shelf, bay, PCIe slot). stormblock and stormstorage own the
+node and everything above it.
 
-- **Discovery** — sysfs enumeration + hotplug of NVMe, SAS2/3, and SATA
-  drives; stable identity that survives reboots and path changes
-- **Monitoring** — periodic SMART/health collection (NVMe log pages, SCSI
-  log sense), failure prediction, event stream
-- **Wear** — endurance tracking and projected-life trending for SSDs
-- **Thermal** — per-drive and per-enclosure temperature watch and alerts
-- **Firmware** — inventory now; sequenced, health-gated updates later
-- **Location** — enclosure/bay mapping (SES), PCIe slot, SAS address,
-  locate-LED control; failure-domain labels for placement
-- **Fleet lifecycle** — discovery finds drives; the UI moves them into the
-  **fleet** (stormblock registration + slab format). Orthogonally, drives
-  can be **tested** (smoke / full read scan / destructive write-verify —
-  destructive only out of fleet) and designated **reserved**, **spare**, or
-  **failed**, both in fleet and out
-- **Sequencing** — one disruptive operation at a time, pre/post health
-  checks
-- **StormBlock hand-off** — registers qualified drives (add + slab format
-  with derived tier) and drives the drain/retire flow when one is failing
+One static binary, `stormdrive`, per node. It serves a REST API, an embedded
+web page, a stormview components feed and Kubernetes-shaped resources, all on
+**:9092**.
 
-One daemon per storage node, REST API on **:9092**, plus a
-[stormd](../stormd) newer-UI extension (dashboard card via `summary`, full
-page via `proxy`).
+```
+            sysfs · SG_IO · NVMe admin ioctl · netlink uevents
+drives ─────────────────────────────────────────────▶ stormdrive :9092
+HBAs, SAS shelves (SES), PCIe slots                     │  inventory.json
+                                                        │
+          POST/DELETE drives, labels, slabs, health,    ▼
+          drain, overcommit (Bearer token)        stormblock :9090
+```
 
-> **Build on `root@dev.g8.lo`, never on a Mac.** The whole drive path —
-> sysfs, admin ioctls, SG_IO, netlink uevents — is behind
-> `cfg(target_os = "linux")`. Commit, push, pull on dev, build there.
+## What it does today (v0.15.0)
 
-## Quick start
+Everything below is in the code on `main`. Items the code does **not** do yet
+are listed under [Not yet](#not-yet).
+
+- **Discovery** (`src/discovery/`). Walks `/sys/block` on start, every
+  `discovery.interval_secs`, and 2 s after a kernel disk uevent
+  (`src/hotplug.rs`). It classifies each disk as `nvme_ssd`, `sas_ssd`,
+  `sas_hdd`, `sata_ssd`, `sata_hdd` or `unknown`. A SATA drive behind a SAS
+  HBA is SATA, because its SCSI vendor is `ATA`.
+  - **Stable id:** a UUIDv5 of the WWID, or of model + serial when there is
+    no WWID. It is the same across reboots, path changes and re-bays.
+  - **Multipath:** a dual-IOM shelf shows one drive on two `/dev` nodes. That
+    is one drive with a `paths` list and a stable primary (sorted first).
+  - **Skipped:** `loop* ram* zram* dm-* md* sr* fd* nbd* ublkb* zd* pmem*
+    drbd*`, NVMe native-multipath path nodes (`nvme0c1n1`), hidden gendisks,
+    anything `discovery.exclude` matches or `discovery.include` doesn't, and
+    drives with a mounted partition unless `discovery.manage_mounted`.
+  - **Missing:** a known drive that vanishes stays in the inventory as
+    `missing` and keeps its id when it comes back.
+  - **Replacement:** a new drive in a missing drive's bay gets
+    `replaces: <old id>` and a `replaced` event.
+  - **520-byte drives:** the kernel refuses a NetApp drive at 520 or 528 byte
+    sectors and attaches it with 0 blocks. Discovery still lists it
+    (`usable: false`, `needs_reformat`), with `block_size` from READ
+    CAPACITY(16).
+  - **Who holds it** (`src/contents.rs`): it reads a stormblock slab header
+    (`STRMSLAB`) at LBA 0 or at the start of any GPT partition. A disk with
+    one has `in_use_by` set. On stormcos that is the node's system disk,
+    which `/proc/mounts` does not show.
+  - **Probe cache:** READ CAPACITY and the slab probe run again only when the
+    device changes (dev number, size, WWID), or every 10 minutes.
+- **Health** (`src/monitor.rs`, `src/poller.rs`, `src/smart/`). Each drive is
+  sampled once per `monitor.interval_secs`, at its own phase in the interval.
+  At most `monitor.max_concurrent` reads run at once. A read slower than
+  `monitor.sample_timeout_secs` counts as a failed sample, and that drive is
+  not read again until the stuck read returns.
+  - **NVMe:** Get Log Page 0x02 through `NVME_IOCTL_ADMIN_CMD`: critical
+    warning bits, temperature, available spare, percentage used, power-on
+    hours, media errors.
+  - **SAS/SATA:** sysfs only: `device/state`, `device/ioerr_cnt` (failed
+    commands, shown as "io errs") and the hwmon temperature. There is no
+    SCSI log sense or ATA SMART yet.
+  - **Verdict:** `good`, `warning`, `failing` or `failed`, from the
+    thresholds in `[monitor]`. A worse verdict must repeat
+    `monitor.hysteresis` samples in a row before it sticks. A better one
+    applies at once. Every change is an event.
+  - **Trend:** SSDs keep a trend of (wear %, media errors), recorded when a
+    value changes or once a day. `GET /api/v1/drives/{id}/health` returns it.
+- **Location** (`src/topology.rs`, `src/ses.rs`, `src/hba.rs`).
+  - **SAS:** the HBA (SCSI host, PCIe address, driver), the shelf, the bay,
+    the SAS address, the expander phy and the expander.
+  - **Shelves:** from `/sys/class/enclosure` when the kernel's `ses` module
+    is bound. Otherwise stormdrive reads the SES pages itself (0x01, 0x02,
+    0x07, 0x0A over SG_IO) and uses mpt3sas's
+    `enclosure_identifier`/`bay_identifier`. The two IOMs of a dual-path
+    shelf are one shelf, keyed by its logical id.
+  - **NVMe:** the PCIe slot on the drive's PCIe chain. A numeric slot name
+    is also the bay. Intel VMD domains and native multipath heads are
+    followed.
+  - **Locate LEDs:** sysfs `locate`, or SES IDENT, or the PCIe slot's
+    `attention` indicator, or NPEM.
+  - **HBA inventory:** driver, PCI ids, board, and the firmware, option-ROM
+    BIOS and NVDATA versions. It is reported only; stormdrive never flashes
+    an HBA.
+  - Location is resolved again on every discovery pass. A move is a
+    `location` event.
+- **Fleet** (`src/fleet.rs`, `src/stormblock.rs`). A drive's lifecycle is
+  three separate fields:
+  - `membership`: `out` or `fleet`. `fleet` means handed to stormblock.
+  - `designation`: `none`, `reserved`, `spare` or `failed`. The operator sets
+    it.
+  - `activity`: `idle`, `testing`, `draining`, `formatting`,
+    `updating_firmware` or `missing`.
+
+  Joining registers the drive with stormblock (`POST /api/v1/drives {path,
+  labels, uuid}`) and can format a slab on it. The tier comes from
+  `tier_map`, else `nvme_ssd` → hot, SSD → warm, HDD → cool. Each fleet tick
+  then does five things:
+  1. Pushes location labels (`shelf`, `bay`, `hba`, `pcie_slot`) when they
+     change.
+  2. Pushes the health verdict when it changes (Failing/Failed quarantine
+     the drive's slabs).
+  3. Pushes each drive's overcommit setting.
+  4. Drains a failing or failed fleet drive. When stormblock reports it
+     empty, the drive leaves the fleet, its locate LED comes on, and an
+     event says it is safe to pull.
+  5. With `stormblock.auto_add`, registers every qualified drive.
+- **Usage** (`src/usage.rs`). Every drive carries `usage`: capacity, its
+  stormblock slabs, used, free, and what lies outside the slabs. It is joined
+  from stormblock's `/api/v1/slabs` by WWN, else serial, else path.
+- **Overcommit.** Each drive has an `overcommit {enabled, ratio}` setting.
+  It is off by default, and the ratio can be 1.0 to 16.0. stormdrive pushes
+  it to stormblock. stormblock enforces it (stormblock#152, not on
+  stormblock main yet, so the push gets 404 and is retried every 10
+  minutes).
+- **Drive tests** (`src/drivetest.rs`), one per drive:
+  - `smoke`: sampled reads.
+  - `read_scan`: a full sequential read, with progress and cancel.
+  - `destructive_sample`: write, then verify through O_DIRECT. Only on an
+    out-of-fleet, unmounted drive that holds no slab.
+- **Sector reformat** (`src/format.rs`, `src/scsi.rs`). This turns 520/528
+  byte drives into 512 or 4096. It sends MODE SELECT with the new block
+  length, then FORMAT UNIT (IMMED), and polls TEST UNIT READY for progress.
+  Then it rescans the sd device and checks the new geometry.
+  - Targets: one drive, a list, or every drive on a shelf that needs it.
+  - A batch is checked all-or-nothing before any drive starts.
+  - Only out-of-fleet, idle, unmounted, not reserved, no slab, not NVMe.
+  - There is no cancel.
+- **Firmware** (`src/firmware.rs`). It keeps an image store in
+  `<data_dir>/firmware`.
+  - **SAS/SATA:** WRITE BUFFER mode 0x0E then 0x0F, falling back to 0x07.
+  - **NVMe:** Firmware Image Download (0x11) and Commit (0x10). It tries
+    activate-now first; when the drive needs a reset, it commits and records
+    `reset_required`.
+  - Update one drive, a list, or every drive of a model. It never runs on
+    its own.
+  - Out-of-fleet drives update in parallel. Fleet drives and the system disk
+    update one at a time.
+  - Failing/Failed drives are refused unless `force`.
+- **Events** (`src/events.rs`). An in-memory ring of the last 4096 events,
+  numbered by `seq`. It is not persisted, so a restart starts it empty.
+- **Inventory** (`src/inventory.rs`). The drive records, including
+  designations, overcommit, the last format and firmware results, and the
+  trends, are kept in `<data_dir>/inventory.json`. It is compact JSON,
+  written tmp + rename and only when it changed. Without `data_dir` it is in
+  memory only.
+
+## Build and test
+
+Built and tested with `sc-build`, never on the machine you edit on, and never
+as root:
 
 ```bash
-# on a storage node
-stormdrive --config /etc/stormdrive/stormdrive.toml
-
-curl -s http://localhost:9092/api/v1/drives | python3 -m json.tool
-curl -s http://localhost:9092/api/v1/summary
-curl -s -X POST http://localhost:9092/api/v1/drives/<id>/locate -d '{"on":true}'
-
-# Where each drive is (shelf, bay, SAS phy, fleet/spare/failed), by WWN;
-# 304 while the generation is unchanged
-curl -s http://localhost:9092/api/v1/placement | python3 -m json.tool
-curl -s http://localhost:9092/api/v1/placement/naa.50014ee2bab11f8d
-curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:9092/api/v1/placement?since=<generation>"
-
-# HBAs and the firmware they run (reported, never flashed)
-curl -s http://localhost:9092/api/v1/hbas | python3 -m json.tool
-
-# NetApp shelves: identity, PSU/fan/temperature elements, slot map
-curl -s http://localhost:9092/api/v1/shelves | python3 -m json.tool
-# 520-byte drives (kernel: "Unsupported sector size") → 4096, one or many
-curl -s -X POST http://localhost:9092/api/v1/drives/sdb/format -d '{"block_size":4096}'
-curl -s -X POST http://localhost:9092/api/v1/format -d '{"drives":["sdb","sdc","sdd"],"block_size":4096}'
-curl -s -X POST http://localhost:9092/api/v1/shelves/<logical-id>/format -d '{"block_size":4096}'
-
-# Firmware: upload an image, then update one drive or every drive of a model
-curl -s -X PUT --data-binary @ST1200MM0098-N004.lod http://localhost:9092/api/v1/firmware/images/ST1200MM0098-N004.lod
-curl -s -X POST http://localhost:9092/api/v1/drives/sdb/firmware -d '{"image":"ST1200MM0098-N004.lod"}'
-curl -s -X POST http://localhost:9092/api/v1/firmware -d '{"model":"ST1200MM0098","image":"ST1200MM0098-N004.lod"}'
+git push
+sc-build                      # cargo build && cargo test on dev.g8.lo, scratch dir, deleted after
+sc-build 'cargo clippy --all-targets -- -D warnings'
 ```
+
+The drive paths (sysfs, SG_IO, ioctls, netlink) are behind
+`cfg(target_os = "linux")`. A build on another OS compiles and runs the
+portable tests only. What ships is the release build:
+
+```bash
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+The unit tests live beside the code (131 at v0.15.0). Page parsers, sense
+decoding, the threshold engine, placement hashing and the token lookup are
+tested on synthetic data. A stand-in engine covers the stormblock client.
+There is no test container yet (#11).
+
+## Running it
+
+```
+stormdrive [--config PATH] [--listen ADDR] [--data-dir DIR]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--config` | `/etc/stormdrive/stormdrive.toml` | config file; a missing file means all defaults |
+| `--listen` | from config | overrides `listen_addr` |
+| `--data-dir` | from config | overrides `data_dir` |
+
+`RUST_LOG` sets the log filter (default `info`). SIGINT persists the inventory
+and exits. SIGTERM is not caught, so it skips that final write (#21). The
+inventory is also written every tick. The drive work needs root, or at least `CAP_SYS_ADMIN` +
+`CAP_SYS_RAWIO` for SG_IO and the NVMe admin ioctl, and write access to sysfs
+for locate LEDs and rescans.
+
+## Configuration
+
+`/etc/stormdrive/stormdrive.toml`. Every key is optional. The defaults below
+are read from `src/config.rs`, and
+[deploy/stormdrive.example.toml](deploy/stormdrive.example.toml) lists them
+all. The daemon refuses to start on an unparseable `listen_addr`, a zero
+interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `listen_addr` | `0.0.0.0:9092` | API, UI and feed |
+| `data_dir` | unset | inventory + firmware images; unset = in memory, no image store |
+| `node_name` | hostname | reported in `/api/v1/health`, placement, feed |
+| `discovery.interval_secs` | `30` | full rescan (hotplug rescans sooner) |
+| `discovery.exclude` | `[]` | extra `*` patterns on kernel names; built-ins always apply |
+| `discovery.include` | `[]` | allow-list; empty = every eligible disk |
+| `discovery.manage_mounted` | `false` | list drives with mounted partitions |
+| `monitor.interval_secs` | `60` | each drive's health sample period; also the stormblock usage/reconcile and fleet tick |
+| `monitor.temp_warn_c` / `temp_crit_c` | `55` / `70` | temperature thresholds (both give `warning`) |
+| `monitor.spare_warn_pct` / `spare_crit_pct` | `20` / `10` | NVMe available spare: `warning` / `failing` |
+| `monitor.wear_warn_pct` / `wear_crit_pct` | `80` / `95` | wear (NVMe percentage used): `warning` / `failing` |
+| `monitor.hysteresis` | `3` | consecutive samples before a worse verdict sticks |
+| `monitor.max_concurrent` | `8` | health reads in flight |
+| `monitor.sample_timeout_secs` | `10` | a slower read is a failed sample |
+| `stormblock.enabled` | `true` | talk to stormblock at all |
+| `stormblock.url` | `http://127.0.0.1:9090` | the engine's management API |
+| `stormblock.auto_add` | `false` | register qualified drives on its own |
+| `stormblock.auto_format_slab` | `true` | …and format a slab on them |
+| `stormblock.push_health` | `true` | report Failing/Failed (and recovery) to the engine |
+| `stormblock.drain_on_failing` | `true` | drain + retire a Failing/Failed fleet drive |
+| `stormblock.tier_map` | `{}` | kind → slab tier, e.g. `{ sas_hdd = "cold" }` |
+| `stormblock.api_token` | `""` | engine bearer token; see below |
+| `stormblock.token_file` | `""` | file holding it; see below |
+| `stormblock.admin_token` | `""` | for `DELETE`s; empty = `$STORMBLOCK_ADMIN_TOKEN`, then the api token |
+| `api.api_token` | `""` | **parsed and not enforced**: the API is open (#19) |
+| `firmware.chunk_kib` | `32` | download chunk; raised to the drive's offset boundary |
+| `firmware.max_image_mib` | `256` | largest image upload (also the request body limit) |
+
+Qualified for `auto_add`: out of the fleet, designation `none`, idle, a
+health verdict that is known and not Failing/Failed, not `in_use_by`, and
+usable. A failed attempt is retried after 10 minutes.
+
+**Engine token** (stormblock v17 requires `Authorization: Bearer` on all of
+`/api/v1`). stormdrive uses the first one it finds:
+
+1. `stormblock.api_token`
+2. `$STORMBLOCK_API_TOKEN`
+3. the first readable, non-empty file of `stormblock.token_file`,
+   `$STORMBLOCK_TOKEN_FILE`, `/run/stormblock/engine/api_token`,
+   `/etc/stormblock/api_token`, `/var/lib/stormblock/api_token`
+
+While no token is found, it looks again on every call. On a 401 it re-reads
+the token and retries once if it changed.
+
+## API
+
+All JSON on :9092. Errors are `{"error": "...", "code": "not_found" |
+"bad_request" | "conflict" | "stormblock" | "internal"}`. A drive `{id}` is
+its DriveId, WWID (any case), `/dev` path or kernel name, or serial, looked up
+in that order. A shelf `{key}` is its logical id (with or without `0x`, any
+case), serial, shelf id, or an SES device's SCSI id.
+
+| Method and path | What |
+|---|---|
+| `GET /`, `/ui`, `/ui/` | the embedded page; works behind a proxy prefix |
+| `GET /api/v1/health` | `{status, version, node}` — liveness |
+| `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
+| `GET /api/v1/monitor` | health-poll cost, stuck drives, last discovery pass |
+| `GET /api/v1/drives` | every drive, with any running test/format/firmware run inlined |
+| `GET /api/v1/drives/{id}` · `DELETE` | one drive · forget a missing, out-of-fleet drive |
+| `GET /api/v1/drives/{id}/health` | health report + trend |
+| `POST /api/v1/drives/{id}/locate` | `{"on": bool}` |
+| `POST /api/v1/drives/{id}/fleet` | `{"action":"join","format_slab"?,"tier"?}` or `{"action":"leave","drain"?,"force"?}` |
+| `GET·POST·DELETE /api/v1/drives/{id}/drain` | status · start (`?leave=true` retires when empty) · cancel |
+| `POST /api/v1/drives/{id}/designation` | `{"designation":"none\|reserved\|spare\|failed"}` |
+| `GET·PUT·POST /api/v1/drives/{id}/overcommit` | `{"enabled":bool,"ratio"?}`; GET adds promisable/committed/headroom |
+| `GET·POST /api/v1/drives/{id}/test`, `POST …/test/cancel` | `{"kind":"smoke\|read_scan\|destructive_sample"}` |
+| `GET·POST /api/v1/drives/{id}/format` | `{"block_size":512\|4096}` (default 4096) |
+| `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size"}` |
+| `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` |
+| `GET·POST /api/v1/firmware` | all runs · `{"image","drives"?,"model"?,"force"?}` |
+| `GET /api/v1/firmware/images`, `GET·PUT·DELETE …/images/{name}` | image store; PUT takes the raw image |
+| `GET /api/v1/shelves`, `GET …/shelves/{key}` | SES identity, status, elements, slots, drives |
+| `POST /api/v1/shelves/{key}/locate` | `{"on":bool,"bay"?}` |
+| `POST /api/v1/shelves/{key}/format` | `{"block_size","all"?}` — out-of-fleet drives that need it |
+| `GET /api/v1/topology` | controller → shelf → drive tree, with HBA firmware |
+| `GET /api/v1/hbas` | every PCIe SCSI HBA |
+| `GET /api/v1/placement`, `GET …/placement/{id}` | where each drive is; `generation`, ETag, `?since=` / `If-None-Match` → 304 |
+| `GET /api/v1/events?since=<seq>` | `{latest_seq, events}` |
+| `GET /api/v1/components`, `GET /ws/components` | stormview feed (drives, shelves, HBAs); the socket pushes on change, checked every 2 s |
+| `GET /apis/storage.storm.io/v1/{drives,enclosures}[/{name}]` | Kubernetes-shaped `Drive`/`Enclosure`; `?watch=1`, `labelSelector`; `PATCH` a Drive's spec (designation, fleet, drain, locate) |
+
+Body-free forms, for stormview renderers that POST with no body:
+`…/locate/{on|off}`, `…/fleet/{join|leave}` (never formats a slab),
+`…/designation/{value}`, `…/overcommit/{off|<ratio>}`, `…/test/{kind}`,
+`…/format/{block_size}`, `/shelves/{key}/locate/{on|off}`,
+`/shelves/{key}/format/{block_size}`.
+
+There is no `/metrics` endpoint yet (#18), and no authentication (#19).
+
+```bash
+curl -s http://localhost:9092/api/v1/drives | python3 -m json.tool
+curl -s -X POST http://localhost:9092/api/v1/drives/sdb/locate -d '{"on":true}' -H 'Content-Type: application/json'
+curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:9092/api/v1/placement?since=<generation>"
+curl -s -X POST http://localhost:9092/api/v1/format -H 'Content-Type: application/json' \
+     -d '{"drives":["sdb","sdc"],"block_size":4096}'
+curl -s -X PUT --data-binary @image.lod http://localhost:9092/api/v1/firmware/images/image.lod
+curl -s -X POST http://localhost:9092/api/v1/firmware -H 'Content-Type: application/json' \
+     -d '{"model":"ST1200MM0098","image":"image.lod"}'
+```
+
+## How it ships
+
+stormdrive is a **service** component on stormcentral (`stormcentral
+component list`). Its golden is built by
+`stormcentral component build stormdrive`, which runs stormcos's
+`service_golden` recipe. That recipe builds the musl binary and puts it in a
+stormd-based golden with:
+
+- `/etc/stormdrive/stormdrive.toml` setting `listen_addr = "0.0.0.0:9092"`
+  and `data_dir = "/var/lib/stormdrive"`;
+- stormd running `/usr/sbin/stormdrive --config /etc/stormdrive/stormdrive.toml`,
+  restarted on exit, with an HTTP liveness probe on `/api/v1/health`, and
+  stormd's own API on :9192.
+
+stormcos starts it on every node profile (`boot.d/40-services`). It runs with
+the host network, the host's `/dev`, the host's `/sys` **read-only**, its
+data volume at `/var/lib/stormdrive`, and the engine token from
+`/run/stormblock` (`STORMBLOCK_TOKEN_FILE`). The read-only `/sys` means that
+in the golden, sysfs locate LEDs and the post-format rescan fail. SES and
+SG_IO paths work (stormcos#166).
+
+The node's HTTPRoute publishes it by name (`drive.storm1.g8.lo` in stormcos
+`deploy/manifests/85-routes.yaml`). stormconsole on :9094 reads its
+components feed. The stormd `[process.ui]` card snippet
+([deploy/stormd-ui.toml](deploy/stormd-ui.toml)) and the systemd unit
+([deploy/systemd/stormdrive.service](deploy/systemd/stormdrive.service)) are
+for installs outside stormcos.
+
+## Not yet
+
+These are documented as design only; the code does not do them:
+
+- `/metrics` (#18) and API authentication (#19)
+- SCSI log sense / ATA SMART for SAS and SATA health; wear-out projection
+- a node-wide sequencer with a stormblock redundancy check before a fleet
+  drive's firmware reset
+- thermal actuation (fan control); SES shelf firmware; drive crypto (SED,
+  crypto erase)
+- NVMe namespace format
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — full design: drive model,
-  subsystems, API, stormblock/stormd integration, migration flow
-- [docs/stormblock-review.md](docs/stormblock-review.md) — the stormblock
-  review this design is built on
-- [CLAUDE.md](CLAUDE.md) — work plan and project rules
-
-## Status
-
-v0.15.0 — discovery, health, fleet hand-off to stormblock, drive tests,
-NetApp shelf management (SES status, locate LEDs, dual-IOM merge),
-sector-size reformat (520 → 4096 via FORMAT UNIT, batch, with progress)
-and firmware updates (image store; WRITE BUFFER for SAS/SATA, Firmware
-Download + Commit for NVMe; one, many, or by model). It talks to
-stormblock v17+ with the engine's bearer token (`[stormblock] token_file`,
-default: stormblock's own CLI lookup order). `/api/v1/placement` says
-where every drive physically is, keyed by WWN, for the PV placement mirror;
-each drive carries its `usage` (slabs, used, free) and an `overcommit`
-setting (off, or a ratio) that stormblock enforces when claims bind, and `/api/v1/hbas`
-lists every HBA with its firmware, BIOS and NVDATA versions.
-See the work plan in [CLAUDE.md](CLAUDE.md).
+- [docs/architecture.md](docs/architecture.md) — the design and how each
+  subsystem works
+- [docs/stormblock-review.md](docs/stormblock-review.md) — the 2026-08-26
+  stormblock review that started this project (historical)
+- [CHANGELOG.md](CHANGELOG.md), [CLAUDE.md](CLAUDE.md) — changes, work plan

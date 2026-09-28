@@ -260,6 +260,19 @@ mod tests {
         assert_eq!(c.stormblock.tier_map["nvme_ssd"], "hot");
     }
 
+    /// The shipped example claims every value in it is the default: keep
+    /// it that way (#7). `data_dir` is the one it sets on purpose.
+    #[test]
+    fn example_config_is_the_defaults() {
+        let mut c: Config = toml::from_str(include_str!("../deploy/stormdrive.example.toml")).unwrap();
+        assert_eq!(c.data_dir.as_deref(), Some("/var/lib/stormdrive"));
+        c.data_dir = None;
+        assert_eq!(
+            serde_json::to_value(&c).unwrap(),
+            serde_json::to_value(Config::default()).unwrap()
+        );
+    }
+
     #[test]
     fn wildcard() {
         assert!(wildcard_match("sd*", "sda"));

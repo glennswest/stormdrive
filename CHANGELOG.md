@@ -4,6 +4,9 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-28
+- **docs:** README rewritten from the code (#7): what it does today, sc-build, every flag and config key with its default, the full API including the kube and body-free routes, how the golden ships it (stormcos `service_golden`, `/sys` read-only → stormcos#166), and what is not built yet
+- **docs:** `deploy/stormdrive.example.toml` gains `monitor.max_concurrent`, `monitor.sample_timeout_secs` and `[firmware]`; `[api] api_token` marked not enforced (#19)
+- **test:** the example config must parse to the defaults (`config::tests::example_config_is_the_defaults`)
 - **docs:** work plan — #13 done: overcommit ships in golden `golden-stormdrive-01a422df544f`, stormcos#131; enforcement is stormblock#152
 - **docs:** work plan — #2 done: HBA inventory ships in golden `golden-stormdrive-01a422df544f`, stormcos#131
 - **docs:** work plan — #12 done: usage ships in golden `golden-stormdrive-01a422df544f`, stormcos#131

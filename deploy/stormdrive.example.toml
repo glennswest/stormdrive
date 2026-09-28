@@ -21,6 +21,8 @@ spare_crit_pct = 10
 wear_warn_pct  = 80
 wear_crit_pct  = 95
 hysteresis     = 3          # consecutive samples before a worsening sticks
+max_concurrent = 8          # health reads in flight at once
+sample_timeout_secs = 10    # a read slower than this is a failed sample
 
 [stormblock]
 enabled  = true
@@ -40,4 +42,8 @@ drain_on_failing = true     # Failing/Failed in the fleet → drain, then retire
 # tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", sas_hdd = "cool", sata_hdd = "cool" }
 
 [api]
-api_token = ""              # empty = no auth
+api_token = ""              # parsed, NOT enforced yet: the API is open (#19)
+
+[firmware]
+chunk_kib = 32              # WRITE BUFFER / NVMe download chunk
+max_image_mib = 256         # largest image PUT /api/v1/firmware/images accepts
