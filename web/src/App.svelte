@@ -40,7 +40,7 @@
     fleet: drives.filter((d) => d.membership === 'fleet').length,
     attention: drives.filter(needsAttention).length,
     reformat: drives.filter((d) => d.needs_reformat).length,
-    busy: drives.filter((d) => ['testing', 'formatting', 'updating_firmware', 'draining'].includes(d.activity)).length,
+    busy: drives.filter((d) => ['testing', 'formatting', 'sanitizing', 'updating_firmware', 'draining'].includes(d.activity)).length,
   })
   const paneDrive = $derived(pane?.type === 'drive' ? drives.find((d) => d.id === pane.id) : null)
   const paneGroup = $derived(pane?.type === 'group' ? groups.find((g) => g.id === pane.id) || groupDrives(drives, shelves, hbas).find((g) => g.id === pane.id) : null)

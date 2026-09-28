@@ -30,6 +30,7 @@ pub async fn run(env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("nvme-health", nvme(api)).await;
     r.run("monitor-cost", monitor(api)).await;
     r.run("page-under-ui", page_ui(api)).await;
+    r.run("worker-refusals", worker_refusals(api)).await;
     Ok(())
 }
 
@@ -365,4 +366,44 @@ async fn page_ui(api: &Api) -> Outcome {
     status_is(&js, &[200], "GET /ui/assets/app.js")?;
     status_is(&api.get("assets/nope.js").await?, &[404], "GET /assets/nope.js")?;
     Ok("/ui/ and /ui/assets/app.js served; unknown assets 404".into())
+}
+
+/// The drive worker (#5), without running anything: malformed jobs are
+/// refused, a dry run reports its plan and changes nothing, and a guarded
+/// drive (in the fleet, or holding stormblock data) shows up refused.
+/// Only `dry_run: true` requests carry real steps.
+async fn worker_refusals(api: &Api) -> Outcome {
+    api.need((0, 17, 0), "the drive worker")?;
+    let before = api.get("api/v1/worker/jobs").await?.json("GET jobs")?["jobs"].as_array().map(Vec::len).unwrap_or(0);
+    let bad = [
+        (json!({"select": {"model": "x"}, "steps": []}), 400, "no steps"),
+        (json!({"select": {}, "steps": [{"op": "partition"}], "dry_run": true}), 400, "empty selection"),
+        (json!({"select": {"model": "x"}, "steps": [{"op": "partition"}, {"op": "format", "block_size": 4096}], "dry_run": true}), 400, "steps out of order"),
+        (json!({"select": {"model": "x"}, "steps": [{"op": "format", "block_size": 520}], "dry_run": true}), 400, "520 is not a target"),
+        (json!({"select": {"drives": ["no-such-drive"]}, "steps": [{"op": "partition"}], "dry_run": true}), 404, "unknown drive"),
+        (json!({"select": {"model": "no-such-model-stormdrive-test"}, "steps": [{"op": "partition"}], "dry_run": true}), 400, "matches no drive"),
+    ];
+    for (body, want, what) in &bad {
+        status_is(&api.post("api/v1/worker/jobs", body.clone()).await?, &[*want], what)?;
+    }
+    status_is(&api.get("api/v1/worker/jobs/no-such-job").await?, &[404], "unknown job")?;
+    status_is(&api.post_empty("api/v1/worker/jobs/no-such-job/cancel").await?, &[404], "cancel unknown job")?;
+    let mut detail = format!("{} malformed jobs refused", bad.len());
+    let ds = crate::drives(api).await?;
+    if let Some(d) = pick::guarded(&ds) {
+        let id = s(d, "id");
+        let plan = api
+            .post("api/v1/worker/jobs", json!({"select": {"drives": [id]}, "steps": [{"op": "format", "block_size": 4096}], "dry_run": true}))
+            .await?
+            .json("dry run")?;
+        ensure(plan["dry_run"] == true && plan["runnable"] == 0, format!("dry run on a guarded drive: {plan}"))?;
+        let reason = plan["refused"][0]["reason"].as_str().unwrap_or_default().to_string();
+        ensure(!reason.is_empty(), "no refusal reason")?;
+        let after = crate::drive(api, id).await?;
+        ensure(s(&after, "activity") == s(d, "activity"), "the dry run changed the drive's activity")?;
+        detail.push_str(&format!("; dry run on {}: refused ({reason})", s(d, "name")));
+    }
+    let after = api.get("api/v1/worker/jobs").await?.json("GET jobs")?["jobs"].as_array().map(Vec::len).unwrap_or(0);
+    ensure(after == before, format!("jobs went from {before} to {after}: a refused or dry-run request created a job"))?;
+    Ok(detail)
 }

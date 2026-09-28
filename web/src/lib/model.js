@@ -46,7 +46,7 @@ export function sesDot(s) {
 
 // ------------------------------------------------------------ eligibility
 
-const BUSY = ['testing', 'formatting', 'updating_firmware', 'draining']
+const BUSY = ['testing', 'formatting', 'sanitizing', 'updating_firmware', 'draining']
 
 export const isIdle = (d) => d.activity === 'idle'
 export const canJoin = (d) =>
