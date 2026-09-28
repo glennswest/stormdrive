@@ -25,6 +25,7 @@ Thumbs.db
 # would then be a claim rather than a fact.
 target
 dist/
+!web/dist/
 node_modules/
 
 # Logs and temp
