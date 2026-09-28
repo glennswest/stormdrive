@@ -1,0 +1,25 @@
+[package]
+name = "stormdrive-test"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "stormdrive's test container: short, medium and long suites, per stormcentral docs/test-standard.md (#11)."
+publish = false
+
+# A workspace member, so the one Cargo.lock pins it and sc-build compiles and
+# tests it. It drives the stormdrive running on the node through its REST API,
+# the way anything on the fleet does; no library code of the daemon is used.
+# A library too, so the daemon's harness (tests/suites.rs) runs the same
+# suites against a real stormdrive on the build box.
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[lib]
+name = "stormdrive_test"
+path = "src/lib.rs"
+
+[[bin]]
+name = "stormdrive-test"
+path = "src/main.rs"

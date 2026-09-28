@@ -23,8 +23,18 @@ thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+[dev-dependencies]
+# tests/suites.rs runs the test container's suites against this daemon (#11).
+stormdrive-test = { path = "test" }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+
+# test/ is the test container's crate (#11): a member so one Cargo.lock pins it,
+# and a default member so sc-build's `cargo test` runs its unit tests too.
+[workspace]
+members = [".", "test"]
+default-members = [".", "test"]
 
 [profile.release]
 lto = true

@@ -36,3 +36,4 @@ temp/
 # Local claude state
 .claude/settings.local.json
 .claude/*.lock
+test/.stage/

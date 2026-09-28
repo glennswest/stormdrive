@@ -1,0 +1,14 @@
+# stormdrive-test — stormdrive's test image, per stormcentral
+# docs/test-standard.md (#11). One image for all three suites: the Job runs
+# `/test short|medium|long`.
+#
+# test/build.sh builds the static (musl) test binary on the build box and
+# stages it in test/.stage/; this packages it. The build context is the repo
+# root (the standard's). The test drives the stormdrive running on the node
+# under test (STORM_NODE:9092) through its REST API: no privileges, no
+# devices, no tools.
+FROM scratch
+ARG COMMIT=unknown
+LABEL storm.io/test-of="stormdrive" storm.io/test-commit="${COMMIT}"
+COPY test/.stage/stormdrive-test /test
+ENTRYPOINT ["/test"]

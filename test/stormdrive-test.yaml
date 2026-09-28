@@ -1,0 +1,59 @@
+# stormdrive-test — how stormcentral runs stormdrive's tests on a test
+# machine, per stormcentral docs/test-standard.md (#11). stormcentral builds
+# the Job itself (src/testruns.rs job_manifest); this file is the suites'
+# metadata and the Job they expect.
+#
+# Test metadata (what the runner matches against the machine):
+#   suites:   short (< 2 min), medium (< 30 min), long (the night window)
+#   requires: []   for short and long. Medium's checks that need hardware
+#             say so and report skip, never pass, without it:
+#               shelves                      requires: [sas-shelf]
+#               nvme-health                  requires: [nvme]
+#               refusals / usage-from-stormblock   a drive in the fleet or
+#                                            holding stormblock data (every
+#                                            stormcos node's system disk)
+#               designation / overcommit     an idle, out-of-fleet drive with
+#                                            no designation, data or slabs
+#               smoke-test / read-scan-cancel   an idle, usable drive
+#   api:      none (no ServiceAccount token is used; nothing is created in
+#             the cluster, so the namespace holds only the Job)
+#   node:     STORM_NODE:9092, the node's stormdrive. NEVER destructive: no
+#             join/leave, format, firmware, destructive test, forget, drain
+#             or `failed` designation is sent except to a drive whose
+#             record shows the guard the server checks first (test/src/pick.rs).
+#             Writes: designation spare→none and overcommit 2×→original on one
+#             out-of-fleet drive with no slabs; smoke tests and a cancelled
+#             read scan (reads only). All restored/cancelled on success, on
+#             failure and on timeout. Not answering is exit 2.
+#   external: none
+#   resources: long sizes each wave from the node's drive count: 4 + drives/8
+#             API readers (4–64) and a smoke test on every idle, usable
+#             drive (STORM_WAVE_MAX caps it).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test
+  namespace: ${NAMESPACE}
+  labels: { storm.io/test-run: "${RUN_ID}", storm.io/component: stormdrive, storm.io/suite: "${SUITE}" }
+spec:
+  backoffLimit: 0            # a retry would hide the finding
+  activeDeadlineSeconds: ${TIMEOUT_PLUS_MARGIN}
+  template:
+    metadata:
+      labels: { storm.io/test-run: "${RUN_ID}", storm.io/component: stormdrive, storm.io/suite: "${SUITE}" }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: ${IMAGE}
+          command: ["/test"]
+          args: ["${SUITE}"]
+          env:
+            - { name: STORM_NAMESPACE, value: "${NAMESPACE}" }
+            - { name: STORM_RUN_ID, value: "${RUN_ID}" }
+            - { name: STORM_NODE, value: "${NODE}" }
+            - { name: STORM_SUITE, value: "${SUITE}" }
+            - { name: STORM_TIMEOUT, value: "${TIMEOUT}" }
+            - { name: STORM_COMPONENT, value: stormdrive }
+            - { name: STORM_COMMIT, value: "${COMMIT}" }
