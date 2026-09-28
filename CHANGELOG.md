@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-28
+- **docs:** work plan — #7 golden `golden-stormdrive-9d1fa8491d44` (stormcos#131); #6 survey: what shipped, what is #5/#18, the UI at scale
 - **docs:** work plan — #7 done: sc-build 132/132 + clippy on 024dc54
 - **docs:** README rewritten from the code (#7): what it does today, sc-build, every flag and config key with its default, the full API including the kube and body-free routes, how the golden ships it (stormcos `service_golden`, `/sys` read-only → stormcos#166), and what is not built yet
 - **docs:** `deploy/stormdrive.example.toml` gains `monitor.max_concurrent`, `monitor.sample_timeout_secs` and `[firmware]`; `[api] api_token` marked not enforced (#19)

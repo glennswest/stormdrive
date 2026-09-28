@@ -303,7 +303,25 @@ stormbootx b1347d9 / stormuefi b15dcba.
       log sense), #23 (wear projection), #24 (firmware redundancy gate),
       #25 (events not persisted); existing #18 (/metrics), #19 (auth)
 - [x] sc-build (132/132) + clippy -D warnings pass on 024dc54; #7 and #4
-      closed; golden requested
+      closed; golden `golden-stormdrive-9d1fa8491d44` (850d6f9), release
+      request stormcos#131
+
+### #6: ready for many more drives (2026-09-28) — IN PROGRESS
+
+Survey against the issue's list:
+- [x] Discovery across HBAs/expanders, SES bays, multipath as one drive
+      (Phases 1c/1e, #10, #15)
+- [x] Stable identity (WWID uuid5), hotplug without restart (#15)
+- [x] Health polling that scales: phased, bounded, timed out (#15)
+- [ ] Bulk operations through the drive worker — that is #5 (bulk format
+      and firmware exist; bulk test/join and per-failure-domain
+      sequencing do not)
+- [ ] UI usable with hundreds of rows: the embedded page is a flat
+      vanilla-JS table rebuilt by innerHTML every 4 s; the feed's `system`
+      component has one flat has_many of every drive, shelves are roots
+      with no HBA edge. Direction (Svelte + stormview DataGrid vs vanilla
+      grouping) asked of the owner 2026-09-28
+- [ ] Metrics per drive — #18
 
 ### #12: per-drive usage (2026-09-27) — DONE
 
