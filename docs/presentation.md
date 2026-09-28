@@ -29,7 +29,7 @@ section.dense li { margin: 0; }
 Physical drive management for the Storm ecosystem: one Rust daemon per
 storage node, REST + page + feed on **:9092**
 
-v0.16.0 · github.com/glennswest/stormdrive
+v0.17.0 · github.com/glennswest/stormdrive
 
 ---
 

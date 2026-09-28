@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.16.0** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
+**Version: 0.17.0** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 

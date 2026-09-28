@@ -3,6 +3,16 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.17.0] — 2026-09-28
+
+### Added
+- The drive worker (#5): `POST /api/v1/worker/jobs` — select drives (list, shelf + bays, model, unusable) and take them through format (SCSI FORMAT UNIT / NVMe Format NVM), sanitize (NVMe Sanitize / SCSI SANITIZE), partition (GPT with a stormblock slab partition) and enroll (stormblock drive + slab with role and tier); cancel, resume, dry run; jobs persist and survive a restart
+- `prep` phase per drive (API, kube, feed); activity `sanitizing`; `[worker]` config (`max_per_hba`, `enroll_per_domain`)
+- Enrolling through a partition: `fleet_partition`, and every engine call addresses the partition
+
+### Changed
+- Documentation refreshed from the code (README "Not yet" with issues, presentation, architecture)
+
 ### 2026-09-28
 - **feat:** the drive worker (#5): `POST /api/v1/worker/jobs {select, steps, destroy?, dry_run?}` takes a selection (drives, shelf + bays, model, unusable) through `format` (SCSI FORMAT UNIT or NVMe Format NVM), `sanitize` (NVMe Sanitize / SCSI SANITIZE: block, crypto, overwrite), `partition` (GPT, one stormblock slab partition, the node-disk type GUIDs) and `enroll` (open the partition in stormblock with labels + uuid, format a slab of a role and tier); `GET …/jobs[/{id}]`, `POST …/{id}/cancel`, `POST …/{id}/resume`
 - **feat:** safety — never a fleet, busy, reserved, missing or mounted drive; a drive holding a stormblock slab or a filesystem (ext*, xfs, btrfs, vfat, ntfs, swap, LVM2, LUKS, md) is refused a destructive step unless `destroy` names it by id, WWN or serial; guards run at submit and before every step; `dry_run` changes nothing
