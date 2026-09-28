@@ -7,6 +7,10 @@
 //! by path). The disk itself says so, though — a stormcos disk is a GPT
 //! whose partitions start with a stormblock slab header — so we read it.
 //!
+//! The drive worker (#5) asks a wider question: does the drive hold a
+//! stormblock slab **or a filesystem** (anything blkid would name) — on the
+//! whole disk or at the start of any GPT partition? [`holds`] answers it.
+//!
 //! The parsers are portable and tested; the read is Linux-only.
 
 /// stormblock's slab header magic (stormblock `src/drive/slab.rs`).
@@ -80,6 +84,82 @@ pub fn parse_gpt_entries(buf: &[u8], h: &GptHeader) -> Vec<GptPartition> {
         .collect()
 }
 
+/// How much of a region [`fs_signature`] needs: btrfs keeps its superblock
+/// at 64 KiB.
+pub const SIGNATURE_BYTES: usize = 64 * 1024 + 4096;
+
+/// What a region (a whole disk, or a partition from its first byte) holds,
+/// by on-disk signature. The same magic numbers blkid uses; enough to say
+/// "somebody's data is here", not to identify every format there is.
+pub fn fs_signature(buf: &[u8]) -> Option<&'static str> {
+    let at = |off: usize, magic: &[u8]| buf.len() >= off + magic.len() && &buf[off..off + magic.len()] == magic;
+    if at(0, SLAB_MAGIC) {
+        return Some("stormblock slab");
+    }
+    if at(0, b"LUKS\xba\xbe") {
+        return Some("LUKS");
+    }
+    if at(0, b"XFSB") {
+        return Some("xfs");
+    }
+    if at(3, b"NTFS    ") {
+        return Some("ntfs");
+    }
+    if at(0x438, &[0x53, 0xEF]) {
+        return Some("ext2/3/4");
+    }
+    if at(0x10040, b"_BHRfS_M") {
+        return Some("btrfs");
+    }
+    if at(0x218, b"LVM2 001") || at(0x018, b"LVM2 001") {
+        return Some("LVM2");
+    }
+    if at(4096 - 10, b"SWAPSPACE2") || at(4096 - 10, b"SWAP-SPACE") {
+        return Some("swap");
+    }
+    // md superblock 1.2 (4 KiB in) and 1.1 (at 0), magic a92b4efc LE.
+    if at(4096, &[0xfc, 0x4e, 0x2b, 0xa9]) || at(0, &[0xfc, 0x4e, 0x2b, 0xa9]) {
+        return Some("linux_raid");
+    }
+    if at(510, &[0x55, 0xAA]) && (at(82, b"FAT32   ") || at(54, b"FAT16   ") || at(54, b"FAT12   ")) {
+        return Some("vfat");
+    }
+    None
+}
+
+/// The sentence for [`holds`]: "xfs (whole drive)", "ext2/3/4 in
+/// partition 1 'root'"…
+pub fn describe_holdings(found: &[(Option<String>, &str)]) -> Option<String> {
+    if found.is_empty() {
+        return None;
+    }
+    Some(
+        found
+            .iter()
+            .map(|(part, what)| match part {
+                None => format!("{what} (whole drive)"),
+                Some(p) => format!("{what} in partition {p}"),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+/// Everything on the drive a destructive step would destroy: a stormblock
+/// slab or a filesystem, on the whole disk or at the start of any GPT
+/// partition. None when nothing is recognised (or it cannot be read).
+pub fn holds(path: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::holds(path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// The sentence the API and UI show: whose data is on the drive.
 pub fn describe_slabs(whole_drive: bool, partitions: &[String]) -> Option<String> {
     if whole_drive {
@@ -116,6 +196,31 @@ mod linux {
         let mut buf = vec![0u8; len];
         f.read_exact_at(&mut buf, off).ok()?;
         Some(buf)
+    }
+
+    pub fn holds(path: &str) -> Option<String> {
+        let f = File::open(path).ok()?;
+        let mut found: Vec<(Option<String>, &'static str)> = vec![];
+        if let Some(w) = read(&f, 0, SIGNATURE_BYTES).as_deref().and_then(fs_signature) {
+            found.push((None, w));
+        }
+        for lbs in [512u64, 4096] {
+            let Some(h) = read(&f, lbs, 512).as_deref().and_then(parse_gpt_header) else {
+                continue;
+            };
+            let len = h.entries as usize * h.entry_size as usize;
+            let Some(table) = read(&f, h.entries_lba * lbs, len) else {
+                continue;
+            };
+            for p in parse_gpt_entries(&table, &h) {
+                if let Some(w) = read(&f, p.first_lba * lbs, SIGNATURE_BYTES).as_deref().and_then(fs_signature) {
+                    let name = if p.name.is_empty() { format!("{}", p.index) } else { format!("{} '{}'", p.index, p.name) };
+                    found.push((Some(name), w));
+                }
+            }
+            break;
+        }
+        describe_holdings(&found)
     }
 
     pub fn probe(path: &str) -> Option<String> {
@@ -206,6 +311,39 @@ mod tests {
         assert_eq!(p[0], GptPartition { index: 1, first_lba: 2048, name: "esp".into() });
         assert_eq!(p[1].index, 3);
         assert_eq!(p[1].name, "data");
+    }
+
+    #[test]
+    fn filesystem_signatures() {
+        let blank = vec![0u8; SIGNATURE_BYTES];
+        assert_eq!(fs_signature(&blank), None);
+        let with = |off: usize, magic: &[u8]| {
+            let mut b = blank.clone();
+            b[off..off + magic.len()].copy_from_slice(magic);
+            b
+        };
+        assert_eq!(fs_signature(&with(0, SLAB_MAGIC)), Some("stormblock slab"));
+        assert_eq!(fs_signature(&with(0, b"XFSB")), Some("xfs"));
+        assert_eq!(fs_signature(&with(0x438, &[0x53, 0xEF])), Some("ext2/3/4"));
+        assert_eq!(fs_signature(&with(0x10040, b"_BHRfS_M")), Some("btrfs"));
+        assert_eq!(fs_signature(&with(3, b"NTFS    ")), Some("ntfs"));
+        assert_eq!(fs_signature(&with(0x218, b"LVM2 001")), Some("LVM2"));
+        assert_eq!(fs_signature(&with(4086, b"SWAPSPACE2")), Some("swap"));
+        assert_eq!(fs_signature(&with(4096, &[0xfc, 0x4e, 0x2b, 0xa9])), Some("linux_raid"));
+        assert_eq!(fs_signature(&with(0, b"LUKS\xba\xbe")), Some("LUKS"));
+        let mut fat = with(82, b"FAT32   ");
+        assert_eq!(fs_signature(&fat), None, "FAT needs the boot signature too");
+        fat[510] = 0x55;
+        fat[511] = 0xAA;
+        assert_eq!(fs_signature(&fat), Some("vfat"));
+        assert_eq!(fs_signature(&blank[..100]), None, "a short read finds nothing, never panics");
+    }
+
+    #[test]
+    fn holdings_sentence() {
+        assert!(describe_holdings(&[]).is_none());
+        let s = describe_holdings(&[(None, "xfs"), (Some("2 'data'".into()), "stormblock slab")]).unwrap();
+        assert_eq!(s, "xfs (whole drive), stormblock slab in partition 2 'data'");
     }
 
     #[test]
