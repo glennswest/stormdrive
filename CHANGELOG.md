@@ -5,6 +5,7 @@
 
 ### 2026-09-28
 - **docs:** work plan — #5 done: v0.17.0 verified on da27975
+- **docs:** work plan — comment mining since 2026-09-25: #39 (restart leaves non-worker ops stuck busy, P1), #40 (worker test step); live-pass additions on #30, #31
 
 ## [v0.17.0] — 2026-09-28
 

@@ -380,6 +380,10 @@ stormipmi#21 (BIOS firmware via Redfish — owner gave BIOS to stormipmi),
 #29 Decide: firmware image source, #30 Decide: stormblock1 NetApp live pass,
 #31 verify on the first 160-bay chassis; live checks added to #28;
 stormblock1 proposed as a test machine on stormcentral#83.
+Second pass (comments since 2026-09-25): #39 (P1) a restart leaves a drive
+stuck `formatting`/`testing`/`updating_firmware` when the op was not a worker
+job; #40 worker test step (bulk test on the server); drive-worker live checks
+added to #30 (SAS) and #31 (NVMe).
 
 ### #11: short / medium / long test containers (2026-09-28) — DONE
 
