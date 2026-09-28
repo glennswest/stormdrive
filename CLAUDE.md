@@ -320,7 +320,9 @@ Survey against the issue's list:
       vanilla-JS table rebuilt by innerHTML every 4 s; the feed's `system`
       component has one flat has_many of every drive, shelves are roots
       with no HBA edge. Direction (Svelte + stormview DataGrid vs vanilla
-      grouping) asked of the owner 2026-09-28
+      grouping) asked of the owner 2026-09-28 → **Svelte 5 + stormview
+      DataGrid** in `web/`, `web/dist` committed and embedded, dist built on
+      dev by sc-build (tarball over stdout), never on this VM
 - [ ] Metrics per drive — #18
 
 ### #12: per-drive usage (2026-09-27) — DONE
