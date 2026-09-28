@@ -310,6 +310,14 @@ stormbootx b1347d9 / stormuefi b15dcba.
       closed; golden `golden-stormdrive-9d1fa8491d44` (850d6f9), release
       request stormcos#131
 
+### Comment mining (2026-09-28)
+
+Findings in issue comments since 2026-09-18 that nobody had filed:
+stormipmi#21 (BIOS firmware via Redfish — owner gave BIOS to stormipmi),
+#29 Decide: firmware image source, #30 Decide: stormblock1 NetApp live pass,
+#31 verify on the first 160-bay chassis; live checks added to #28;
+stormblock1 proposed as a test machine on stormcentral#83.
+
 ### #11: short / medium / long test containers (2026-09-28) — DONE
 
 Per stormcentral `docs/test-standard.md`: `test/Containerfile` (FROM
