@@ -18,6 +18,8 @@ docs/architecture.md says how each part works.
 section { font-size: 24px; }
 table { font-size: 19px; }
 pre { font-size: 16px; }
+section.dense { font-size: 19px; }
+section.dense li { margin: 0; }
 </style>
 
 # stormdrive
@@ -95,6 +97,8 @@ Lifecycle is three separate fields:
 
 ---
 
+<!-- _class: dense -->
+
 ## What it does today: find and place drives
 
 - **Discovery:**
@@ -116,6 +120,8 @@ Lifecycle is three separate fields:
 
 ---
 
+<!-- _class: dense -->
+
 ## What it does today: health and the fleet
 
 - **Health:**
@@ -134,6 +140,8 @@ Lifecycle is three separate fields:
   - per-drive **usage** (slabs, used, free) and **overcommit** setting.
 
 ---
+
+<!-- _class: dense -->
 
 ## What it does today: work on drives, at scale
 
@@ -176,6 +184,8 @@ no auth (#19) yet.
 
 ---
 
+<!-- _class: dense -->
+
 ## Interfaces: CLI, config, health
 
 - **CLI:** `stormdrive [--config PATH] [--listen ADDR] [--data-dir DIR]`;
@@ -196,6 +206,8 @@ no auth (#19) yet.
   `/api/v1/summary` answers from cache within stormd's 400 ms.
 
 ---
+
+<!-- _class: dense -->
 
 ## How it ships and is operated
 
@@ -231,6 +243,8 @@ no auth (#19) yet.
 | Thermal actuation, shelf firmware, drive crypto (SED, crypto erase) | design only |
 
 ---
+
+<!-- _class: dense -->
 
 ## Status
 
