@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-28
+- **docs:** work plan — #8 done: deck renders with marp-cli on dev (12 slides)
 - **docs:** `docs/presentation.md` — a 12-slide Marp deck on purpose and functionality (#8): the problem, where it sits (stormcentral's graph, checked in the consumers' code), how it works, what it does today from the code, interfaces, how it ships, planned work, status
 - **docs:** work plan — #6 done: v0.16.0 verified on dc0195c (sc-build 133/133, clippy, web check)
 - **docs:** work plan — #6 golden `golden-stormdrive-406e52043b5f` (e95ef48), stormcos#131
