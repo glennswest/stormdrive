@@ -310,7 +310,7 @@ stormbootx b1347d9 / stormuefi b15dcba.
       closed; golden `golden-stormdrive-9d1fa8491d44` (850d6f9), release
       request stormcos#131
 
-### #11: short / medium / long test containers (2026-09-28) — IN PROGRESS
+### #11: short / medium / long test containers (2026-09-28) — DONE
 
 Per stormcentral `docs/test-standard.md`: `test/Containerfile` (FROM
 scratch, static `/test`), `test/build.sh` (musl build on the build box),
@@ -344,10 +344,12 @@ requests the server must *refuse* (checked before anything starts).
       checks skip); 9 unit tests in test/ (pick safety rules, wave judge);
       `test/build.sh` builds a 3.4 MB FROM-scratch static image; bogus
       suite / unreachable node exit 2
-- [ ] Live: runs 06827cdeed (short) and 68f6fbbf00 (medium) queued on
-      C2NR0Q2 (R230; unreachable and its queue stuck on "wait for the
-      apiserver" at queue time) — check with `stormcentral test show <id>`
-- [ ] close #11; golden
+- [x] Live: runs 06827cdeed (short) and 68f6fbbf00 (medium) on C2NR0Q2
+      errored before reaching stormdrive — the apiserver never answered
+      /readyz (stormcentral#63, stormcos#165). First live run is **#28**,
+      proposed --after stormcentral#63
+- [x] clippy --workspace -D warnings + sc-build pass on 6e34251 (133 + 2
+      harness + 9); #27 (clippy build-failure) closed; #11 closed; golden
 
 ### #8: a presentation of its purpose and functionality (2026-09-28) — DONE
 

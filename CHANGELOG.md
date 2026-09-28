@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-28
+- **docs:** work plan — #11 done; first live run on C2NR0Q2 is #28 (blocked on stormcentral#63)
 - **test:** test containers per stormcentral's test standard (#11): `test/` crate (workspace member), `/test short|medium|long`, JSON lines + summary, exit 0/1/2, `test/Containerfile` (FROM scratch) + `test/build.sh` (static musl); short is read-only, medium checks failure paths and refusals only on guarded drives plus restored round-trips, long runs waves sized from the drive count and fails on slowdown or residue; `test/src/pick.rs` keeps every suite non-destructive
 - **test:** `tests/suites.rs` runs all three suites against the real daemon on every `cargo test`
 - **build:** the crate is a Cargo workspace (`.` + `test`, both default members)
