@@ -177,7 +177,7 @@ as root:
 ```bash
 git push
 sc-build                      # cargo build && cargo test on dev.g8.lo, scratch dir, deleted after
-sc-build 'cargo clippy --all-targets -- -D warnings'
+sc-build 'cargo clippy --workspace --all-targets -- -D warnings'
 ```
 
 The drive paths (sysfs, SG_IO, ioctls, netlink) are behind
@@ -401,6 +401,11 @@ there arrives only after `cargo update -p stormview` and a commit here. How
 goldens and releases work is written up in stormcos
 [`docs/goldens.md`](https://github.com/glennswest/stormcos/blob/main/docs/goldens.md).
 
+The crate is a Cargo workspace (`.` and `test/`, both default members). The
+recipe's release build therefore also compiles the test binary, but the
+golden carries only `/usr/sbin/stormdrive`. The test image is built
+separately by stormcentral from `test/Containerfile`.
+
 stormcos starts it on every node profile (`boot.d/40-services`). It runs with
 the host network, the host's `/dev`, the host's `/sys` **read-only**, its
 data volume at `/var/lib/stormdrive`, and the engine token from
@@ -420,12 +425,27 @@ for installs outside stormcos.
 These are documented as design only; the code does not do them:
 
 - `/metrics` (#18) and API authentication (#19)
-- SCSI log sense / ATA SMART for SAS and SATA health; wear-out projection
+- SCSI log sense / ATA SMART for SAS and SATA health (#22); wear-out
+  projection (#23); persisted events (#25)
 - a node-wide sequencer with a stormblock redundancy check before a fleet
-  drive's firmware reset
-- thermal actuation (fan control); SES shelf firmware; drive crypto (SED,
-  crypto erase)
-- NVMe namespace format
+  drive's firmware reset (#24)
+- the drive worker (#5): NVMe namespace format, sanitize / secure erase,
+  partitioning, per-HBA limits, per-failure-domain sequencing
+- SES shelf (IOM) firmware (#35)
+- waiting on your decision:
+  - thermal actuation (#32)
+  - drive crypto: SED, crypto erase (#33)
+  - burn-in before a drive joins the fleet (#34)
+  - where vendor firmware images come from (#29)
+
+Built but never exercised on real hardware:
+
+- **Firmware updates:** nothing supplies an image (#29).
+- **The NetApp shelf path:** SES, the 520 → 4096 format, phy/expander (#30).
+- **160-bay NVMe:** #31.
+- **The test containers on a test machine:** #28.
+- **Overcommit enforcement:** it waits on stormblock#152, so today the
+  setting is stored and pushed, not enforced.
 
 ## Documentation
 

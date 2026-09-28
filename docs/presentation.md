@@ -236,11 +236,11 @@ no auth (#19) yet.
 | `/metrics`: SMART, temperature, wear and errors per drive | #18 |
 | Auth / TLS on :9092 (`[api] api_token` is parsed, not enforced) | #19 |
 | The drive worker: bulk test/join, NVMe format, sanitize, per-failure-domain sequencing | #5 |
+| Shelf (IOM) firmware · a vendor firmware image source | #35 · #29 |
 | SAS/SATA health: SCSI log sense, ATA SMART | #22 |
 | Wear-out projection · persisted events | #23 · #25 |
 | Firmware redundancy gate (sequencer) | #24 |
-| Test containers per the stormcos test standard | #11 |
-| Thermal actuation, shelf firmware, drive crypto (SED, crypto erase) | design only |
+| Thermal actuation · drive crypto · burn-in before joining | your decision: #32 · #33 · #34 |
 
 ---
 
@@ -248,19 +248,21 @@ no auth (#19) yet.
 
 ## Status
 
-- **v0.16.0**, golden `golden-stormdrive-406e52043b5f` (release request
+- **v0.16.0**, golden `golden-stormdrive-452835d3e854` (release request
   stormcos#131).
-- **Tested:** 133 unit tests; model and page tests (212 drives) on dev.
+- **Tested:** 133 unit tests and model/page tests (212 drives) on dev.
+  The test containers (short, medium, long) run against the real daemon
+  on every build (#11).
+- **Not yet run on a test machine:** C2NR0Q2's apiserver doesn't come up
+  (stormcentral#63), tracked in #28.
 - **Live:** on a Dell R230, one SATA drive behind mpt3sas (v0.11.0). It
   found the stormcos system disk's slabs and marked the disk in use, with
   join, format and the destructive test disabled.
 - **Not yet run on real hardware:**
-  - the NetApp shelf (SES pages, 520 → 4096 formats);
-  - a firmware image;
-  - a 160-bay chassis;
-  - a drain under load.
+  - the NetApp shelf (SES pages, 520 → 4096 formats): #30;
+  - a firmware image: #29;
+  - a 160-bay chassis: #31;
+  - a drain under I/O load: #30.
 - **Issues that matter most:** #18 metrics · #19 auth · #5 drive worker ·
-  #11 tests · stormcos#166 (read-only `/sys` blocks LEDs and rescans in the
-  golden).
-- **Housekeeping:** #1 (components feed) is shipped (v0.4.0) and still
-  open.
+  #30 the shelf live pass · stormcos#166 (read-only `/sys` blocks LEDs and
+  rescans in the golden).

@@ -49,7 +49,7 @@ needs root.
 
 ```
 git push && sc-build                                   # cargo build && cargo test
-sc-build 'cargo clippy --all-targets -- -D warnings'
+sc-build 'cargo clippy --workspace --all-targets -- -D warnings'
 ```
 
 The drive path is Linux-only (sysfs, ioctls, SG_IO, netlink uevents) behind
@@ -617,15 +617,15 @@ with stable id. Found:
 - [x] Fleet drives one at a time, health-gated
 - [ ] Redundancy check via stormblock before a fleet drive resets (no
       rebuild in flight, volume not already degraded) — #24
-- [ ] Shelf (IOM) firmware via SES download microcode page 0x0E
+- [ ] Shelf (IOM) firmware via SES download microcode page 0x0E — #35
 
 ### Phase 6: Thermal management
 - [x] Per-drive + per-enclosure thermal view (health temps, SES shelf panel)
 - [x] Threshold alerts (warn/critical from config → warning + event)
 - [ ] SES fan/cooling element control (SG_IO SES-2 control page) — actuation,
-      gated behind explicit config
+      gated behind explicit config (scope: #32)
 
-### Phase 8: Drive crypto (pending — scope to be confirmed with Glenn)
+### Phase 8: Drive crypto (pending — scope to be confirmed with Glenn: #33)
 
 Glenn (2026-08-26): "some crypto work is also pending." Assumed scope for a
 drive-management plane — confirm before building:
@@ -650,11 +650,15 @@ drive-management plane — confirm before building:
 - ~~Migrations~~: resolved — stormblock v11 drain API (stormblock#70),
   wired in Phase 4.
 - **Thermal actuation** scope: alert-only vs fan control vs workload
-  throttling.
+  throttling — filed as #32 (Decide).
 - **Qualification/burn-in** for new drives before handing to stormblock —
-  wanted or straight-to-service?
-- SAS2/SAS3 controller specifics (which HBAs are in the fleet — affects
-  whether we need mpt3sas-specific sysfs paths).
+  filed as #34 (Decide).
+- **Drive crypto** scope (Phase 8) — filed as #33 (Decide).
+- **Firmware image source** — #29 (Decide); the stormblock1 live pass — #30.
+- ~~SAS2/SAS3 controller specifics~~: resolved in the code — `hba.rs`
+  inventories every PCIe SCSI HBA whatever the driver, and the mpt3sas
+  sysfs paths (bay_identifier, enclosure_identifier, version_fw) are used
+  where present.
 
 ## Rules recap
 - Conventional commits, changelog on every change, docs ship with code.

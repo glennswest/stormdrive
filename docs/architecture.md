@@ -1,6 +1,7 @@
 # StormDrive Architecture
 
-**Status:** checked against the code at v0.15.0, 2026-09-28 (#7). The first
+**Status:** checked against the code at v0.16.0 (93fb677), 2026-09-28.
+First checked at v0.15.0 (#7). The first
 version was written 2026-08-26 as a design against the stormblock review
 ([stormblock-review.md](stormblock-review.md)). A section marked
 **Design — not built** describes intent the code does not have yet. Every
@@ -458,7 +459,8 @@ There is no `thermal.rs`. What exists:
 
 **Design — not built:** actuation (SES cooling-element control via SG_IO). It
 is deliberately last and gated behind explicit config, because the review
-found no precedent in the ecosystem and fan policy is chassis-specific.
+found no precedent in the ecosystem and fan policy is chassis-specific. The
+scope is your decision (#32).
 
 ### Events (`events.rs`)
 In-memory ring of 4096, each entry `{seq, time, drive_id?, severity, kind,
@@ -769,7 +771,8 @@ convention), and CLI flags override the file.
 
 ## Testing
 
-- **Unit tests beside the code** (`cargo test`, 132 after #7):
+- **Unit tests beside the code** (`cargo test` over the workspace: 133 in
+  the daemon, 9 in `test/`, plus the `tests/suites.rs` harness):
   - on synthetic data: the threshold engine and damper, identity
     derivation, multipath grouping, replacement by bay, config and the
     example file, SCSI sense/CDB/page parsers, SES page assembly, the slab

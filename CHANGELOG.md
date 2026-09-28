@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-28
+- **docs:** refreshed from the code since the #7 rewrite (v0.16.0, 93fb677): clippy runs with `--workspace`; README's "How it ships" says the workspace's release build also compiles the test binary (the golden carries only `stormdrive`); "Not yet" gives an issue for every item and lists what is built but never run on hardware (#28–#31, stormblock#152); architecture status v0.16.0 and test counts; presentation: #11 no longer planned, golden `452835d3e854`, #28/#30 in status; CLAUDE.md open questions filed as #32 (thermal), #33 (crypto), #34 (burn-in) and the SAS2/SAS3 question marked resolved; shelf IOM firmware filed as #35
 - **docs:** work plan — issue-comment mining: stormipmi#21, #29 (Decide), #30 (Decide), #31 filed; #28, stormcentral#83 commented
 - **docs:** work plan — #11 done; first live run on C2NR0Q2 is #28 (blocked on stormcentral#63)
 - **test:** test containers per stormcentral's test standard (#11): `test/` crate (workspace member), `/test short|medium|long`, JSON lines + summary, exit 0/1/2, `test/Containerfile` (FROM scratch) + `test/build.sh` (static musl); short is read-only, medium checks failure paths and refusals only on guarded drives plus restored round-trips, long runs waves sized from the drive count and fails on slowdown or residue; `test/src/pick.rs` keeps every suite non-destructive
