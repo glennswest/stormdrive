@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-09-28
+- **docs:** work plan — #6 done: v0.16.0 verified on dc0195c (sc-build 133/133, clippy, web check)
+
 ## [v0.16.0] — 2026-09-28
 
 ### Added

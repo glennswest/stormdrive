@@ -308,7 +308,7 @@ stormbootx b1347d9 / stormuefi b15dcba.
       closed; golden `golden-stormdrive-9d1fa8491d44` (850d6f9), release
       request stormcos#131
 
-### #6: ready for many more drives (2026-09-28) — IN PROGRESS
+### #6: ready for many more drives (2026-09-28) — DONE (v0.16.0)
 
 Survey against the issue's list:
 - [x] Discovery across HBAs/expanders, SES bays, multipath as one drive
@@ -344,8 +344,11 @@ Survey against the issue's list:
         `/ui/`, `/assets/*`, `/ui/assets/*`); `src/ui/index.html` goes
   - [x] docs, changelog; stormview#12/#13/#14 filed (nested select-all,
         leaf sections, exports condition)
-  - [ ] v0.16.0, sc-build + clippy + `web/rebuild.sh --check`, close #6,
-        golden
+  - [x] v0.16.0 (dc0195c): sc-build 133/133, clippy, `web/rebuild.sh
+        --check` (npm ci, 5 + 1 JS tests, dist identical); #6 closed;
+        golden requested. Not yet seen in a real browser on a node: rides
+        the release. Bulk test/join + per-domain sequencing stay on #5,
+        metrics on #18
 - [ ] Metrics per drive — #18
 
 ### #12: per-drive usage (2026-09-27) — DONE
