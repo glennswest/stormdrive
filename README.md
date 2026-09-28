@@ -394,6 +394,8 @@ These are documented as design only; the code does not do them:
 
 ## Documentation
 
+- [docs/presentation.md](docs/presentation.md) — a 12-slide deck (Marp) on its
+  purpose and functionality: `npx @marp-team/marp-cli docs/presentation.md`
 - [docs/architecture.md](docs/architecture.md) — the design and how each
   subsystem works
 - [docs/stormblock-review.md](docs/stormblock-review.md) — the 2026-08-26
