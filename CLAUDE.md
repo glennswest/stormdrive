@@ -317,7 +317,8 @@ stormstorage; consumers checked in code: stormconsole's drive plugin
 (every node's :9092), rustkube-node#60 (placement).
 - [x] deck written (12 slides); marp-cli 4 renders it on dev (sc-build on
       fef1a7c): 12 sections, dense class on the 6 long slides
-- [x] README links it; changelog; #8 closed; golden requested
+- [x] README links it; changelog; #8 closed; golden requested on 4561605:
+      unchanged (docs only), stays `golden-stormdrive-406e52043b5f`
 
 ### #6: ready for many more drives (2026-09-28) — DONE (v0.16.0)
 
