@@ -285,6 +285,20 @@ to 4096.
       a real drive: needs a vendor image for the ST1200MM0098 / X425 on
       stormblock1
 
+### #7: docs rewritten from the code (2026-09-28) — IN PROGRESS
+
+Owner: "every component needs to update its doc from code." Pattern:
+stormbootx b1347d9 / stormuefi b15dcba.
+- [ ] README from the source: what it does today, sc-build, every flag and
+      config key with defaults, ports, health/metrics, how it ships
+- [ ] docs/architecture.md: design-only parts marked, stale parts fixed
+- [ ] CLAUDE.md: build section (sc-build, not ssh root@dev), module map,
+      work plan phases checked against the code
+- [ ] Example config + stormd snippet match config.rs
+- [ ] Cross-refs (stormblock/stormd/stormview ports, APIs) checked in
+      their code
+- [ ] Issues for anything the docs promise that the code does not do
+
 ### #12: per-drive usage (2026-09-27) — DONE
 
 "Look at a drive and know how much storage is left." stormblock v17.1
