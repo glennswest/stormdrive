@@ -23,7 +23,11 @@ use tokio::sync::RwLock;
 
 pub mod kube;
 
-const INDEX_HTML: &str = include_str!("../ui/index.html");
+// The page (#6): a Svelte + stormview build, committed as web/dist so a
+// cargo-only build needs no node. Rebuilt on dev (README, "The page").
+const INDEX_HTML: &str = include_str!("../../web/dist/index.html");
+const APP_JS: &str = include_str!("../../web/dist/assets/app.js");
+const APP_CSS: &str = include_str!("../../web/dist/assets/app.css");
 
 pub struct AppState {
     pub config: Config,
@@ -145,6 +149,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(ui_index))
         .route("/ui", get(ui_index))
         .route("/ui/", get(ui_index))
+        // Asset URLs are relative, so "/" and "/ui" load /assets/… and
+        // "/ui/" loads /ui/assets/…; through stormd's proxy both arrive as
+        // /assets/….
+        .route("/assets/{file}", get(ui_asset))
+        .route("/ui/assets/{file}", get(ui_asset))
         .route("/api/v1/health", get(health))
         .route("/api/v1/components", get(components_feed))
         .route("/ws/components", get(ws_components))
@@ -245,6 +254,37 @@ async fn placement_one(
 
 async fn ui_index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+fn asset(file: &str) -> Option<(&'static str, &'static str)> {
+    match file {
+        "app.js" => Some(("text/javascript; charset=utf-8", APP_JS)),
+        "app.css" => Some(("text/css; charset=utf-8", APP_CSS)),
+        _ => None,
+    }
+}
+
+async fn ui_asset(Path(file): Path<String>) -> Response {
+    match asset(&file) {
+        Some((ty, body)) => ([(axum::http::header::CONTENT_TYPE, ty)], body).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed build is whole: the page names the two assets, relative
+    /// (so it works under a proxy prefix), and both are served.
+    #[test]
+    fn page_and_assets_are_embedded() {
+        assert!(INDEX_HTML.contains("src=\"./assets/app.js\""));
+        assert!(INDEX_HTML.contains("href=\"./assets/app.css\""));
+        assert!(asset("app.js").is_some_and(|(t, b)| t.starts_with("text/javascript") && !b.is_empty()));
+        assert!(asset("app.css").is_some_and(|(t, b)| t.starts_with("text/css") && !b.is_empty()));
+        assert!(asset("../Cargo.toml").is_none());
+    }
 }
 
 async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {

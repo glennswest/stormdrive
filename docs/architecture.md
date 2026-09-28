@@ -487,6 +487,45 @@ The route table, request bodies and handle resolution are in the
 - **No `/metrics` yet** (#18). At 160 drives × ~6 gauges it would be ~1,000
   series per node.
 
+### The page (`web/`, #6)
+Built for hundreds of drives: a stormview `DataGrid` whose top rows are
+groups, with each group's drives in a nested grid. The groups are:
+
+- one per shelf (by shelf key; an SES shelf with no drives still shows);
+- one per HBA with direct-attached drives, plus a card with no drives at
+  all;
+- NVMe on PCIe;
+- unlocated.
+
+A collapsed group renders one row. Rows are keyed by id, so the 4 s poll
+diffs cells instead of rebuilding a table. That rebuild was the old
+vanilla page's problem: every 4 s the whole table went through `innerHTML`,
+which reset open selects and scroll.
+
+DataGrid cells are text, `health` (HealthDot), `metrics` (toned values) or
+`actions` (buttons). So a row stays compact, and everything else lives in a
+side pane opened by clicking the row. The drive pane holds designation,
+overcommit, tests, format, firmware, locate, usage, drain and progress. The
+shelf pane shows SES elements and has locate and reformat. The HBA pane
+shows firmware, BIOS and NVDATA.
+
+**Selection:** a ticked group means every drive it shows under the current
+filter (`selectedDrives` in `web/src/lib/model.js`). The bulk bar sends
+only the eligible drives and says how many it skipped:
+
+- format and firmware go through the server's batch endpoints;
+- tests, designation and locate are per-drive calls, 8 at a time. A
+  server-side bulk for those belongs to the drive worker (#5).
+
+The eligibility rules in `model.js` mirror `src/drive.rs`'s guards so the
+page offers only what the server would accept. The server still checks
+every request.
+
+`web/dist` is committed (stormd's and stormconsole's convention), built on
+dev by `web/rebuild.sh`, and embedded by `include_str!`. Asset URLs are
+relative, so the same build works at `/`, `/ui/` and under stormd's
+`/ui/proxy/stormdrive/`.
+
 ### The components feed (`/api/v1/components`, `/ws/components`)
 Every drive, shelf and HBA as a stormview `ComponentSummary`, so stormd,
 stormsh and stormconsole render this daemon with no per-UI code. A `belongs_to

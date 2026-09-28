@@ -95,8 +95,10 @@ src/
   usage.rs        per-drive used/free joined from stormblock's slabs (#12)
   placement.rs    where every drive + shelf is, hashed generation (#10)
   components.rs   stormview feed: drives, shelves, HBAs with actions
-  api/mod.rs      axum REST :9092, summary card, embedded UI (src/ui/index.html)
+  api/mod.rs      axum REST :9092, summary card, embeds web/dist (the page)
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} (stormblock#80)
+web/              the page: Svelte 5 + stormview DataGrid (#6); web/dist is
+                  committed and embedded; rebuild on dev with web/rebuild.sh
 ```
 
 Not in the tree (design only, see docs/architecture.md): a sequencer, a
@@ -565,8 +567,8 @@ drive-management plane — confirm before building:
       when)
 
 ### Phase 7: UI extension (stormd newer UI) — DONE as a vanilla-JS page
-- [x] Embedded page (vanilla JS, not Svelte; stormd style tokens),
-      relocatable base path (`src/ui/index.html`)
+- [x] Embedded page, relocatable base path: vanilla JS until v0.15.0,
+      Svelte 5 + stormview DataGrid in `web/` from #6
 - [x] Drive table with location, health, wear; shelves + HBA panels
 - [x] Locate-LED buttons, event feed, firmware upload/update
 - [x] `[process.ui]` deploy snippet (`deploy/stormd-ui.toml`); the stormcos

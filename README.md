@@ -144,6 +144,23 @@ are listed under [Not yet](#not-yet).
   - Out-of-fleet drives update in parallel. Fleet drives and the system disk
     update one at a time.
   - Failing/Failed drives are refused unless `force`.
+- **The page** (`web/`, #6). A Svelte 5 page built on stormview's
+  DataGrid, for hundreds of drives:
+  - **Groups:** each shelf is a top-level row, then each HBA's direct
+    drives, then NVMe, then unlocated drives. A group's drives are a nested
+    grid that can be sorted, and a collapsed shelf is one row.
+  - **Filters:** quick filters (attention, needs reformat, out of fleet,
+    fleet, busy) and a text filter on name, serial, model, `bay 4`, shelf or
+    host.
+  - **Detail pane:** clicking a drive or shelf opens it. The drive pane
+    holds designation, overcommit, tests, format, firmware, locate, usage,
+    drain and progress. The shelf pane shows SES elements and has locate and
+    reformat.
+  - **Bulk bar:** acts on the ticked drives; ticking a group means every
+    drive it shows. It offers tests, locate, designation, format → 4096/512
+    and firmware.
+  - It polls every 4 s, and rows are keyed, so a refresh updates cells
+    instead of rebuilding the table.
 - **Events** (`src/events.rs`). An in-memory ring of the last 4096 events,
   numbered by `seq`. It is not persisted, so a restart starts it empty.
 - **Inventory** (`src/inventory.rs`). The drive records, including
@@ -175,6 +192,20 @@ The unit tests live beside the code (132 after #7). Page parsers, sense
 decoding, the threshold engine, placement hashing and the token lookup are
 tested on synthetic data. A stand-in engine covers the stormblock client.
 There is no test container yet (#11).
+
+**The page** is Svelte + Vite in `web/`. Its build, `web/dist`, is committed
+and embedded with `include_str!`, so cargo alone builds the daemon. The
+build runs on dev, never on this machine:
+
+```bash
+git push && web/rebuild.sh          # npm ci + npm test + vite build on dev → web/dist, web/package-lock.json
+git push && web/rebuild.sh --check  # rebuild on dev and fail unless the committed web/dist matches
+```
+
+`npm test` runs `node --test` over `web/src/lib/model.js`: grouping,
+filters, group-means-its-drives selection, and the eligibility rules that
+mirror the server's guards. stormview comes from GitHub `main`, pinned by
+`web/package-lock.json`.
 
 ## Running it
 
@@ -259,6 +290,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | Method and path | What |
 |---|---|
 | `GET /`, `/ui`, `/ui/` | the embedded page; works behind a proxy prefix |
+| `GET /assets/app.{js,css}`, `/ui/assets/…` | the page's two assets |
 | `GET /api/v1/health` | `{status, version, node}` — liveness |
 | `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
 | `GET /api/v1/monitor` | health-poll cost, stuck drives, last discovery pass |

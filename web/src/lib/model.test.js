@@ -1,4 +1,4 @@
-// node --test src/lib/  (run on dev: sc-build 'cd web && npm ci && npm test')
+// npm test  (on dev: sc-build 'cd web && npm ci && npm test')
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
