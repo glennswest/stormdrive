@@ -334,7 +334,7 @@ locate LED; nothing links a replacement drive to the one it replaces.
       closed. Not seen on a 160-bay chassis (none here); /metrics is #18,
       UI grouping for hundreds of rows is #6
 
-### #13: per-drive overcommit setting (2026-09-27) — IN PROGRESS
+### #13: per-drive overcommit setting (2026-09-27) — DONE
 
 Owner: "an attribute to drives to allow overcommit or not." Split per
 stormblock `docs/multi-drive.md` §5: stormdrive holds the per-drive
@@ -352,8 +352,10 @@ rustkube-node#62 publishes the headroom; stormconsole#29 shows it.
       changelog; sc-build + clippy pass on 9b9d357; v0.14.0
 - [x] sc-build passes on f34c3aa (v0.14.0), 118/118; status on #13,
       contract on stormblock#152
-- [ ] Golden (blocked on stormcentral#111), then close #13. Enforcement
-      itself is stormblock#152
+- [x] Golden `golden-stormdrive-01a422df544f` (0.15.0 @ 9bb1abb, contains
+      f34c3aa), release request stormcos#131; #13 closed 2026-09-28.
+      Enforcement itself is stormblock#152 (open; contract posted, no
+      reply yet — match any renames it asks for)
 
 ### #10: drive placement for the PV mirror (rustkube-node#60, 2026-09-27) — DONE
 

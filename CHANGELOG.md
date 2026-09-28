@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-28
+- **docs:** work plan — #13 done: overcommit ships in golden `golden-stormdrive-01a422df544f`, stormcos#131; enforcement is stormblock#152
 - **docs:** work plan — #2 done: HBA inventory ships in golden `golden-stormdrive-01a422df544f`, stormcos#131
 - **docs:** work plan — #12 done: usage ships in golden `golden-stormdrive-01a422df544f`, stormcos#131
 - **docs:** work plan — #15 done: golden `golden-stormdrive-01a422df544f` (0.15.0 @ 9bb1abb), release request stormcos#131
