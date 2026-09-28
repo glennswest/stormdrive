@@ -302,7 +302,7 @@ path}`, stormblock#136) with total/free/allocated slots.
 - [ ] Golden (shared with #2) blocked on stormcentral#111, then close #12;
       live reading rides the release (R230 runs 0.11.0)
 
-### #15: 160+ drives per node (2026-09-27) — IN PROGRESS
+### #15: 160+ drives per node (2026-09-27) — DONE
 
 Owner: 160 NVMe per 4U node (ASG-4116S-NU160R class), 1,600 per rack.
 Found in the code: health polling is sequential (one hung NVMe ioctl stalls
@@ -328,8 +328,10 @@ locate LED; nothing links a replacement drive to the one it replaces.
 - [x] sc-build + clippy pass on 4b595b8 (131/131; #20 was a test window
       edge, closed); v0.15.0
 - [x] sc-build passes on 8a86c76 (v0.15.0), 131/131; status on #15
-- [ ] Golden (blocked on stormcentral#111), then close #15 — not seen on a 160-bay chassis (none here);
-      /metrics is #18, UI grouping for hundreds of rows is #6
+- [x] Golden `golden-stormdrive-01a422df544f` (0.15.0 @ 9bb1abb, built
+      after stormcentral#111 closed), release request stormcos#131; #15
+      closed. Not seen on a 160-bay chassis (none here); /metrics is #18,
+      UI grouping for hundreds of rows is #6
 
 ### #13: per-drive overcommit setting (2026-09-27) — IN PROGRESS
 

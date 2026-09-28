@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-09-28
+- **docs:** work plan — #15 done: golden `golden-stormdrive-01a422df544f` (0.15.0 @ 9bb1abb), release request stormcos#131
+
 ### 2026-09-27
 - **docs:** work plan — v0.15.0 verified; golden waits on stormcentral#111
 
