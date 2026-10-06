@@ -169,6 +169,13 @@ are listed under [Not yet](#not-yet).
     still running on the drive is watched to the end. Anything else in
     flight becomes `interrupted` until `POST …/resume`; it is never re-run
     blind. `POST …/cancel` stops the steps that have not started.
+  - The same pass covers what was not a worker job (#39): a format from
+    `/api/v1/format` (or a drive's/shelf's) still running on a SCSI drive
+    is watched to the end, and must then report the block size it was
+    formatted to; any other format, a drive test or a firmware update
+    left in flight is set idle, its record marked `interrupted`, with a
+    `restart` warning event. It all runs before the monitor and the API
+    start, so no drive is left reading busy.
 - **Firmware** (`src/firmware.rs`). It keeps an image store in
   `<data_dir>/firmware`.
   - **SAS/SATA:** WRITE BUFFER mode 0x0E then 0x0F, falling back to 0x07.

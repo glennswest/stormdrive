@@ -286,58 +286,130 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32) -> Arc<FormatHan
     state.persist().await;
 
     let h2 = handle.clone();
-    let st2 = state.clone();
     tokio::spawn(async move {
         let h3 = h2.clone();
         let d2 = drive.clone();
         let result = tokio::task::spawn_blocking(move || run_blocking(&d2, to, &h3))
             .await
             .unwrap_or_else(|e| Err(format!("format task panicked: {e}")));
-        let (state_word, err) = match &result {
-            Ok(_) => (FormatState::Done, None),
-            Err(e) => (FormatState::Failed, Some(e.clone())),
-        };
-        {
-            let mut run = h2.run.lock().unwrap();
-            run.state = state_word;
-            run.finished = Some(SystemTime::now());
-            run.error = err.clone();
-            run.phase = if err.is_some() { "failed".into() } else { "done".into() };
-        }
-        {
-            let mut inv = st2.inventory.write().await;
-            if let Some(d) = inv.drives.get_mut(&drive.id) {
-                if d.activity == Activity::Formatting {
-                    d.activity = Activity::Idle;
-                }
-                if let Ok(bs) = &result {
-                    d.block_size = *bs;
-                    d.physical_block_size = *bs;
-                    d.usable = true;
-                    // Capacity in the new geometry; discovery corrects it
-                    // on the next scan once sd has re-read it.
-                    d.capacity_bytes = d.capacity_bytes / d.format.as_ref().map(|f| f.from_block_size.max(1) as u64).unwrap_or(1)
-                        * (*bs as u64);
-                }
-                if let Some(f) = d.format.as_mut() {
-                    f.state = if err.is_some() { "failed".into() } else { "done".into() };
-                    f.finished = Some(SystemTime::now());
-                    f.error = err.clone();
-                }
-            }
-        }
-        st2.events.write().await.push(
-            Some(drive.id),
-            if err.is_some() { Severity::Error } else { Severity::Info },
-            "format",
-            match &result {
-                Ok(bs) => format!("{}: formatted to {bs}-byte sectors; kernel rescanned", drive.name),
-                Err(e) => format!("{}: format FAILED: {e}", drive.name),
-            },
-        );
-        st2.persist().await;
+        finish(&state, &h2, &drive, result).await;
     });
     handle
+}
+
+/// Record how a format ended: the handle, the drive's record and geometry,
+/// its activity, an event.
+async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, result: Result<u32, String>) {
+    let err = result.as_ref().err().cloned();
+    {
+        let mut run = handle.run.lock().unwrap();
+        run.state = if err.is_some() { FormatState::Failed } else { FormatState::Done };
+        run.finished = Some(SystemTime::now());
+        run.error = err.clone();
+        run.phase = if err.is_some() { "failed".into() } else { "done".into() };
+    }
+    {
+        let mut inv = state.inventory.write().await;
+        if let Some(d) = inv.drives.get_mut(&drive.id) {
+            if d.activity == Activity::Formatting {
+                d.activity = Activity::Idle;
+            }
+            if let Ok(bs) = &result {
+                d.block_size = *bs;
+                d.physical_block_size = *bs;
+                d.usable = true;
+                // Capacity in the new geometry; discovery corrects it
+                // on the next scan once sd has re-read it.
+                d.capacity_bytes = d.capacity_bytes / d.format.as_ref().map(|f| f.from_block_size.max(1) as u64).unwrap_or(1)
+                    * (*bs as u64);
+            }
+            if let Some(f) = d.format.as_mut() {
+                f.state = if err.is_some() { "failed".into() } else { "done".into() };
+                f.finished = Some(SystemTime::now());
+                f.error = err.clone();
+            }
+        }
+    }
+    state.events.write().await.push(
+        Some(drive.id),
+        if err.is_some() { Severity::Error } else { Severity::Info },
+        "format",
+        match &result {
+            Ok(bs) => format!("{}: formatted to {bs}-byte sectors; kernel rescanned", drive.name),
+            Err(e) => format!("{}: format FAILED: {e}", drive.name),
+        },
+    );
+    state.persist().await;
+}
+
+/// After a restart: a FORMAT UNIT (IMMED) we started keeps running on the
+/// drive. Watch it to the end, rescan, and check the drive reports the
+/// block size we asked for — a format that never reached the drive (we
+/// died before FORMAT UNIT) shows up here as the old size, and fails.
+pub async fn reattach(state: Arc<AppState>, drive: Drive) -> Arc<FormatHandle> {
+    let rec = drive.format.clone().unwrap_or_default();
+    let to = rec.to_block_size;
+    let handle = Arc::new(FormatHandle {
+        run: Mutex::new(FormatRun {
+            drive: drive.id,
+            name: drive.name.clone(),
+            from_block_size: rec.from_block_size,
+            to_block_size: to,
+            state: FormatState::Running,
+            phase: "formatting".into(),
+            progress_pct: None,
+            started: rec.started.unwrap_or_else(SystemTime::now),
+            finished: None,
+            error: None,
+            immediate: true,
+        }),
+    });
+    state.formats.write().await.insert(drive.id, handle.clone());
+    state.events.write().await.push(
+        Some(drive.id),
+        Severity::Warning,
+        "format",
+        format!("{}: stormdrive restarted during a format to {to}-byte sectors; watching the drive to the end", drive.name),
+    );
+    let h2 = handle.clone();
+    tokio::spawn(async move {
+        let h3 = h2.clone();
+        let d2 = drive.clone();
+        let result = tokio::task::spawn_blocking(move || reattach_blocking(&d2, to, &h3))
+            .await
+            .unwrap_or_else(|e| Err(format!("format task panicked: {e}")));
+        finish(&state, &h2, &drive, result.map_err(|e| format!("{e} (after a restart)"))).await;
+    });
+    handle
+}
+
+fn reattach_blocking(drive: &Drive, to: u32, handle: &FormatHandle) -> Result<u32, String> {
+    let dev = Device::open(&dev_path(drive)).map_err(|e| format!("open: {e}"))?;
+    let t0 = Instant::now();
+    loop {
+        match interpret_tur(&dev.test_unit_ready())? {
+            None => break,
+            Some(p) => handle.set_progress(p),
+        }
+        if t0.elapsed() > MAX_WAIT {
+            return Err("format did not finish within 48 h".into());
+        }
+        std::thread::sleep(POLL);
+    }
+    handle.set_phase("rescan");
+    for p in &drive.paths {
+        rescan(p.trim_start_matches("/dev/"));
+    }
+    std::thread::sleep(Duration::from_secs(3));
+    handle.set_phase("verify");
+    let after = dev.read_capacity16().map_err(|e| format!("read capacity after format: {e}"))?;
+    if after.block_len != to {
+        return Err(format!(
+            "drive reports {}-byte blocks, not the {to} it was being formatted to: the format did not complete",
+            after.block_len
+        ));
+    }
+    Ok(after.block_len)
 }
 
 #[cfg(test)]

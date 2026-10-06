@@ -4,6 +4,8 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-06
+- **fix:** a restart no longer leaves a drive stuck `formatting`/`testing`/`updating_firmware` when the run was not a worker job (#39): a SCSI format still on the drive is re-attached and verified, anything else goes idle with its record `interrupted` and a `restart` event; recovery runs before the monitor and the API
+- **docs:** work plan — #39 restart recovery for non-worker operations
 - **docs:** work plan — #45 done: v0.18.0 verified on dac3deb, golden e54fd49f3502
 
 ## [v0.18.0] — 2026-10-06

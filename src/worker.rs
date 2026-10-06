@@ -432,6 +432,63 @@ pub fn recover_action(dj: &DriveJob, step: Option<&Step>) -> Recover {
     }
 }
 
+/// What a restart does with a drive that reads busy but no live run owns
+/// (#39): a legacy format (`format::start`), a test or a firmware update
+/// lives only in memory, so its `activity` outlives it in inventory.json.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Orphan {
+    /// Not busy, or busy with something that recovers itself (a running
+    /// worker step, a drain, a missing drive).
+    Leave,
+    /// A SCSI FORMAT UNIT we started: the drive keeps formatting by itself.
+    ReattachFormat,
+    /// Nothing is doing it any more: back to idle, with this reason.
+    Idle(String),
+}
+
+/// `in_worker`: a worker job had this drive's step running when we stopped
+/// (`recover` watches or interrupts it).
+pub fn orphan_action(d: &Drive, in_worker: bool) -> Orphan {
+    match d.activity {
+        Activity::Formatting | Activity::Sanitizing if in_worker => Orphan::Leave,
+        Activity::Formatting
+            if d.kind != DriveKind::NvmeSsd && d.format.as_ref().is_some_and(|f| f.state == "running") =>
+        {
+            Orphan::ReattachFormat
+        }
+        Activity::Formatting => Orphan::Idle("a format was running when stormdrive stopped; check the drive's geometry before using it".into()),
+        Activity::Sanitizing => Orphan::Idle("a sanitize was running when stormdrive stopped and no job owns it".into()),
+        Activity::Testing => Orphan::Idle("a drive test was running when stormdrive stopped; it did not finish — run it again".into()),
+        Activity::UpdatingFirmware => Orphan::Idle(
+            "a firmware update was running when stormdrive stopped; it may be incomplete — check the version, then update again".into(),
+        ),
+        Activity::Idle | Activity::Draining | Activity::Missing => Orphan::Leave,
+    }
+}
+
+/// Apply `Idle` to a drive: activity, and the persisted record marked
+/// `interrupted`.
+pub fn idle_orphan(d: &mut Drive, why: &str) {
+    match d.activity {
+        Activity::Formatting => {
+            if let Some(f) = d.format.as_mut().filter(|f| f.state == "running") {
+                f.state = "interrupted".into();
+                f.finished = Some(SystemTime::now());
+                f.error = Some(why.into());
+            }
+        }
+        Activity::UpdatingFirmware => {
+            if let Some(f) = d.firmware_update.as_mut().filter(|f| f.state == "running") {
+                f.state = "interrupted".into();
+                f.finished = Some(SystemTime::now());
+                f.error = Some(why.into());
+            }
+        }
+        _ => {}
+    }
+    d.activity = Activity::Idle;
+}
+
 /// Where a drive is on its way into the fleet: `unusable → formatting n% →
 /// ready → enrolled` (plus `sanitizing`, `missing`, `busy`).
 pub fn prep(d: &Drive, pct: Option<u8>) -> Value {
@@ -1067,6 +1124,7 @@ fn write_partition(name: &str, path: &str, role: Role) -> Result<(u32, u64), Str
 /// After a restart: watch what the drives are still doing, interrupt the
 /// rest. Called once, when the daemon starts.
 pub async fn recover(state: Arc<AppState>) {
+    recover_orphans(&state).await;
     let mut reattach = vec![];
     let mut interrupted = vec![];
     {
@@ -1106,6 +1164,46 @@ pub async fn recover(state: Arc<AppState>) {
     for (job, idx, id, step) in reattach {
         tokio::spawn(watch(state.clone(), job, idx, id, step));
     }
+}
+
+/// Drives left busy by an operation that was not a worker job (#39).
+async fn recover_orphans(state: &Arc<AppState>) {
+    let owned: std::collections::HashSet<DriveId> = state
+        .worker
+        .jobs
+        .lock()
+        .unwrap()
+        .values()
+        .flat_map(|j| j.drives.iter().filter(|d| d.state == DjState::Running).map(|d| d.drive))
+        .collect();
+    let mut reattach = vec![];
+    let mut idled = vec![];
+    {
+        let mut inv = state.inventory.write().await;
+        for d in inv.drives.values_mut() {
+            match orphan_action(d, owned.contains(&d.id)) {
+                Orphan::Leave => {}
+                Orphan::ReattachFormat => reattach.push(d.clone()),
+                Orphan::Idle(why) => {
+                    idled.push((d.id, format!("{}: {why}", d.name)));
+                    idle_orphan(d, &why);
+                }
+            }
+        }
+    }
+    if reattach.is_empty() && idled.is_empty() {
+        return;
+    }
+    {
+        let mut ev = state.events.write().await;
+        for (id, msg) in idled {
+            ev.push(Some(id), Severity::Warning, "restart", msg);
+        }
+    }
+    for d in reattach {
+        crate::format::reattach(state.clone(), d).await;
+    }
+    state.persist().await;
 }
 
 /// Follow a low-level step the drive kept running across our restart.
@@ -1330,6 +1428,56 @@ mod tests {
         assert!(matches!(recover_action(&dj(DjState::Running, DriveKind::SasHdd), Some(&part())), Recover::Interrupt(_)));
         assert!(matches!(recover_action(&dj(DjState::Queued, DriveKind::SasHdd), Some(&FMT)), Recover::Interrupt(_)), "never started blind");
         assert_eq!(recover_action(&dj(DjState::Done, DriveKind::SasHdd), None), Recover::Leave);
+    }
+
+    #[test]
+    fn a_restart_leaves_no_drive_busy_without_an_owner() {
+        use crate::drive::{FirmwareRecord, FormatRecord};
+        let running_fmt = |d: &mut Drive| {
+            d.activity = Activity::Formatting;
+            d.format = Some(FormatRecord { from_block_size: 520, to_block_size: 4096, state: "running".into(), ..Default::default() });
+        };
+        // A legacy SCSI format: the drive is still formatting — watch it.
+        assert_eq!(orphan_action(&drive(running_fmt), false), Orphan::ReattachFormat);
+        // The same drive under a running worker step: the worker owns it.
+        assert_eq!(orphan_action(&drive(running_fmt), true), Orphan::Leave);
+        assert_eq!(orphan_action(&drive(|d| d.activity = Activity::Sanitizing), true), Orphan::Leave);
+        // NVMe Format NVM is one blocking command: it cannot be watched.
+        let nvme = drive(|d| {
+            running_fmt(d);
+            d.kind = DriveKind::NvmeSsd;
+        });
+        assert!(matches!(orphan_action(&nvme, false), Orphan::Idle(_)));
+        // Formatting with no running record (e.g. a worker partition step
+        // whose job is gone).
+        assert!(matches!(orphan_action(&drive(|d| d.activity = Activity::Formatting), false), Orphan::Idle(_)));
+        for a in [Activity::Testing, Activity::UpdatingFirmware, Activity::Sanitizing] {
+            assert!(matches!(orphan_action(&drive(|d| d.activity = a), false), Orphan::Idle(_)), "{a:?}");
+        }
+        for a in [Activity::Idle, Activity::Draining, Activity::Missing] {
+            assert_eq!(orphan_action(&drive(|d| d.activity = a), false), Orphan::Leave, "{a:?}");
+        }
+
+        let mut fw = drive(|d| {
+            d.activity = Activity::UpdatingFirmware;
+            d.firmware_update = Some(FirmwareRecord { image: "x.lod".into(), state: "running".into(), ..Default::default() });
+        });
+        idle_orphan(&mut fw, "why");
+        assert_eq!(fw.activity, Activity::Idle);
+        let r = fw.firmware_update.unwrap();
+        assert_eq!((r.state.as_str(), r.error.as_deref()), ("interrupted", Some("why")));
+        assert!(r.finished.is_some());
+
+        let mut f = nvme.clone();
+        idle_orphan(&mut f, "why");
+        assert_eq!((f.activity, f.format.unwrap().state.as_str()), (Activity::Idle, "interrupted"));
+        // A finished record is history: left as it was.
+        let mut done = drive(|d| {
+            d.activity = Activity::Testing;
+            d.format = Some(FormatRecord { state: "done".into(), ..Default::default() });
+        });
+        idle_orphan(&mut done, "why");
+        assert_eq!(done.format.unwrap().state, "done");
     }
 
     /// The table on a file, read back by our parser and — where the build

@@ -474,7 +474,7 @@ pub const USABLE_BLOCK_SIZES: [u32; 2] = [512, 4096];
 pub struct FormatRecord {
     pub from_block_size: u32,
     pub to_block_size: u32,
-    /// `running`, `done`, `failed`.
+    /// `running`, `done`, `failed`, `interrupted` (stormdrive restarted, #39).
     pub state: String,
     pub started: Option<SystemTime>,
     pub finished: Option<SystemTime>,
@@ -488,7 +488,7 @@ pub struct FirmwareRecord {
     pub image: String,
     pub from_version: String,
     pub to_version: Option<String>,
-    /// `running`, `done`, `failed`.
+    /// `running`, `done`, `failed`, `interrupted` (stormdrive restarted, #39).
     pub state: String,
     pub started: Option<SystemTime>,
     pub finished: Option<SystemTime>,

@@ -447,6 +447,17 @@ kept.
   - An NVMe format or a partition that was in flight, and every queued
     drive, becomes `interrupted` with the reason. Nothing destructive
     re-runs until `POST …/resume`.
+  - Drives a run outside the worker left busy (#39 — `format::start`,
+    `drivetest`, `firmware`: their handles are in memory, `activity` is
+    persisted): `worker::orphan_action` decides per drive. A SCSI format
+    with a `running` record is re-attached (`format::reattach`: TUR to
+    ready, rescan, READ CAPACITY must show the target block size, else
+    `failed`). Any other `formatting`/`sanitizing` no running job step
+    owns, `testing` and `updating_firmware` go back to `idle`; the format
+    or firmware record becomes `interrupted` with the reason, and a
+    `restart` warning event names the drive. `draining` (the fleet loop
+    resumes it) and `missing` are left alone. `main` awaits all of this
+    before the monitor and the API start.
 - **Not built:** ATA SECURITY ERASE (#36), and a UI for jobs on the page
   (#38; stormconsole sees the `prep` metric in the feed).
 
