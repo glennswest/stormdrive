@@ -513,6 +513,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 
 | Method and path | What |
 |---|---|
+| `GET /api/v1/health`, `/healthz` | health; the only paths open with no credential and over plain HTTP |
 | `GET /`, `/ui`, `/ui/` | the embedded page; works behind a proxy prefix (401 with the page when no credential) |
 | `GET /assets/app.{js,css}`, `/ui/assets/…` | the page's two assets |
 | `GET /api/v1/health` | `{status, version, node, writes}` — liveness, and how writes are decided |

@@ -159,6 +159,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/assets/{file}", get(ui_asset))
         .route("/ui/assets/{file}", get(ui_asset))
         .route("/api/v1/health", get(health))
+        // The conventional probe path (#19): open on plain HTTP as health.
+        .route("/healthz", get(health))
         .route("/api/v1/components", get(components_feed))
         .route("/ws/components", get(ws_components))
         .route("/api/v1/monitor", get(monitor_stats))
