@@ -373,6 +373,56 @@ Steps:
       Not run on a real drive: the disk operations wait on
       #30 (stormblock1) / #31 (NVMe)
 
+### #45: drives and drive operations as Kubernetes objects; destructive = storage-admin (2026-10-06) — IN PROGRESS
+
+Owner (2026-10-03): "All these need crd/kubernets objects … a security model
+that non admins cant format drives etc." stormcos#250 ships `storage-admin` /
+`storage-viewer` over `storage.storm.io`, all resources; stormraid#8 is the
+sibling (real CRDs, controller, apiserver RBAC decides).
+
+Design (decided from the issue + owner's comment, no open decision):
+- **REST gate** (`kubeauth.rs`): every call that writes to a drive — format
+  (drive/shelf/batch), worker job (not a dry run) + resume, firmware update,
+  destructive test, fleet join/leave (also via kube PATCH) — needs a
+  Kubernetes bearer: TokenReview → SubjectAccessReview `create
+  driveoperations.storage.storm.io`. 401/403/503 like stormblock#274; answers
+  cached 60 s. `[api] admin_gate = "enforce"` (default) | `"audit"`. No
+  apiserver configured = refused. Every decision is an audit event (who,
+  what, which drives).
+- **Worker re-check**: a job carries its `requester` (user, groups); before
+  each destroying step the worker SARs that user again — a role revoked
+  mid-batch stops the rest.
+- **Owner**: `free | stormblock | stormraid | foreign` on every drive (fleet
+  or a slab → stormblock; `STORMRD1` superblock → stormraid; other fs →
+  foreign). Owned drives refuse destroying steps unless released (left the
+  fleet / RaidSet deleted) and named in `destroy`.
+- **CRDs** (`deploy/crds.yaml`, `storage.storm.io/v1`, cluster scope):
+  `Drive` (this node's stormdrive writes one per drive: spec mirror + status
+  with model, size, sector size, enclosure/bay, SAS address, health, owner)
+  and `DriveOperation` (spec: node, select, steps, destroy, dryRun; status:
+  phase, requester, job, per-drive progress). Controller (`controller.rs`,
+  plain reqwest, no kube-rs) lists this node's operations, re-checks the
+  requester, submits to the worker (jobs.json = survives restarts), writes
+  status, posts a Kubernetes Event per operation (audit). The requester comes
+  from an annotation the **apiserver** stamps (`storage.storm.io/requester`,
+  like `openshift.io/requester`): rustkube issue; until then an operation
+  without it is Refused, never trusted. `deploy/rbac.yaml` = the
+  controller's own narrow role.
+- stormcos issue: install crds/rbac, mount an apiserver credential + CA into
+  stormdrive; then `component edit stormdrive` adds `[kubernetes]`.
+
+Steps:
+- [ ] kubeapi.rs (client, config `[kubernetes]`, in-cluster fallback)
+- [ ] kubeauth.rs (TokenReview/SAR, cache) + REST gate + audit events
+- [ ] job requester + worker re-check before destroying steps
+- [ ] owner (stormraid probe) on Drive, API, kube status; guard
+- [ ] CRDs + rbac yaml; controller (Drive mirror, DriveOperation reconcile,
+      Events)
+- [ ] test suites adjusted (destructive calls → 401 on the harness), tests
+- [ ] docs (README, architecture, SECURITY section), changelog, v0.18.0
+- [ ] issues: rustkube (requester stamp), stormcos (install + credential)
+- [ ] sc-build + clippy; golden; close #45
+
 ### Comment mining (2026-09-28)
 
 Findings in issue comments since 2026-09-18 that nobody had filed:
