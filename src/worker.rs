@@ -76,7 +76,10 @@ impl Role {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Step {
-    Format { block_size: u32 },
+    Format {
+        #[serde(alias = "blockSize")]
+        block_size: u32,
+    },
     Sanitize { method: SanitizeMethod },
     Partition {
         #[serde(default)]
@@ -375,6 +378,13 @@ pub struct Job {
     pub drives: Vec<DriveJob>,
     #[serde(default)]
     pub cancel: bool,
+    /// Who asked (#45): re-checked with the apiserver before every step.
+    /// `resume` replaces it with whoever resumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<crate::kubeauth::Requester>,
+    /// The DriveOperation object this job runs, when it came from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
 }
 
 impl Job {
@@ -485,6 +495,20 @@ impl Worker {
         self.jobs.lock().unwrap().get(id).map(Job::view)
     }
 
+    pub fn job(&self, id: &str) -> Option<Job> {
+        self.jobs.lock().unwrap().get(id).cloned()
+    }
+
+    /// The job a DriveOperation started, by the operation's name.
+    pub fn by_operation(&self, op: &str) -> Option<Job> {
+        self.jobs.lock().unwrap().values().rev().find(|j| j.operation.as_deref() == Some(op)).cloned()
+    }
+
+    /// Jobs started by DriveOperations that are not finished: (job, operation).
+    pub fn operation_jobs(&self) -> Vec<(String, String)> {
+        self.jobs.lock().unwrap().values().filter(|j| !j.finished()).filter_map(|j| j.operation.clone().map(|o| (j.id.clone(), o))).collect()
+    }
+
     /// The running step's progress for a drive, if a job has one.
     pub fn progress_of(&self, id: DriveId) -> Option<(String, Option<u8>)> {
         let jobs = self.jobs.lock().unwrap();
@@ -548,7 +572,7 @@ pub struct Request {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub destroy: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "dryRun")]
     pub dry_run: bool,
 }
 
@@ -612,7 +636,17 @@ pub async fn select(state: &Arc<AppState>, sel: &Select) -> Result<Vec<Drive>, S
 
 /// Check, then (unless a dry run) create the job and start its drives.
 /// `Err` only for a malformed request; refusals are reported per drive.
-pub async fn submit(state: &Arc<AppState>, req: Request) -> Result<Value, String> {
+pub async fn submit(state: &Arc<AppState>, req: Request, requester: Option<crate::kubeauth::Requester>) -> Result<Value, String> {
+    submit_for(state, req, requester, None).await
+}
+
+/// [`submit`], on behalf of a DriveOperation object (`operation` = its name).
+pub async fn submit_for(
+    state: &Arc<AppState>,
+    req: Request,
+    requester: Option<crate::kubeauth::Requester>,
+    operation: Option<String>,
+) -> Result<Value, String> {
     validate_steps(&req.steps)?;
     let drives = select(state, &req.select).await?;
     if drives.is_empty() {
@@ -656,13 +690,29 @@ pub async fn submit(state: &Arc<AppState>, req: Request) -> Result<Value, String
         return Err(format!("nothing to run: {}", plan["refused"]));
     }
     let id = state.worker.new_id();
-    let job = Job { id: id.clone(), created: SystemTime::now(), select: req.select, steps: req.steps.clone(), destroy: req.destroy, drives: djs, cancel: false };
+    let who = requester.as_ref().map(|r| r.who.clone()).unwrap_or_else(|| "unknown".into());
+    let job = Job {
+        id: id.clone(),
+        created: SystemTime::now(),
+        select: req.select,
+        steps: req.steps.clone(),
+        destroy: req.destroy,
+        drives: djs,
+        cancel: false,
+        requester,
+        operation: operation.clone(),
+    };
     let destructive = req.steps.iter().any(Step::destroys);
     state.events.write().await.push(
         None,
         if destructive { Severity::Warning } else { Severity::Info },
         "worker",
-        format!("job {id}: {} on {runnable} drive(s){}", req.steps.iter().map(Step::describe).collect::<Vec<_>>().join(" → "), if destructive { " (their data is destroyed)" } else { "" }),
+        format!(
+            "job {id}{}: {} on {runnable} drive(s) for {who}{}",
+            operation.as_deref().map(|o| format!(" (DriveOperation {o})")).unwrap_or_default(),
+            req.steps.iter().map(Step::describe).collect::<Vec<_>>().join(" → "),
+            if destructive { " (their data is destroyed)" } else { "" }
+        ),
     );
     let idxs: Vec<usize> = job.drives.iter().enumerate().filter(|(_, d)| d.state == DjState::Queued).map(|(i, _)| i).collect();
     state.worker.jobs.lock().unwrap().insert(id.clone(), job);
@@ -689,12 +739,15 @@ pub async fn cancel(state: &Arc<AppState>, id: &str) -> Result<Value, String> {
     Ok(state.worker.get(id).unwrap_or_default())
 }
 
-pub async fn resume(state: &Arc<AppState>, id: &str) -> Result<Value, String> {
+pub async fn resume(state: &Arc<AppState>, id: &str, requester: Option<crate::kubeauth::Requester>) -> Result<Value, String> {
     let idxs: Vec<usize> = {
         let mut jobs = state.worker.jobs.lock().unwrap();
         let j = jobs.get_mut(id).ok_or_else(|| format!("job {id:?}: not found"))?;
         if j.cancel {
             return Err(format!("job {id} was cancelled"));
+        }
+        if requester.is_some() {
+            j.requester = requester;
         }
         let mut v = vec![];
         for (i, d) in j.drives.iter_mut().enumerate().filter(|(_, d)| d.state == DjState::Interrupted) {
@@ -730,6 +783,7 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
         let d = &j.drives[idx];
         (j.steps.clone(), d.drive, d.destroy_named)
     };
+    let op = crate::kubeauth::Access { resource: "driveoperations", verb: "create", name: None };
     let cfg = state.config.worker.clone();
     loop {
         let (step_idx, cancelled, st) = {
@@ -783,6 +837,31 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
         if let Err(why) = guard(&drive, &steps[step_idx..], destroy_named, &cx) {
             fail(&state, &job, idx, drive_id, format!("before {}: {why}", step.name())).await;
             return;
+        }
+        // …including whether the requester may still do it (#45): the
+        // object or the request that started the job is not trusted alone.
+        let requester = state.worker.jobs.lock().unwrap().get(&job).and_then(|j| j.requester.clone());
+        let Some(requester) = requester else {
+            fail(&state, &job, idx, drive_id, format!("before {}: the job names no requester to re-check", step.name())).await;
+            return;
+        };
+        match state.gate.recheck(&requester, &op).await {
+            Ok(()) => {}
+            Err(crate::kubeauth::RecheckError::Denied(why)) => {
+                fail(&state, &job, idx, drive_id, format!("before {}: refused — {why}", step.name())).await;
+                return;
+            }
+            Err(crate::kubeauth::RecheckError::Unavailable(why)) => {
+                let why = format!("before {}: could not re-check {} ({why}); resume when the apiserver answers", step.name(), requester.who);
+                state.worker.with(&job, idx, |d| {
+                    d.state = DjState::Interrupted;
+                    d.phase = "interrupted".into();
+                    d.error = Some(why.clone());
+                });
+                state.events.write().await.push(Some(drive_id), Severity::Warning, "worker", format!("{}: job {job} — {why}", drive.name));
+                state.worker.save().await;
+                return;
+            }
         }
         state.worker.with(&job, idx, |d| {
             d.state = DjState::Running;

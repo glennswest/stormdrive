@@ -17,6 +17,7 @@ pub struct Config {
     pub api: ApiConfig,
     pub firmware: FirmwareConfig,
     pub worker: WorkerConfig,
+    pub kubernetes: KubernetesConfig,
 }
 
 impl Default for Config {
@@ -31,6 +32,7 @@ impl Default for Config {
             api: ApiConfig::default(),
             firmware: FirmwareConfig::default(),
             worker: WorkerConfig::default(),
+            kubernetes: KubernetesConfig::default(),
         }
     }
 }
@@ -191,12 +193,64 @@ impl Default for StormBlockConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Who may change drives (#45, stormcos#250): every write on :9092 needs a
+/// Kubernetes bearer the apiserver allows on `storage.storm.io` (the
+/// release's `storage-admin` role), or the node-local admin token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApiConfig {
-    /// Empty = no auth (current ecosystem posture on node LANs). Present in
-    /// the schema from day one so enabling it is not a format change.
-    pub api_token: String,
+    /// A break-glass bearer accepted for every write, for a node with no
+    /// apiserver. Empty = `$STORMDRIVE_ADMIN_TOKEN`, then `admin_token_file`.
+    /// (`api_token`, parsed and never enforced before 0.18.0, is read as
+    /// this.)
+    #[serde(alias = "api_token")]
+    pub admin_token: String,
+    /// Where that token is kept (root-only, never mounted into other
+    /// services). Empty = none.
+    pub admin_token_file: String,
+    /// `enforce`: a write without an allowed bearer is refused. `audit`: it
+    /// goes through and is logged as one `enforce` would refuse — for
+    /// rolling the gate out, never for running open.
+    pub admin_gate: String,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self { admin_token: String::new(), admin_token_file: String::new(), admin_gate: "enforce".into() }
+    }
+}
+
+/// The cluster's apiserver (#45): reviews bearers (TokenReview +
+/// SubjectAccessReview) and holds the `Drive` and `DriveOperation` objects.
+/// Unset `api_url` = no apiserver: Kubernetes bearers are refused and the
+/// controller does not run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KubernetesConfig {
+    /// `https://<apiserver>:6443`. Empty = `$STORMDRIVE_KUBE_API`, then the
+    /// in-cluster service (`$KUBERNETES_SERVICE_HOST`) when a service
+    /// account token is mounted.
+    pub api_url: String,
+    /// The apiserver's CA (PEM). Empty = `$STORMDRIVE_KUBE_CA`, then the
+    /// service account's `ca.crt`.
+    pub ca_file: String,
+    /// stormdrive's own credential: may create `tokenreviews` and
+    /// `subjectaccessreviews` (`system:auth-delegator`) and holds the
+    /// `stormdrive-controller` role (deploy/rbac.yaml). Empty =
+    /// `$STORMDRIVE_KUBE_TOKEN_FILE`, then the service account's token.
+    pub token_file: String,
+    /// Skip TLS verification (a lab apiserver with no CA at hand).
+    pub insecure: bool,
+    /// Keep `Drive` objects and run `DriveOperation`s for this node.
+    pub controller: bool,
+    /// Between controller passes.
+    pub interval_secs: u64,
+}
+
+impl Default for KubernetesConfig {
+    fn default() -> Self {
+        Self { api_url: String::new(), ca_file: String::new(), token_file: String::new(), insecure: false, controller: true, interval_secs: 5 }
+    }
 }
 
 impl Config {
@@ -223,6 +277,12 @@ impl Config {
         }
         if self.worker.max_per_hba == 0 || self.worker.enroll_per_domain == 0 {
             anyhow::bail!("worker.max_per_hba and worker.enroll_per_domain must be non-zero");
+        }
+        if !matches!(self.api.admin_gate.as_str(), "enforce" | "audit") {
+            anyhow::bail!("api.admin_gate {:?}: use enforce or audit", self.api.admin_gate);
+        }
+        if self.kubernetes.interval_secs == 0 {
+            anyhow::bail!("kubernetes.interval_secs must be non-zero");
         }
         if self.monitor.hysteresis == 0 {
             anyhow::bail!("monitor.hysteresis must be >= 1");

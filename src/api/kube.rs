@@ -89,7 +89,7 @@ async fn api_resources() -> Json<Value> {
 
 // ---------------------------------------------------------------- drives
 
-fn drive_object(d: &Drive, node: &str) -> Value {
+pub fn drive_object(d: &Drive, node: &str) -> Value {
     let key = d.id.0.to_string();
     let mut labels = BTreeMap::new();
     labels.insert("storm.io/component".to_string(), "stormdrive".to_string());
@@ -127,6 +127,10 @@ fn drive_object(d: &Drive, node: &str) -> Value {
             "physicalBlockSize": d.physical_block_size,
             "usable": d.usable,
             "needsReformat": d.needs_reformat(),
+            "owner": d.owner(),
+            "enclosure": d.location.shelf.as_ref().and_then(|s| s.key()),
+            "bay": d.location.bay,
+            "sasAddress": d.location.sas_address,
             "location": d.location,
             "membership": d.membership,
             "activity": d.activity,
@@ -557,6 +561,9 @@ mod tests {
         assert_eq!(v["spec"]["fleet"], "out");
         assert_eq!(v["spec"]["drain"], false);
         assert_eq!(v["status"]["health"]["status"], "good");
+        assert_eq!(v["status"]["owner"], "free");
+        assert_eq!(v["status"]["bay"], 7);
+        assert_eq!(v["status"]["enclosure"], "SHELF1");
         assert!(selected(&v, &Some("storm.io/hba=host3".into())));
         assert!(!selected(&v, &Some("storm.io/hba=host9".into())));
     }

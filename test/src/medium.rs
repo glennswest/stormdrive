@@ -13,6 +13,7 @@ use crate::report::{ensure, Outcome, Report, Why};
 
 pub async fn run(env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     crate::api_up(api, r).await?;
+    r.run("writes-need-storage-admin", writes_need_admin(api, env)).await;
     r.run("not-found-envelope", not_found(api)).await;
     r.run("bad-requests", bad_requests(api, env)).await;
     r.run("refusals-on-guarded-drive", refusals(api)).await;
@@ -36,6 +37,36 @@ pub async fn run(env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
 
 fn status_is(reply: &crate::api::Reply, want: &[u16], what: &str) -> Result<(), Why> {
     ensure(want.contains(&reply.status), format!("{what}: HTTP {} (wanted {want:?}): {}", reply.status, reply.text.chars().take(160).collect::<String>()))
+}
+
+/// Every write needs a storage-admin bearer (#45, stormcos#250): with none,
+/// or a made-up one, a write is refused before it reaches a drive — even one
+/// that names no drive at all. With the run's bearer it gets past the gate
+/// (and is then a plain 404). Reads stay open.
+async fn writes_need_admin(api: &Api, env: &Env) -> Outcome {
+    api.need((0, 18, 0), "the write gate")?;
+    let h = api.get("api/v1/health").await?.json("GET health")?;
+    let gate = h["writes"]["gate"].as_str().unwrap_or_default().to_string();
+    ensure(matches!(gate.as_str(), "enforce" | "audit"), format!("health.writes.gate {:?}", h["writes"]["gate"]))?;
+    if gate != "enforce" {
+        return Err(Why::Skip(format!("the node runs admin_gate = {gate}")));
+    }
+    let path = "api/v1/drives/no-such-drive-stormdrive-test/designation/spare";
+    let none = api.post_as(path, None).await?;
+    status_is(&none, &[401], "a write with no bearer")?;
+    ensure(none.body["code"] == "unauthorized", format!("envelope {}", none.text))?;
+    let fake = api.post_as(path, Some("not-a-real-bearer")).await?;
+    status_is(&fake, &[401], "a write with a made-up bearer")?;
+    for (p, what) in [("api/v1/format", "a batch format"), ("api/v1/worker/jobs", "a worker job (not a dry run)")] {
+        status_is(&api.post_as(p, None).await?, &[401], what)?;
+    }
+    status_is(&api.get("api/v1/drives").await?, &[200], "a read")?;
+    let mut detail = "no bearer / made-up bearer → 401 on designation, format, worker job; reads open".to_string();
+    if let Some(t) = &env.token {
+        status_is(&api.post_as(path, Some(t)).await?, &[404], "the run's bearer, unknown drive")?;
+        detail.push_str("; the run's bearer gets through to a 404");
+    }
+    Ok(detail)
 }
 
 /// Unknown handles answer 404 in stormblock's `{error, code}` envelope.

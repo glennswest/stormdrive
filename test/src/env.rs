@@ -10,8 +10,9 @@ pub struct Env {
     pub run_id: String,
     pub timeout: Duration,
     pub results: PathBuf,
-    /// Bearer token, for when stormdrive's API gains auth (#19). Sent when
-    /// set; today the API is open.
+    /// A storage-admin bearer (or the node's admin token), sent on every
+    /// call. Since 0.18.0 (#45) writes need one; without it the checks that
+    /// write are skipped.
     pub token: Option<String>,
     /// Upper bound on the drives a long wave smoke-tests at once.
     pub wave_max: Option<usize>,

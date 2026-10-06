@@ -81,16 +81,34 @@ impl Api {
     }
 
     pub async fn post(&self, path: &str, body: Value) -> Result<Reply, Why> {
-        self.send(self.http.post(self.url(path)).json(&body)).await
+        self.write(self.http.post(self.url(path)).json(&body)).await
     }
 
     /// POST with no body (the body-free action routes).
     pub async fn post_empty(&self, path: &str) -> Result<Reply, Why> {
-        self.send(self.http.post(self.url(path))).await
+        self.write(self.http.post(self.url(path))).await
     }
 
     pub async fn delete(&self, path: &str) -> Result<Reply, Why> {
-        self.send(self.http.delete(self.url(path))).await
+        self.write(self.http.delete(self.url(path))).await
+    }
+
+    /// A write: since 0.18.0 (#45) it needs a storage-admin bearer. Without
+    /// one (`STORM_STORMDRIVE_TOKEN` unset) a 401/403 skips the check rather
+    /// than failing it — the gate doing its job is not the feature's fault.
+    async fn write(&self, req: reqwest::RequestBuilder) -> Result<Reply, Why> {
+        let r = self.send(req).await?;
+        if self.token.is_none() && matches!(r.status, 401 | 403) {
+            return Err(Why::Skip(format!("needs a storage-admin bearer (STORM_STORMDRIVE_TOKEN): HTTP {}", r.status)));
+        }
+        Ok(r)
+    }
+
+    /// The same write with no credential at all, or with `bearer`, whatever
+    /// this client holds.
+    pub async fn post_as(&self, path: &str, bearer: Option<&str>) -> Result<Reply, Why> {
+        let api = Api::new(&self.base, bearer.map(str::to_string));
+        api.send(api.http.post(api.url(path))).await
     }
 
     /// A streaming GET (kube `?watch=1`): the first `want` lines, or what

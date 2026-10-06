@@ -41,8 +41,10 @@ drain_on_failing = true     # Failing/Failed in the fleet → drain, then retire
 # admin_token = ""          # for DELETEs when the engine sets management.admin_token
 # tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", sas_hdd = "cool", sata_hdd = "cool" }
 
-[api]
-api_token = ""              # parsed, NOT enforced yet: the API is open (#19)
+[api]                       # who may change drives (#45): every write on :9092
+admin_token = ""            # break-glass bearer for a node with no apiserver; empty = $STORMDRIVE_ADMIN_TOKEN, then admin_token_file
+admin_token_file = ""       # root-only file holding it
+admin_gate = "enforce"      # enforce | audit (let writes through, log what enforce would refuse)
 
 [firmware]
 chunk_kib = 32              # WRITE BUFFER / NVMe download chunk
@@ -51,3 +53,11 @@ max_image_mib = 256         # largest image PUT /api/v1/firmware/images accepts
 [worker]                    # the drive worker (POST /api/v1/worker/jobs)
 max_per_hba = 8             # low-level steps at once behind one HBA
 enroll_per_domain = 1       # enrolls at once per failure domain (shelf, else HBA)
+
+[kubernetes]                # the apiserver (#45): reviews bearers, holds Drive + DriveOperation objects
+api_url = ""                # https://<apiserver>:6443; empty = $STORMDRIVE_KUBE_API, then in-cluster; none = writes need admin_token
+ca_file = ""                # empty = $STORMDRIVE_KUBE_CA, then the service account's ca.crt
+token_file = ""             # stormdrive's own credential (auth-delegator + stormdrive-controller); empty = $STORMDRIVE_KUBE_TOKEN_FILE, then the service account's
+insecure = false            # skip TLS verification (lab only)
+controller = true           # keep Drive objects, run this node's DriveOperations
+interval_secs = 5           # between controller passes

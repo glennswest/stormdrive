@@ -96,6 +96,9 @@ pub fn fs_signature(buf: &[u8]) -> Option<&'static str> {
     if at(0, SLAB_MAGIC) {
         return Some("stormblock slab");
     }
+    if at(0, STORMRAID_MAGIC) {
+        return Some("stormraid member");
+    }
     if at(0, b"LUKS\xba\xbe") {
         return Some("LUKS");
     }
@@ -159,6 +162,13 @@ pub fn holds(path: &str) -> Option<String> {
         None
     }
 }
+
+/// stormraid's superblock (copy A at block 0 of every member; stormraid
+/// `src/format.rs` SB_MAGIC).
+pub const STORMRAID_MAGIC: &[u8; 8] = b"STORMRD1";
+
+/// The sentence for a stormraid member, as `in_use_by` carries it.
+pub const STORMRAID_HOLDER: &str = "stormraid (a RAID set member)";
 
 /// The sentence the API and UI show: whose data is on the drive.
 pub fn describe_slabs(whole_drive: bool, partitions: &[String]) -> Option<String> {
@@ -225,8 +235,12 @@ mod linux {
 
     pub fn probe(path: &str) -> Option<String> {
         let f = File::open(path).ok()?;
-        if is_slab_header(&read(&f, 0, 512)?) {
+        let head = read(&f, 0, 512)?;
+        if is_slab_header(&head) {
             return describe_slabs(true, &[]);
+        }
+        if head.starts_with(STORMRAID_MAGIC) {
+            return Some(STORMRAID_HOLDER.into());
         }
         // The GPT header is at LBA 1; which LBA size depends on the drive.
         for lbs in [512u64, 4096] {

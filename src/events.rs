@@ -23,7 +23,8 @@ pub struct Event {
     pub severity: Severity,
     /// Machine-readable kind: discovered, missing, replaced, forgotten,
     /// location, health, designation, overcommit, fleet, drain, test,
-    /// format, firmware, shelf, hba, stormblock.
+    /// format, firmware, shelf, hba, stormblock, worker, audit (#45: who
+    /// made which write, and whether it was allowed), operation.
     pub kind: String,
     pub message: String,
 }

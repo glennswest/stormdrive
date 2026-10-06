@@ -67,6 +67,12 @@ async fn main() -> anyhow::Result<()> {
         config.monitor.max_concurrent,
         std::time::Duration::from_secs(config.monitor.sample_timeout_secs),
     );
+    let kube = stormdrive::kubeapi::KubeApi::from_config(&config.kubernetes)?.map(Arc::new);
+    match &kube {
+        Some(k) => tracing::info!(apiserver = k.base(), "writes are reviewed by the apiserver (storage.storm.io)"),
+        None => tracing::warn!("no apiserver ([kubernetes] api_url): only the admin token may write, and no Drive/DriveOperation objects are kept"),
+    }
+    let gate = stormdrive::kubeauth::Gate::new(&config.api, kube.clone(), data_dir.as_deref());
     let state = Arc::new(AppState {
         config,
         inventory: RwLock::new(inventory),
@@ -83,11 +89,16 @@ async fn main() -> anyhow::Result<()> {
         poller,
         persisted: Default::default(),
         worker: stormdrive::worker::Worker::load(data_dir.as_deref()),
+        gate,
     });
 
     tokio::spawn(stormdrive::monitor::run(state.clone()));
     // Jobs that were in flight when we stopped: watch or interrupt them.
     tokio::spawn(stormdrive::worker::recover(state.clone()));
+    // Drive objects and DriveOperations in the apiserver (#45).
+    if let (Some(k), true) = (&kube, state.config.kubernetes.controller) {
+        tokio::spawn(stormdrive::controller::run(state.clone(), k.clone()));
+    }
 
     let app = stormdrive::api::router(state.clone());
     let listener = tokio::net::TcpListener::bind(&listen).await?;

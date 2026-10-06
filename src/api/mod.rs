@@ -56,6 +56,8 @@ pub struct AppState {
     pub persisted: tokio::sync::Mutex<Option<u64>>,
     /// The drive worker's jobs and lanes (#5).
     pub worker: crate::worker::Worker,
+    /// Who may write (#45): bearer reviews, the admin token, audit.
+    pub gate: crate::kubeauth::Gate,
 }
 
 impl AppState {
@@ -209,10 +211,90 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/summary", get(summary))
         // Kubernetes-shaped resources, served by this daemon (stormblock#80).
         .merge(kube::router())
+        .layer(axum::middleware::from_fn_with_state(state.clone(), gate_writes))
         .layer(axum::extract::DefaultBodyLimit::max(
             state.config.firmware.max_image_mib as usize * 1024 * 1024 + 4096,
         ))
         .with_state(state)
+}
+
+/// Every write passes the gate (#45, `kubeauth`): a storage-admin bearer or
+/// the node's admin token. The requester rides into the handler as an
+/// extension (a worker job keeps it for the re-check). A worker job that is
+/// only a dry run is a read and stays open.
+async fn gate_writes(
+    State(s): State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use crate::kubeauth::{audit_line, classify, Decision};
+    let method = req.method().as_str().to_string();
+    let path = req.uri().path().to_string();
+    let Some(access) = classify(&method, &path) else {
+        return next.run(req).await;
+    };
+    let mut req = req;
+    if method == "POST" && path.trim_end_matches('/') == "/api/v1/worker/jobs" {
+        let (parts, body) = req.into_parts();
+        let bytes = match axum::body::to_bytes(body, 4 << 20).await {
+            Ok(b) => b,
+            Err(e) => return ApiError::bad_request(format!("body: {e}")).into_response(),
+        };
+        let dry = serde_json::from_slice::<serde_json::Value>(&bytes).ok().is_some_and(|v| v["dry_run"] == json!(true) || v["dryRun"] == json!(true));
+        req = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+        if dry {
+            return next.run(req).await;
+        }
+    }
+    let bearer = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
+        .map(str::to_string);
+    let decision = s.gate.check(bearer.as_deref(), &access).await;
+    let (requester, verdict, reason) = match decision {
+        Decision::Allowed(r) => (r, "allowed", String::new()),
+        Decision::AuditOnly(r, why) => (r, "allowed-audit-only", why),
+        Decision::Refused(code, who, why) => {
+            audit(&s, &audit_line(&method, &path, &access, &who, "refused", &why, Some(code)), &access).await;
+            let status = StatusCode::from_u16(code).unwrap_or(StatusCode::UNAUTHORIZED);
+            let code = match code {
+                403 => "forbidden",
+                503 => "unavailable",
+                _ => "unauthorized",
+            };
+            return ApiError { status, code, message: why }.into_response();
+        }
+    };
+    let who = requester.who.clone();
+    req.extensions_mut().insert(requester);
+    let resp = next.run(req).await;
+    audit(&s, &audit_line(&method, &path, &access, &who, verdict, &reason, Some(resp.status().as_u16())), &access).await;
+    resp
+}
+
+/// One audit record: log + audit.log + the event ring (kind `audit`; a
+/// drive operation or a refusal is a warning).
+async fn audit(s: &AppState, line: &serde_json::Value, access: &crate::kubeauth::Access) {
+    s.gate.audit(line);
+    let decision = line["decision"].as_str().unwrap_or("");
+    let drive = match &access.name {
+        Some(n) if access.resource == "drives" => s.inventory.read().await.resolve(n).map(|d| d.id),
+        _ => None,
+    };
+    let sev = if decision == "refused" || access.destructive() { Severity::Warning } else { Severity::Info };
+    let msg = format!(
+        "{} {} {} by {}: {}{} ({})",
+        line["method"].as_str().unwrap_or(""),
+        line["path"].as_str().unwrap_or(""),
+        format_args!("[{} {}]", access.verb, access.resource),
+        line["who"].as_str().unwrap_or("?"),
+        decision,
+        line["reason"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" — {r}")).unwrap_or_default(),
+        line["status"].as_u64().map(|c| c.to_string()).unwrap_or_default(),
+    );
+    s.events.write().await.push(drive, sev, "audit", msg);
 }
 
 #[derive(Deserialize, Default)]
@@ -299,6 +381,7 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "status": "ok",
         "version": crate::VERSION,
         "node": s.node_name,
+        "writes": s.gate.describe(),
     }))
 }
 
@@ -338,6 +421,7 @@ async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
             v["firmware_run"] = serde_json::to_value(&*run).unwrap_or_default();
         }
         v["needs_reformat"] = json!(d.needs_reformat());
+        v["owner"] = json!(d.owner());
         v["prep"] = prep_of(&s, d);
         drives.push(v);
     }
@@ -353,6 +437,7 @@ async fn get_drive(
         .resolve(&id)
         .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
     let mut v = serde_json::to_value(d).map_err(|e| ApiError::internal(e.to_string()))?;
+    v["owner"] = json!(d.owner());
     v["prep"] = prep_of(&s, d);
     Ok(Json(v))
 }
@@ -368,10 +453,11 @@ pub(crate) fn prep_of(s: &AppState, d: &crate::drive::Drive) -> serde_json::Valu
 
 async fn create_job(
     State(s): State<Arc<AppState>>,
+    who: Option<axum::Extension<crate::kubeauth::Requester>>,
     Json(req): Json<crate::worker::Request>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let dry = req.dry_run;
-    match crate::worker::submit(&s, req).await {
+    match crate::worker::submit(&s, req, who.map(|w| w.0)).await {
         Ok(v) => Ok(Json(v)),
         Err(e) if e.starts_with("nothing to run") => Err(ApiError::conflict(e)),
         Err(e) if e.contains("not found") => Err(ApiError::not_found(e)),
@@ -391,8 +477,12 @@ async fn cancel_job(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> R
     crate::worker::cancel(&s, &id).await.map(Json).map_err(ApiError::not_found)
 }
 
-async fn resume_job(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::worker::resume(&s, &id).await.map(Json).map_err(|e| {
+async fn resume_job(
+    State(s): State<Arc<AppState>>,
+    who: Option<axum::Extension<crate::kubeauth::Requester>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::worker::resume(&s, &id, who.map(|w| w.0)).await.map(Json).map_err(|e| {
         if e.contains("not found") {
             ApiError::not_found(e)
         } else {

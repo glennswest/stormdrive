@@ -35,7 +35,7 @@ async fn start() -> Daemon {
     let cfg = dir.join("stormdrive.toml");
     std::fs::write(
         &cfg,
-        "[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n",
+        "[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nadmin_token = \"harness-admin\"\n",
     )
     .unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_stormdrive"))
@@ -62,7 +62,9 @@ fn env(d: &Daemon, suite: &str, secs: u64) -> Env {
         run_id: format!("harness-{suite}"),
         timeout: Duration::from_secs(secs),
         results: d.dir.join("results"),
-        token: None,
+        // The node-local admin token (#45): the suites' writes get past the
+        // gate, and writes-need-storage-admin checks the gate itself.
+        token: Some("harness-admin".into()),
         wave_max: None,
     }
 }

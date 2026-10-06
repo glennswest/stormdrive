@@ -591,6 +591,34 @@ impl Drive {
         !USABLE_BLOCK_SIZES.contains(&self.block_size) || !self.usable
     }
 
+    /// A plain out-of-fleet SATA SSD at `/dev/<name>`, for tests.
+    #[cfg(test)]
+    pub fn test_fixture(name: &str) -> Drive {
+        let mut d = tests::base_drive();
+        d.id = DriveId::derive(None, "M", name);
+        d.path = format!("/dev/{name}");
+        d.name = name.into();
+        d.paths = vec![d.path.clone()];
+        d.serial = name.into();
+        d
+    }
+
+    /// Whose the drive is (#45): `stormblock` (in the fleet, or a slab on
+    /// it), `stormraid` (a RAID set member's superblock), else `free`. An
+    /// owned drive refuses destroying operations until its owner lets go
+    /// (leave the fleet; delete the RaidSet) and the operation names it in
+    /// `destroy`.
+    pub fn owner(&self) -> &'static str {
+        if self.membership == Membership::Fleet {
+            return "stormblock";
+        }
+        match self.in_use_by.as_deref() {
+            Some(w) if w.starts_with("stormraid") => "stormraid",
+            Some(_) => "stormblock",
+            None => "free",
+        }
+    }
+
     /// Does a reset of this drive interrupt live data — a fleet drive, or
     /// one stormblock serves from anyway (the system disk)? Such drives
     /// take firmware one at a time.
@@ -679,7 +707,7 @@ mod tests {
         assert!(HealthStatus::Warning > HealthStatus::Good);
     }
 
-    fn base_drive() -> Drive {
+    pub(crate) fn base_drive() -> Drive {
         Drive {
             id: DriveId::derive(None, "M", "S"),
             path: "/dev/sdx".into(),
@@ -713,6 +741,19 @@ mod tests {
             usage: None,
             fleet_partition: None,
         }
+    }
+
+    #[test]
+    fn owner_is_who_holds_the_drive() {
+        let mut d = base_drive();
+        assert_eq!(d.owner(), "free");
+        d.in_use_by = Some(crate::contents::STORMRAID_HOLDER.into());
+        assert_eq!(d.owner(), "stormraid");
+        d.in_use_by = Some("stormblock (a slab on the whole drive)".into());
+        assert_eq!(d.owner(), "stormblock");
+        d.in_use_by = None;
+        d.membership = Membership::Fleet;
+        assert_eq!(d.owner(), "stormblock");
     }
 
     #[test]
