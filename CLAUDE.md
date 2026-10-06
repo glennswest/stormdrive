@@ -437,6 +437,26 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #18: serve /metrics (P1, stormcos#64, 2026-10-06)
+
+`GET /metrics` on :9092, Prometheus text, unauthenticated (a read). Upstream
+`smartctl_exporter` names where they fit, `stormdrive_*` otherwise. Every
+drive series carries `device`, `serial`, `model`, `enclosure`, `bay`.
+stormcos `deploy/test/check-metrics.sh` probes it (200 + one sample).
+- [ ] NVMe log 0x02: also spare threshold, data units read/written, power
+      cycles, unsafe shutdowns, error-log entries (`HealthReport.nvme`)
+- [ ] `metrics.rs` (pure render): `smartctl_device` info, smart_status,
+      temperature, power_on_seconds, percentage_used, available_spare(+
+      threshold), critical_warning, media_errors, num_err_log_entries,
+      power_cycle_count, bytes_read/written, capacity_bytes, block_size;
+      `stormdrive_drive_info`, `_health_status{status}`, `_io_errors_total`
+      (SCSI ioerr_cnt — failed commands, not media errors),
+      `_last_poll_timestamp_seconds`, used/free bytes; enclosure element
+      temperature / status; poller stats; build info
+- [ ] route, tests (render + suites/short `/metrics`), docs, v0.19.0, golden
+- HDD reallocated/pending sectors need SCSI log sense / ATA SMART (#22):
+  emitted when #22 collects them, not before
+
 ### #39: a restart leaves drives stuck formatting/testing/updating_firmware (P1, 2026-10-06) — DONE (v0.18.1)
 
 `activity` is persisted; only worker jobs recovered (`worker::recover`). A
