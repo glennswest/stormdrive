@@ -437,7 +437,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #43: drain docs vs the engine; drains that never get tracked (2026-10-06)
+### #43: drain docs vs the engine; drains that never get tracked (2026-10-06) — DONE (v0.19.1)
 
 stormcos#65 consistency pass: docs say `push_health` sends `drain:false` so
 "the engine never decides" and `drain_on_failing=false` stops the drain.
@@ -451,14 +451,19 @@ automatic`, default on); with a rebuild running the drain waits for it and
 - `poll_drains` "resumed" after the engine forgot a drain calls
   `start_drain`, which returns early on the `running` record → never resumed
 Plan:
-- [ ] drain state `pending` (wanted, not started): set when a start fails;
+- [x] drain state `pending` (wanted, not started): set when a start fails;
       every fleet tick retries pending drains (`start_drain` adopts an
       engine drain already running); health back to healthy clears it
-- [ ] "resumed" marks the record pending instead
-- [ ] docs: architecture (health push, drain, migration flow), README
+- [x] "resumed" marks the record pending instead
+- [x] docs: architecture (health push, drain, migration flow), README
       `drain_on_failing`/`push_health`, example toml, config comment,
       fleet.rs comment; presentation (placement consumer, status slide)
-- [ ] tests (pure `drain_due`), sc-build, v0.19.1, golden
+- [x] tests (pure `drain_due`), sc-build, v0.19.1, golden
+- [x] sc-build on 17cd78e (v0.19.1): 176 unit (fleet `a_refused_drain_stays_wanted`)
+      + harness + kube + restart + 9, clippy clean, web dist identical;
+      golden `golden-stormdrive-12ef14fdf9d0`, stormcos#313. The retry
+      loop against a live engine (409 during a rebuild, then adopt) is not
+      exercised: the harness has no fleet drives (#30)
 
 ### #18: serve /metrics (P1, stormcos#64, 2026-10-06) — DONE (v0.19.0)
 
