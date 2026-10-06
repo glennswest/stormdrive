@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::api::AppState;
-use crate::drive::{Activity, Designation, DrainRecord, DriveId, HealthStatus, Membership};
+use crate::drive::{Activity, Designation, DrainRecord, Drive, DriveId, HealthStatus, Membership};
 use crate::events::Severity;
 use crate::stormblock::DrainStatus;
 
@@ -62,6 +62,7 @@ pub async fn tick(state: &Arc<AppState>, fs: &mut FleetState) {
         push_health(state).await;
     }
     poll_drains(state).await;
+    retry_pending_drains(state).await;
     if state.config.stormblock.auto_add {
         auto_add(state, fs).await;
     }
@@ -150,8 +151,11 @@ async fn push_health(state: &Arc<AppState>) {
             .collect()
     };
     for (id, name, path, word, why) in due {
-        // A drain is our decision (below), not the engine's: never let a
-        // `failed` report start one behind our back.
+        // We never ask for a drain in the report (`drain: false`), but the
+        // engine drains a `failed` drive whatever we say, and rebuilds a
+        // `failing`/`failed` one's redundant volumes when its `[rebuild]
+        // automatic` is on (the default). Our drain below adopts the
+        // engine's, or waits as `pending` while a rebuild runs (#43).
         let reason = if why.is_empty() { None } else { Some(why.as_str()) };
         match state.stormblock.report_health(&path, word, reason, false).await {
             Ok(_) => {
@@ -172,13 +176,18 @@ async fn push_health(state: &Arc<AppState>) {
                     format!("{name}: reported {word} to stormblock{}", if word == "healthy" { " — quarantine lifted" } else { " — slabs quarantined, legs distrusted" }),
                 );
             }
-            Err(e) => tracing::debug!(drive = %name, "health not reported: {e:#}"),
+            Err(e) => {
+                tracing::debug!(drive = %name, "health not reported: {e:#}");
+                continue;
+            }
         }
         // A fleet drive that is failing gets drained without anyone asking.
         if matches!(word, "failed" | "failing") && state.config.stormblock.drain_on_failing {
-            if let Err(e) = start_drain(state, id, "health", true).await {
-                tracing::warn!(drive = %name, "drain not started: {e:#}");
+            if let Err(e) = request_drain(state, id, "health", true).await {
+                tracing::info!(drive = %name, "drain pending: {e:#}");
             }
+        } else if word == "healthy" {
+            drop_pending_drain(state, id, &name).await;
         }
     }
 }
@@ -235,6 +244,103 @@ pub async fn start_drain(
     Ok(rec)
 }
 
+/// A drain we want and the engine has not started yet: its `POST …/drain`
+/// was refused (409 while a rebuild of the drive's volumes runs — the
+/// engine drains after it) or did not answer, or the engine forgot a drain
+/// across its restart. Retried every fleet tick (#43).
+pub const PENDING: &str = "pending";
+
+/// Whether this tick should try the drive's drain again.
+pub fn drain_due(d: &Drive) -> bool {
+    d.membership == Membership::Fleet && d.activity != Activity::Missing && d.drain.as_ref().is_some_and(|r| r.state == PENDING)
+}
+
+/// Mark a drive's drain as wanted-but-not-started, keeping why and whether
+/// it retires. Returns whether it was not pending before.
+fn mark_pending(d: &mut Drive, reason: &str, then_leave: bool, error: String) -> bool {
+    let was = d.drain.as_ref().is_some_and(|r| r.state == PENDING);
+    let rec = d.drain.get_or_insert_with(DrainRecord::default);
+    if !was {
+        rec.reason = reason.to_string();
+        rec.then_leave = then_leave;
+    }
+    rec.state = PENDING.into();
+    rec.errors = vec![error];
+    if d.activity == Activity::Draining {
+        d.activity = Activity::Idle;
+    }
+    !was
+}
+
+/// `start_drain`, and when the engine will not start it now, keep it
+/// `pending` so the fleet tick tries again — the automatic drains (health,
+/// a Failed designation) have no operator to retry them.
+pub async fn request_drain(state: &Arc<AppState>, id: DriveId, reason: &str, then_leave: bool) -> anyhow::Result<DrainRecord> {
+    match start_drain(state, id, reason, then_leave).await {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            let first = {
+                let mut inv = state.inventory.write().await;
+                match inv.drives.get_mut(&id) {
+                    Some(d) if d.membership == Membership::Fleet => mark_pending(d, reason, then_leave, format!("{e:#}")),
+                    _ => return Err(e),
+                }
+            };
+            if first {
+                let name = state.inventory.read().await.drives.get(&id).map(|d| d.name.clone()).unwrap_or_default();
+                state.events.write().await.push(
+                    Some(id),
+                    Severity::Warning,
+                    "drain",
+                    format!("{name}: drain ({reason}) pending — the engine did not start it: {e:#}; trying again each tick"),
+                );
+            }
+            state.persist().await;
+            Err(e)
+        }
+    }
+}
+
+/// Try every pending drain again. `start_drain` adopts a drain the engine
+/// started by itself (after a rebuild), so the drive still retires.
+async fn retry_pending_drains(state: &Arc<AppState>) {
+    let due: Vec<(DriveId, String, String, bool)> = {
+        let inv = state.inventory.read().await;
+        inv.drives
+            .values()
+            .filter(|d| drain_due(d))
+            .map(|d| {
+                let r = d.drain.as_ref().unwrap();
+                (d.id, d.name.clone(), r.reason.clone(), r.then_leave)
+            })
+            .collect()
+    };
+    for (id, name, reason, then_leave) in due {
+        if let Err(e) = request_drain(state, id, &reason, then_leave).await {
+            tracing::debug!(drive = %name, "drain still pending: {e:#}");
+        }
+    }
+}
+
+/// The drive is healthy again: a drain health asked for and the engine
+/// never started is no longer wanted.
+async fn drop_pending_drain(state: &Arc<AppState>, id: DriveId, name: &str) {
+    let dropped = {
+        let mut inv = state.inventory.write().await;
+        match inv.drives.get_mut(&id) {
+            Some(d) if d.drain.as_ref().is_some_and(|r| r.state == PENDING && r.reason == "health") => {
+                d.drain = None;
+                true
+            }
+            _ => false,
+        }
+    };
+    if dropped {
+        state.events.write().await.push(Some(id), Severity::Info, "drain", format!("{name}: healthy again; the pending drain is dropped"));
+        state.persist().await;
+    }
+}
+
 /// Stop a drain. What moved stays moved; the drive takes allocations again.
 pub async fn cancel_drain(state: &Arc<AppState>, id: DriveId) -> anyhow::Result<()> {
     let (name, path) = {
@@ -277,8 +383,14 @@ async fn poll_drains(state: &Arc<AppState>) {
             }
         };
         let Some(status) = status else {
-            // stormblock forgot it (a restart): start again.
-            let _ = start_drain(state, id, "resumed", then_leave).await;
+            // stormblock forgot it (a restart): pending, so this tick's
+            // retry starts it again (start_drain adopts only a running
+            // record, so calling it here would do nothing).
+            let mut inv = state.inventory.write().await;
+            if let Some(d) = inv.drives.get_mut(&id) {
+                let reason = d.drain.as_ref().map(|r| r.reason.clone()).unwrap_or_else(|| "resumed".into());
+                mark_pending(d, &reason, then_leave, "the engine has no record of this drain (restarted?)".into());
+            }
             continue;
         };
         {
@@ -465,4 +577,64 @@ pub async fn join(
     }
     let _ = name;
     Ok(slab_tier)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn drive(over: impl FnOnce(&mut Drive)) -> Drive {
+        let mut d: Drive = serde_json::from_value(serde_json::json!({
+            "id": DriveId::derive(Some("naa.5000c500aaaa0001"), "M", "S1"), "path": "/dev/sdb", "name": "sdb", "paths": ["/dev/sdb"],
+            "kind": "sas_hdd", "model": "M", "serial": "S1", "firmware": "N003", "wwid": "naa.5000c500aaaa0001",
+            "capacity_bytes": 1_000_000_000u64, "block_size": 512, "membership": "fleet",
+            "first_seen": {"secs_since_epoch": 0, "nanos_since_epoch": 0}, "last_seen": {"secs_since_epoch": 0, "nanos_since_epoch": 0},
+        }))
+        .unwrap();
+        over(&mut d);
+        d
+    }
+
+    /// A refused start (409: the engine is rebuilding the drive's volumes
+    /// first) leaves a pending drain the tick tries again; nothing else does.
+    #[test]
+    fn a_refused_drain_stays_wanted() {
+        let mut d = drive(|_| {});
+        assert!(!drain_due(&d), "no drain asked for");
+        assert!(mark_pending(&mut d, "health", true, "409 rebuild running".into()), "first time: an event");
+        assert!(drain_due(&d));
+        let r = d.drain.clone().unwrap();
+        assert_eq!((r.state.as_str(), r.reason.as_str(), r.then_leave), ("pending", "health", true));
+
+        // Again: still pending, reason and retire kept, error refreshed.
+        assert!(!mark_pending(&mut d, "resumed", false, "502".into()), "no second event");
+        let r = d.drain.clone().unwrap();
+        assert_eq!((r.reason.as_str(), r.then_leave, r.errors.as_slice()), ("health", true, &["502".to_string()][..]));
+
+        // The engine forgot a running drain: pending, activity back to idle,
+        // the original reason kept.
+        let mut forgot = drive(|d| {
+            d.activity = Activity::Draining;
+            d.drain = Some(DrainRecord { state: "running".into(), reason: "operator".into(), then_leave: true, ..Default::default() });
+        });
+        mark_pending(&mut forgot, "operator", true, "gone".into());
+        assert!(drain_due(&forgot));
+        assert_eq!(forgot.activity, Activity::Idle);
+
+        for (state, due) in [("running", false), ("empty", false), ("stuck", false), ("cancelled", false), ("pending", true)] {
+            let d = drive(|d| d.drain = Some(DrainRecord { state: state.into(), ..Default::default() }));
+            assert_eq!(drain_due(&d), due, "{state}");
+        }
+        // Out of the fleet or out of sight: nothing to drain from here.
+        let out = drive(|d| {
+            d.membership = Membership::Out;
+            d.drain = Some(DrainRecord { state: PENDING.into(), ..Default::default() });
+        });
+        assert!(!drain_due(&out));
+        let gone = drive(|d| {
+            d.activity = Activity::Missing;
+            d.drain = Some(DrainRecord { state: PENDING.into(), ..Default::default() });
+        });
+        assert!(!drain_due(&gone));
+    }
 }

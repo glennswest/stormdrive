@@ -335,8 +335,8 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `stormblock.url` | `http://127.0.0.1:9090` | the engine's management API |
 | `stormblock.auto_add` | `false` | register qualified drives on its own |
 | `stormblock.auto_format_slab` | `true` | …and format a slab on them |
-| `stormblock.push_health` | `true` | report Failing/Failed (and recovery) to the engine |
-| `stormblock.drain_on_failing` | `true` | drain + retire a Failing/Failed fleet drive |
+| `stormblock.push_health` | `true` | report Failing/Failed (and recovery) to the engine; the engine drains a drive reported `failed` on its own, and rebuilds its volumes when its `[rebuild] automatic` is on |
+| `stormblock.drain_on_failing` | `true` | drain + retire a Failing/Failed fleet drive (a refused start stays `pending` and is retried each tick). `false` stops stormdrive's drain and retire, **not** the engine's drain of a `failed` drive |
 | `stormblock.tier_map` | `{}` | kind → slab tier, e.g. `{ sas_hdd = "cold" }` |
 | `stormblock.api_token` | `""` | engine bearer token; see below |
 | `stormblock.token_file` | `""` | file holding it; see below |

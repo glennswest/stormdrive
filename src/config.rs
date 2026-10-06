@@ -155,7 +155,8 @@ pub struct StormBlockConfig {
     pub push_health: bool,
     /// Start a stormblock drain on our own when a fleet drive goes
     /// Failing/Failed, and retire it (leave the fleet, locate LED on) when
-    /// the drain reports empty.
+    /// the drain reports empty. Off does not stop the engine draining a
+    /// drive reported `failed` (#43).
     #[serde(default = "yes")]
     pub drain_on_failing: bool,
     /// kind → slab tier overrides; DriveKind::default_tier() otherwise.

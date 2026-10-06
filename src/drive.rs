@@ -506,7 +506,8 @@ pub struct FirmwareRecord {
 /// What we know about a drain of this drive.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DrainRecord {
-    /// `running`, `empty`, `stuck`, `cancelled`.
+    /// `running`, `empty`, `stuck`, `cancelled`, or `pending`: wanted, and
+    /// the engine has not started it yet (retried each fleet tick, #43).
     pub state: String,
     pub moved: u64,
     pub failed: u64,

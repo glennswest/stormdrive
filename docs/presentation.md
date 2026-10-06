@@ -67,7 +67,8 @@ Group **storage** (stormcentral's relationships graph).
 | used by | **stormstorage** | fleet policy; names drives by the identity stormdrive uses (via stormblock's `DriveRef`), and stormdrive's labels reach it through stormblock |
 
 Also read by **stormconsole**'s drive plugin (every node's `:9092`) and
-by rustkube-node's PV placement mirror (`/api/v1/placement`, rustkube-node#60).
+by rustkube-node's planned PV placement mirror (`/api/v1/placement`,
+rustkube-node#60 — not in rustkube-node yet).
 
 ---
 
@@ -253,9 +254,10 @@ No TLS yet (#19).
 
 ## Status
 
-- **v0.16.0**, golden `golden-stormdrive-452835d3e854` (release request
-  stormcos#131).
-- **Tested:** 133 unit tests and model/page tests (212 drives) on dev.
+- **v0.19.1** (October 2026). Each release's golden and release request
+  are recorded in CLAUDE.md's work plan and in CHANGELOG.md.
+- **Tested:** 176 unit tests, model/page tests (212 drives), and the
+  daemon run against a stand-in apiserver and a seeded restart, on dev.
   The test containers (short, medium, long) run against the real daemon
   on every build (#11).
 - **Not yet run on a test machine:** C2NR0Q2's apiserver doesn't come up

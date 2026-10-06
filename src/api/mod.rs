@@ -776,14 +776,14 @@ async fn set_designation(
             d.pushed_health = Some("failed".into());
         }
         if s.config.stormblock.drain_on_failing {
-            match crate::fleet::start_drain(&s, did, "operator", true).await {
+            match crate::fleet::request_drain(&s, did, "operator", true).await {
                 Ok(rec) => drain = Some(rec),
                 Err(e) => {
                     s.events.write().await.push(
                         Some(did),
                         Severity::Error,
                         "drain",
-                        format!("{name}: marked failed but the drain did not start: {e:#}"),
+                        format!("{name}: marked failed; the drain has not started yet (pending, retried each tick): {e:#}"),
                     );
                 }
             }

@@ -4,6 +4,12 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-06
+- **fix:** an automatic drain the engine refuses (409 while it rebuilds the drive's volumes) or does not answer stays `pending` and is retried every fleet tick, adopting the drain the engine starts after its rebuild — the drive now still retires (#43)
+- **fix:** a drain the engine forgot across its restart is started again (it was skipped: the record still read `running`) (#43)
+- **docs:** the engine drains a drive reported `failed` whatever `drain` says, and auto-rebuilds failing/failed drives; `drain_on_failing = false` stops only stormdrive's drain and retire (#43, stormcos#65); rustkube-node's placement mirror is planned, not built; presentation status
+- **docs:** work plan — #43
+
+### 2026-10-06
 - **docs:** work plan — #18 done: v0.19.0 verified on 51efbe8, golden a59663904c60; #49 filed (NVMe-oF namespaces discovered as drives)
 
 ## [v0.19.0] — 2026-10-06

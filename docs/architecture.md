@@ -154,9 +154,10 @@ can be formatted on it with a tier. Independently of membership:
 - A drive can be designated **spare**: standing by, and still joinable.
 - A drive can be designated **failed**. This is the operator's verdict; health
   can reach the same conclusion on its own, and the two are kept separate.
-  Designating a fleet drive `failed` reports it failed to stormblock and,
-  with `drain_on_failing`, starts a drain that retires the drive when it is
-  empty.
+  Designating a fleet drive `failed` reports it failed to stormblock, and
+  the engine drains it on that report alone (see "Health push" below).
+  With `drain_on_failing`, stormdrive also starts (or adopts) the drain and
+  retires the drive when it is empty.
 
 `missing` means the inventory remembers a drive the node can't see.
 
@@ -708,7 +709,8 @@ rustkube-node publishes the resulting headroom to the scheduler
   the designation and a committed/headroom line in the size column.
 
 ### The placement view (`/api/v1/placement`, #10)
-What rustkube-node attaches to each PV (rustkube-node#60) next to
+What rustkube-node is to attach to each PV (rustkube-node#60, open — not
+in rustkube-node yet) next to
 stormblock's per-volume placement (stormblock#136, v17.1). stormblock names
 a volume's drives by `wwn` (the raw sysfs `wwid`, `naa.…`/`eui.…`/`uuid.…`)
 and `serial`; every record here carries both, so the join needs no device
@@ -796,18 +798,36 @@ monitor tick runs after every discovery/health round:
   path-matching guess: a drive with an occupied slab cannot `leave` without
   a drain or `force`.
 - **Health push.** On a change of our conclusion for a fleet drive,
-  `POST …/health {state}`: Failing/Failed → stormblock quarantines the
-  drive's slabs and every redundant volume stops reading that leg *before*
-  an I/O fails; Good/Warning → `healthy`, which lifts the quarantine
-  (`Drive.pushed_health`; `stormblock.push_health`).
+  `POST …/health {state, drain: false}`: Failing/Failed → stormblock
+  quarantines the drive's slabs and every redundant volume stops reading
+  that leg *before* an I/O fails; Good/Warning → `healthy`, which lifts the
+  quarantine (`Drive.pushed_health`; `stormblock.push_health`). What the
+  engine does on its own with the report (stormblock `mgmt/api/drives.rs`,
+  checked 2026-10-06, #43):
+  - `failed` (and `missing`) **drains the drive whatever `drain` says** —
+    `drain` only adds a drain to `failing`/`degraded`. A drive whose slab
+    holds the volume metadata is not drained.
+  - `failing`/`failed` (and `degraded`) **rebuild** the drive's redundant
+    volumes from their surviving members when the engine's `[rebuild]
+    automatic` is on (its default). While that rebuild runs, the engine
+    holds the drain until it finishes, and a `POST …/drain` answers 409.
 - **Drain → retire.** A fleet drive that goes Failing/Failed, or is
   designated Failed by an operator, or is asked to `leave` with `"drain":
   true`, gets `POST …/drain`; the tick polls `GET …/drain` and records it on
   the drive (`Drive.drain`, activity `Draining`). When stormblock says
   `empty`, the drive `DELETE`s out of the fleet, the locate LED comes on and
   an event says *safe to pull*. `stuck` is an error event and the drive
-  stays quarantined. `stormblock.drain_on_failing` turns the automatic
-  half off; `POST /api/v1/drives/{id}/drain[?leave=true]` is the manual one.
+  stays quarantined. A start the engine refuses (409 during a rebuild, or
+  no answer) leaves the drain `pending`: every fleet tick tries again, and
+  the first try after the rebuild adopts the drain the engine started by
+  itself, so the drive still retires. A drain the engine forgot (its
+  restart) goes back to `pending` the same way. A pending health drain is
+  dropped if the drive reads healthy again.
+  `stormblock.drain_on_failing = false` stops stormdrive starting, tracking
+  and retiring automatic drains — it does **not** stop the engine draining
+  a drive reported `failed` (or rebuilding it); that drive is drained but
+  stays in the fleet with its LED off until an operator acts.
+  `POST /api/v1/drives/{id}/drain[?leave=true]` is the manual drain.
 - **Auto-add** (`stormblock.auto_add`, off by default): a qualified
   out-of-fleet drive with no designation and a known health is registered
   with its labels and given a slab (`auto_format_slab`, tier from
@@ -823,10 +843,13 @@ Failing detected ──▶ POST health {failing} ──▶ POST drain ──▶ 
  tech swaps drive ──▶ hotplug add ──▶ qualify ──▶ auto-add (labels, uuid, slab)
 ```
 
-The engine never decides any of this; it only executes what this daemon
-tells it. `push_health` reports with `drain: false` on purpose — the drain
-is our decision, taken by `drain_on_failing`, not something a health report
-starts behind our back.
+What the engine decides on its own is the health report's consequence: it
+drains a `failed` drive and rebuilds a failing one's volumes (above).
+stormdrive decides when to report, whether to drain a `failing` drive
+(`drain_on_failing`), and when a drive leaves the fleet. `push_health`
+sends `drain: false`; to keep a failed drive from being drained, don't let
+it be reported `failed` (`push_health = false`, which also gives up the
+quarantine).
 
 ## Config (`/etc/stormdrive/stormdrive.toml`)
 

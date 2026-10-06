@@ -221,8 +221,8 @@ async fn patch_drive(
                 d.pushed_health = Some("failed".into());
             }
             if s.config.stormblock.drain_on_failing {
-                if let Err(e) = crate::fleet::start_drain(&s, did, "operator", true).await {
-                    return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("drain: {e:#}"));
+                if let Err(e) = crate::fleet::request_drain(&s, did, "operator", true).await {
+                    return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("drain pending (retried each tick): {e:#}"));
                 }
             }
         }
