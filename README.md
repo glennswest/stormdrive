@@ -212,13 +212,14 @@ are listed under [Not yet](#not-yet).
     state, step, progress and error, with Cancel (what has not started)
     and Resume (what a restart interrupted). The state column shows each
     out-of-fleet drive's `prep` phase (unusable / ready).
-  - **Sign in** (#47): every write needs a storage-admin since 0.18.0.
-    Paste a bearer (`oc whoami -t`); it is kept in this tab's
-    `sessionStorage` and sent as `Authorization: Bearer` on writes. While
-    the node enforces (`writes.gate` in `/api/v1/health`) and no bearer is
-    set, the page is read only: write controls are disabled, and a 401/403
-    reads "needs storage-admin". A worker dry run is a read and works
-    signed out.
+  - **Sign in** (#47, #19): every write needs a storage-admin since
+    0.18.0, and every read a credential since 0.21.0. Paste a bearer (`oc
+    whoami -t`); it is kept in this tab's `sessionStorage` and sent as
+    `Authorization: Bearer` on every request. Asked with no credential,
+    the node answers the page itself with a 401, and a read refused 401
+    opens the sign-in box. While the node enforces (`writes.gate` in
+    `/api/v1/health`) and no bearer is set, write controls are disabled,
+    and a 403 reads "needs storage-admin".
   - It polls every 4 s, and rows are keyed, so a refresh updates cells
     instead of rebuilding the table.
 - **Events** (`src/events.rs`). An in-memory ring of the last 4096 events,
@@ -262,8 +263,15 @@ stormdrive's suites follow stormcentral's
   musl binary on the build box.
 - **Output:** JSON lines on stdout, then a summary. Exit 0 means passed, 1 a
   test failed, 2 could not run.
-- **Target:** the suites drive the node's stormdrive at `STORM_NODE:9092`
-  through its API. Checks of features newer than the node's release are
+- **Target:** the suites drive the node's stormdrive at
+  `https://STORM_NODE:9092` through its API (plain `http://` is tried when
+  the node does not speak TLS yet). The node's certificate is checked
+  against `STORM_STORMDRIVE_CA`, else the pod's service-account `ca.crt`,
+  else `/data/stormcert/ca.crt`. Who the run is: `STORM_STORMDRIVE_TOKEN`
+  (a storage-admin bearer: writes run), a client pair
+  `STORM_STORMDRIVE_CERT`/`_KEY`, else the pod's service-account token for
+  reads (it needs `storage-viewer`). Without a storage-admin, writes are
+  skipped. Checks of features newer than the node's release are
   skipped, not failed.
 
 | Suite | Budget | What it proves |
@@ -361,6 +369,10 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `api.admin_token` | `""` | node-local break-glass bearer for writes; empty = `$STORMDRIVE_ADMIN_TOKEN`, then `admin_token_file` (`api_token` is read as this) |
 | `api.admin_token_file` | `""` | root-only file holding it |
 | `api.admin_gate` | `enforce` | `audit` lets refused writes through and logs them (rollout only) |
+| `api.tls_cert_file` | `/data/stormcert/stormdrive.crt` | the serving certificate (PEM, chain first), re-read when it changes; while it is missing a TLS handshake fails and plain HTTP answers health only |
+| `api.tls_key_file` | `/data/stormcert/stormdrive.key` | its key |
+| `api.client_ca_files` | `["/data/stormcert/ca.crt"]` | client certificates are verified against these (the node CA), read at start; a missing file is skipped |
+| `api.allow_anonymous` | `false` | **transition only:** plain HTTP and reads with no credential are served as before #19; a credential that is sent is still checked, and writes keep the gate |
 | `kubernetes.api_url` | `""` | the apiserver; empty = `$STORMDRIVE_KUBE_API`, then in-cluster. None = only the admin token writes, no CRD objects |
 | `kubernetes.ca_file` | `""` | its CA; empty = `$STORMDRIVE_KUBE_CA`, then the service account's |
 | `kubernetes.token_file` | `""` | stormdrive's own credential (re-read every call); empty = `$STORMDRIVE_KUBE_TOKEN_FILE`, then the service account's |
@@ -388,10 +400,33 @@ usable. A failed attempt is retried after 10 minutes.
 While no token is found, it looks again on every call. On a 401 it re-reads
 the token and retries once if it changed.
 
-## Who may change a drive (#45)
+## Who may read or change a drive (#19, #45)
 
-Owner: "non admins cant format drives etc." (stormcos#250). **Reads are open;
-every write needs a storage-admin** (`src/kubeauth.rs`):
+**Transport (#19).** The owner's rule (stormcos `docs/SECURITY.md`,
+2026-09-25): every API on a node is TLS with a stormcert certificate, every
+caller authenticates, and nothing answers anonymously but health. :9092 is
+one port for both (`src/tls.rs`):
+
+- a connection that opens with a TLS handshake gets TLS from
+  `api.tls_cert_file`/`tls_key_file` (what `stormcert-agent serving --cn
+  stormdrive` writes). The pair is re-read when it changes, so a renewal or
+  a pair that appears after start needs no restart. Client certificates are
+  requested and verified against `api.client_ca_files` (the node CA), not
+  required; one from another CA fails the handshake;
+- a plain-HTTP connection answers `/api/v1/health` and `/healthz` only
+  (stormd's liveness probe); anything else is 403 `tls_required`.
+
+**Reads** need one of: the admin token; a client certificate from the node
+CA (the node CA vouches, nothing more is asked); or a Kubernetes bearer the
+apiserver allows `get` on `storage.storm.io` (`drives`, `enclosures`,
+`driveoperations` for jobs, `firmwareimages`; the release's `storage-viewer`
+role). No credential, or one nobody knows → 401; a known user without the
+role → 403. Health and the page's code (`/assets/*`) are open; the page's
+shell (`/`, `/ui`), asked with no credential, is answered 401 *with the
+page*, which then signs in.
+
+**Writes.** Owner: "non admins cant format drives etc." (stormcos#250).
+**Every write needs a storage-admin** (`src/kubeauth.rs`):
 
 - a **Kubernetes bearer** (`Authorization: Bearer …`): stormdrive asks the
   apiserver who it is (TokenReview) and whether that user may act
@@ -402,13 +437,23 @@ every write needs a storage-admin** (`src/kubeauth.rs`):
   `update enclosures/<key>`; firmware images are `create`/`delete
   firmwareimages`. The release's `storage-admin` role allows all of it,
   `storage-viewer` none of it. Answers are cached a minute;
+- or a **client certificate** from the node CA: its CN is the user and each
+  O a group, reviewed with the same SubjectAccessReview (a bearer sent with
+  it wins: a service acting for a person forwards the person's bearer);
 - or the node-local **admin token** (`[api] admin_token`), for a node with no
   apiserver.
 
 No credential or an unknown one → 401; a user without the role → 403 with
 the apiserver's reason; the apiserver unreachable → 503. A worker job
-**dry run** is a read and stays open. `GET /api/v1/health` says how writes
-are decided (`writes: {gate, apiserver, admin_token}`).
+**dry run** is gated as a read. `GET /api/v1/health` says how writes are
+decided (`writes: {gate, apiserver, admin_token}`) and whether reads with no
+credential are served (`reads: {anonymous}`).
+
+**The transition.** `api.allow_anonymous = true` serves plain HTTP and
+credential-less reads as before #19, so a release can carry TLS before every
+caller (stormconsole, ironprom's scrape, the stormlb route, rustkube-node's
+placement mirror) presents a credential and before stormcos mints the pair.
+A credential that is sent is still checked; writes keep the gate.
 
 A worker job remembers who asked and **asks the apiserver again before every
 step** on every drive: a role revoked mid-batch stops the rest. An apiserver
@@ -457,17 +502,18 @@ kubectl get driveoperations
 
 ## API
 
-All JSON on :9092. Errors are `{"error": "...", "code": "not_found" |
+All JSON on :9092, over TLS with a credential
+([above](#who-may-read-or-change-a-drive-19-45)). Errors are `{"error": "...", "code": "not_found" |
 "bad_request" | "conflict" | "stormblock" | "internal" | "unauthorized" |
-"forbidden" | "unavailable"}`. Every non-GET needs a storage-admin bearer
-([above](#who-may-change-a-drive-45)). A drive `{id}` is
+"forbidden" | "unavailable" | "tls_required"}`. Every non-GET needs a
+storage-admin. A drive `{id}` is
 its DriveId, WWID (any case), `/dev` path or kernel name, or serial, looked up
 in that order. A shelf `{key}` is its logical id (with or without `0x`, any
 case), serial, shelf id, or an SES device's SCSI id.
 
 | Method and path | What |
 |---|---|
-| `GET /`, `/ui`, `/ui/` | the embedded page; works behind a proxy prefix |
+| `GET /`, `/ui`, `/ui/` | the embedded page; works behind a proxy prefix (401 with the page when no credential) |
 | `GET /assets/app.{js,css}`, `/ui/assets/…` | the page's two assets |
 | `GET /api/v1/health` | `{status, version, node, writes}` — liveness, and how writes are decided |
 | `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
@@ -505,12 +551,10 @@ Body-free forms, for stormview renderers that POST with no body:
 `…/format/{block_size}`, `/shelves/{key}/locate/{on|off}`,
 `/shelves/{key}/format/{block_size}`.
 
-There is no TLS yet (#19).
-
 ### `/metrics` (#18)
 
-Prometheus text on the API port, open like every read, built from cached
-state (a scrape sends nothing to a drive). `smartctl_exporter` names where
+Prometheus text on the API port, a read like any other (a scraper presents
+a node-CA client certificate or a bearer, #19), built from cached state (a scrape sends nothing to a drive). `smartctl_exporter` names where
 one fits. Every drive series carries `device`, `serial`, `model`,
 `enclosure` (shelf key) and `bay`; empty when unknown.
 
@@ -540,13 +584,15 @@ lands.
 
 ```bash
 T="Authorization: Bearer $(oc whoami -t)"     # a storage-admin's bearer
-curl -s http://localhost:9092/api/v1/drives | python3 -m json.tool
-curl -s -H "$T" -X POST http://localhost:9092/api/v1/drives/sdb/locate -d '{"on":true}' -H 'Content-Type: application/json'
-curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:9092/api/v1/placement?since=<generation>"
-curl -s -H "$T" -X POST http://localhost:9092/api/v1/format -H 'Content-Type: application/json' \
+S="https://<node>:9092"; C="--cacert /data/stormcert/ca.crt"   # the node CA
+curl -s $C -H "$T" $S/api/v1/drives | python3 -m json.tool
+curl -s $C --cert client.crt --key client.key $S/metrics      # a node-CA client pair
+curl -s $C -H "$T" -X POST $S/api/v1/drives/sdb/locate -d '{"on":true}' -H 'Content-Type: application/json'
+curl -s $C -H "$T" -o /dev/null -w '%{http_code}\n' "$S/api/v1/placement?since=<generation>"
+curl -s $C -H "$T" -X POST $S/api/v1/format -H 'Content-Type: application/json' \
      -d '{"drives":["sdb","sdc"],"block_size":4096}'
-curl -s -H "$T" -X PUT --data-binary @image.lod http://localhost:9092/api/v1/firmware/images/image.lod
-curl -s -H "$T" -X POST http://localhost:9092/api/v1/firmware -H 'Content-Type: application/json' \
+curl -s $C -H "$T" -X PUT --data-binary @image.lod $S/api/v1/firmware/images/image.lod
+curl -s $C -H "$T" -X POST $S/api/v1/firmware -H 'Content-Type: application/json' \
      -d '{"model":"ST1200MM0098","image":"image.lod"}'
 ```
 
@@ -598,7 +644,6 @@ for installs outside stormcos.
 
 These are documented as design only; the code does not do them:
 
-- TLS and read access on :9092 (#19)
 - `DriveOperation`s run only once the apiserver stamps their requester
   (rustkube#210) and stormcos installs the CRDs and gives stormdrive a
   credential (stormcos#302)

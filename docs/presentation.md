@@ -189,7 +189,8 @@ Lifecycle is three separate fields:
 
 Errors are `{error, code}`, stormblock's shape. `/metrics` serves
 per-drive SMART, temperature, wear and errors in Prometheus text (#18).
-No TLS yet (#19).
+TLS from the node's stormcert pair; nothing answers anonymously but
+health (#19).
 
 ---
 
@@ -242,7 +243,6 @@ No TLS yet (#19).
 
 | Planned | Issue |
 |---|---|
-| TLS and read access on :9092 (writes need storage-admin since 0.18.0, #45) | #19 |
 | Drive worker: ATA security erase · scheduling default · a test step | #36 · decision #37 · #40 |
 | Shelf (IOM) firmware · a vendor firmware image source | #35 · #29 |
 | SAS/SATA health: SCSI log sense, ATA SMART | #22 |
@@ -272,6 +272,6 @@ No TLS yet (#19).
   - a firmware image: #29;
   - a 160-bay chassis: #31;
   - a drain under I/O load: #30.
-- **Issues that matter most:** #19 auth · #5 drive worker ·
+- **Issues that matter most:** #5 drive worker ·
   #30 the shelf live pass · stormcos#166 (read-only `/sys` blocks LEDs and
   rescans in the golden).

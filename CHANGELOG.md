@@ -4,6 +4,13 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-06
+- **BREAKING:** :9092 is TLS from the stormcert pair (`[api] tls_cert_file`/`tls_key_file`, default `/data/stormcert/stormdrive.{crt,key}`, re-read on change), and nothing answers anonymously but health: plain HTTP answers `/api/v1/health` and `/healthz` only (403 `tls_required`), reads need the admin token, a node-CA client certificate (`client_ca_files`) or a bearer allowed `get` on `storage.storm.io` (#19)
+- **feat:** writes also accept a node-CA client certificate, reviewed as its CN/O groups (SubjectAccessReview); audited as `cert:<cn>` (#19)
+- **feat:** `[api] allow_anonymous` — the transition: plain HTTP and credential-less reads served as before, sent credentials still checked; `/api/v1/health` says `reads.anonymous` (#19)
+- **feat(web):** the page sends its bearer on every request; a read refused 401 opens sign-in; the shell answers 401 with the page when no credential is sent (#19)
+- **feat(test):** the test container speaks https (node CA from `STORM_STORMDRIVE_CA` or the pod's service account), presents `STORM_STORMDRIVE_CERT`/`_KEY` or the pod's token for reads, falls back to http for a node without TLS; medium `reads-need-a-credential`; the harness runs over TLS; `tests/tls.rs` (#19)
+- **docs:** README (transport, reads, writes by certificate, config, curl over https), architecture, presentation, example config (#19)
+- **docs:** work plan — #19
 - **docs:** work plan — #38 + #47 done: v0.20.0 verified on 016f478, golden ea34a213c27a
 
 ## [v0.20.0] — 2026-10-06

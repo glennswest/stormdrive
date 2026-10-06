@@ -559,8 +559,19 @@ The route table, request bodies and handle resolution are in the
   SubjectAccessReview against the apiserver (cached a minute). The decision
   rides into the handler as a `Requester`; a worker job keeps it and the
   worker re-checks it (uncached) before each step. Every decision is an
-  audit line (log, `<data_dir>/audit.log`, event ring). Reads stay open; TLS
-  and read access are #19.
+  audit line (log, `<data_dir>/audit.log`, event ring). A client certificate
+  from the node CA is reviewed the same way, as its CN and O groups.
+- **TLS, and nothing anonymous but health (#19, `tls.rs`).** One listener
+  tells a TLS handshake (first byte 0x16) from plain HTTP. TLS serves the
+  stormcert pair (`/data/stormcert/stormdrive.{crt,key}`, re-read when it
+  changes) and verifies optional client certificates against the node CA;
+  the peer (TLS or not, the certificate's CN/O) rides into the guard as
+  `ConnectInfo<Peer>`. Plain HTTP answers health only, so stormd's liveness
+  probe is unchanged. Reads need the admin token, a node-CA certificate, or
+  a bearer allowed `get` on `storage.storm.io` (`storage-viewer`); the
+  page's shell answers 401 with the page so it can sign in, its assets are
+  open. `[api] allow_anonymous` is the rollout: plain HTTP and
+  credential-less reads served, sent credentials still checked.
 - **Drives and operations as Kubernetes objects (#45, `controller.rs`).**
   With an apiserver, a loop (every `kubernetes.interval_secs`) writes one
   `Drive` per inventory drive (merge-patch + `/status`, only when changed or
@@ -571,8 +582,8 @@ The route table, request bodies and handle resolution are in the
   name), status from the job, a Kubernetes Event per transition. Plain
   reqwest (`kubeapi.rs`), no kube-rs. The CRDs and the controller's role are
   `deploy/crds.yaml` and `deploy/rbac.yaml`.
-- **`/metrics`** (#18, `metrics.rs`): Prometheus text, open, from cached
-  state. `smartctl_exporter` names (`smartctl_device_temperature`,
+- **`/metrics`** (#18, `metrics.rs`): Prometheus text, a read like any
+  other (#19), from cached state. `smartctl_exporter` names (`smartctl_device_temperature`,
   `_power_on_seconds`, `_percentage_used`, `_media_errors`, …) where one
   fits, `stormdrive_*` otherwise; every drive series is labelled `device`,
   `serial`, `model`, `enclosure`, `bay`. SAS/SATA `ioerr_cnt` is
@@ -616,7 +627,7 @@ only the eligible drives and says how many it skipped:
 the selection (`{drives}` from the bulk bar or a drive, `{shelf}` or
 `{shelf, unusable}` from the shelf pane) and the steps
 (`web/src/lib/worker.js`, unit-tested). It always previews first: a
-`dry_run` (a read, open without a bearer) returns `runnable` and `refused`
+`dry_run` (gated as a read) returns `runnable` and `refused`
 with reasons. Refusals that say a drive *holds* a slab or a filesystem are
 the ones `destroy` lifts. The pane asks for each such drive's serial, typed
 exactly (a /dev name never counts, as on the server), and sends the
@@ -627,10 +638,10 @@ The page's formats used to call `/api/v1/format`; they go through the
 worker now, so they survive a restart and get the destroy guard.
 `/api/v1/format` stays for API callers.
 
-**Sign in (#47).** `lib/api.js` keeps a storage-admin bearer in
-`sessionStorage` and sends it on every request that is not a GET. Errors
-keep the HTTP status and the envelope's `code`; 401/403 read "needs
-storage-admin". While `/api/v1/health` → `writes.gate` is `enforce` and no
+**Sign in (#47, #19).** `lib/api.js` keeps a bearer in `sessionStorage`
+and sends it on every request (reads need one since #19). Errors keep the
+HTTP status and the envelope's `code`; a read refused 401 opens the sign-in
+box instead of an error banner, and a 403 reads "needs storage-admin". While `/api/v1/health` → `writes.gate` is `enforce` and no
 bearer is set, write controls sit in a `<fieldset disabled>` (the bulk
 bar's actions, the drive and shelf panes, firmware upload) and row actions
 are off. The server decides regardless.
