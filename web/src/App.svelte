@@ -5,15 +5,20 @@
   // row. Rows are keyed by id, so a 4 s refresh updates cells instead of
   // rebuilding the table. Anything richer than a cell lives in the side
   // pane (click a row); anything for many drives lives in the bulk bar
-  // (tick rows — ticking a group means every drive it shows).
+  // (tick rows — ticking a group means every drive it shows). Formats and
+  // the rest of drive preparation go through the drive worker (Prepare
+  // pane, Jobs panel, #38). Writes need a storage-admin bearer (#47).
   import DataGrid from 'stormview/components/DataGrid.svelte'
-  import { get, post, each } from './lib/api.js'
+  import { get, post, each, bearer, setBearer } from './lib/api.js'
   import {
     QUICK, groupDrives, selectedDrives, healthDot, sesDot, human,
-    canFormat, canFirmware, canTest, canLocate, needsAttention,
+    canFirmware, canTest, canLocate, needsAttention,
   } from './lib/model.js'
+  import { prepMetric } from './lib/worker.js'
   import DrivePane from './DrivePane.svelte'
   import GroupPane from './GroupPane.svelte'
+  import Prepare from './Prepare.svelte'
+  import Jobs from './Jobs.svelte'
   import Firmware from './Firmware.svelte'
   import Events from './Events.svelte'
 
@@ -31,6 +36,32 @@
   let pane = $state(null) // {type: 'drive'|'group', id}
   let image = $state('')
   let working = $state(false)
+  let jobs = $state([])
+  let token = $state(bearer())
+  let signingIn = $state(false)
+  let pasted = $state('')
+
+  // The node's gate (`/api/v1/health` → writes.gate): while it enforces and
+  // no bearer is set, write controls are disabled. The server decides
+  // anyway; a 401/403 says "needs storage-admin".
+  const enforcing = $derived(node?.writes?.gate === 'enforce')
+  const writable = $derived(!enforcing || !!token)
+
+  function signIn() {
+    setBearer(pasted)
+    token = bearer()
+    pasted = ''
+    signingIn = false
+  }
+  function signOut() {
+    setBearer('')
+    token = ''
+  }
+
+  /// Open the Prepare pane on a worker selection.
+  function prepare(select, title, preset = {}) {
+    pane = { type: 'prepare', select, title, preset, n: Date.now() }
+  }
 
   const groups = $derived(groupDrives(drives, shelves, hbas, { quick, text }))
   const picked = $derived(selectedDrives(selected, groups))
@@ -47,13 +78,14 @@
 
   async function refresh() {
     try {
-      const [h, dr, sh, ev, im, hb] = await Promise.all([
+      const [h, dr, sh, ev, im, hb, jb] = await Promise.all([
         get('api/v1/health'),
         get('api/v1/drives'),
         get('api/v1/shelves'),
         get('api/v1/events'),
         get('api/v1/firmware/images').catch(() => ({ images: [] })),
         get('api/v1/hbas').catch(() => ({ hbas: [] })),
+        get('api/v1/worker/jobs').catch(() => ({ jobs: [] })),
       ])
       node = h
       drives = dr.drives
@@ -61,6 +93,7 @@
       events = ev.events
       images = im.images || []
       hbas = hb.hbas || []
+      jobs = jb.jobs || []
       error = ''
     } catch (e) {
       error = e.message || String(e)
@@ -97,7 +130,8 @@
     else if (d.in_use_by) m.push({ label: '', value: 'in use', tone: 'accent' })
     else m.push({ label: '', value: 'out', tone: 'muted' })
     if (d.designation !== 'none') m.push({ label: '', value: d.designation, tone: d.designation === 'failed' ? 'error' : 'muted' })
-    if (d.activity === 'formatting') m.push({ label: 'format', value: d.format_run?.progress_pct ?? '…', unit: d.format_run?.progress_pct != null ? '%' : '', tone: 'warn' })
+    const pct = d.format_run?.progress_pct ?? d.prep?.pct
+    if (d.activity === 'formatting' || d.activity === 'sanitizing') m.push({ label: d.activity === 'formatting' ? 'format' : 'sanitize', value: pct ?? '…', unit: pct != null ? '%' : '', tone: 'warn' })
     else if (d.activity === 'updating_firmware') {
       const r = d.firmware_run || {}
       m.push({ label: 'fw', value: r.bytes_total ? Math.floor((100 * r.bytes_done) / r.bytes_total) : r.phase || '…', unit: r.bytes_total ? '%' : '', tone: 'warn' })
@@ -109,6 +143,8 @@
       const t = d.test
       m.push({ label: t.kind.replace('_', ' '), value: t.state, tone: t.state === 'passed' ? 'ok' : t.state === 'failed' ? 'error' : 'muted' })
     }
+    const pm = d.activity === 'idle' ? prepMetric(d) : null
+    if (pm) m.push(pm)
     if (d.health?.temperature_c != null) m.push({ label: '', value: d.health.temperature_c, unit: '°C', tone: d.health.temperature_c >= 55 ? 'warn' : 'muted' })
     if (d.health?.wear_pct != null) m.push({ label: 'wear', value: d.health.wear_pct, unit: '%', tone: d.health.wear_pct >= 80 ? 'warn' : 'muted' })
     return m
@@ -118,8 +154,8 @@
     const l = d.location || {}
     const actions = []
     if (canLocate(d)) {
-      actions.push({ id: 'locate-on', label: '💡', enabled: true })
-      actions.push({ id: 'locate-off', label: '◦', enabled: true })
+      actions.push({ id: 'locate-on', label: '💡', enabled: writable })
+      actions.push({ id: 'locate-off', label: '◦', enabled: writable })
     }
     return {
       id: d.id,
@@ -174,8 +210,8 @@
     if (!g.all && !r) dot = 'idle'
     const actions = []
     if (g.kind === 'shelf' && r) {
-      actions.push({ id: 'shelf-locate-on', label: '💡', enabled: true })
-      actions.push({ id: 'shelf-locate-off', label: '◦', enabled: true })
+      actions.push({ id: 'shelf-locate-on', label: '💡', enabled: writable })
+      actions.push({ id: 'shelf-locate-off', label: '◦', enabled: writable })
     }
     return { id: g.id, _group: g, label: g.label, dot, metrics: m, actions }
   }
@@ -232,15 +268,16 @@
     }
   }
 
-  const bulkFormat = (bs) => bulk(async () => {
-    const ok = pickedDrives.filter(canFormat)
-    const skip = pickedDrives.length - ok.length
-    if (!ok.length) return say('none of the selected drives can be formatted (in fleet, in use, busy, reserved or NVMe)')
-    if (!confirm(`REFORMAT ${ok.length} drive(s) to ${bs}-byte sectors?${skip ? `\n(${skip} selected drive(s) skipped: not formattable)` : ''}\n\n${ok.map((d) => d.name).join(', ')}\n\nFORMAT UNIT destroys everything on them. All run in parallel, 1–3 hours each, no cancel.`)) return
-    const r = await post('api/v1/format', { drives: ok.map((d) => d.id), block_size: bs })
-    say(`format → ${bs}: ${r.started.length} started` + (skip ? `, ${skip} skipped` : ''))
+  /// The selection, to the Prepare pane: the dry run says which run.
+  const bulkPrepare = (preset = {}) =>
+    prepare({ drives: pickedDrives.map((d) => d.id) }, `${pickedDrives.length} selected drive(s)`, preset)
+
+  function prepared(job) {
+    say(`job ${job.id}: ${job.drives?.filter((d) => d.state !== 'refused').length ?? 0} drive(s) queued`)
+    pane = null
     selected = []
-  })
+    refresh()
+  }
 
   const bulkFirmware = () => bulk(async () => {
     if (!image) return say('pick a firmware image first')
@@ -285,6 +322,19 @@
       {#if counts.reformat}<span class="warn"><b>{counts.reformat}</b> need reformat</span>{/if}
       {#if counts.busy}<span class="acc"><b>{counts.busy}</b> busy</span>{/if}
     </div>
+    <div class="auth">
+      {#if token}
+        <span class="ok">signed in</span> <button onclick={signOut}>Sign out</button>
+      {:else if signingIn}
+        <input type="password" placeholder="bearer (oc whoami -t)" bind:value={pasted} autocomplete="off"
+          onkeydown={(e) => e.key === 'Enter' && pasted && signIn()} />
+        <button disabled={!pasted} onclick={signIn}>Sign in</button>
+        <button onclick={() => (signingIn = false)}>✕</button>
+      {:else}
+        {#if enforcing}<span class="warn">read only — writes need storage-admin</span>{/if}
+        <button onclick={() => (signingIn = true)}>Sign in</button>
+      {/if}
+    </div>
   </header>
 
   {#if error}<div class="banner error" role="alert">{error} <button onclick={() => (error = '')}>✕</button></div>{/if}
@@ -302,6 +352,7 @@
   {#if picked.size}
     <div class="bulk">
       <b>{picked.size} drive{picked.size === 1 ? '' : 's'}</b>
+      <fieldset class="plain acts" disabled={!writable} title={writable ? '' : 'needs storage-admin: sign in'}>
       <button disabled={working} onclick={() => bulkTest('smoke')}>Smoke</button>
       <button disabled={working} onclick={() => bulkTest('read_scan')}>Scan</button>
       <span class="sep"></span>
@@ -316,14 +367,16 @@
         <option value="failed">failed</option>
       </select>
       <span class="sep"></span>
-      <button class="danger" disabled={working} onclick={() => bulkFormat(4096)}>Format → 4096</button>
-      <button class="danger" disabled={working} onclick={() => bulkFormat(512)}>→ 512</button>
+      <button disabled={working} onclick={() => bulkPrepare()}>Prepare…</button>
+      <button class="danger" disabled={working} onclick={() => bulkPrepare({ format: 4096 })}>Format → 4096…</button>
+      <button class="danger" disabled={working} onclick={() => bulkPrepare({ format: 512 })}>→ 512…</button>
       <span class="sep"></span>
       <select bind:value={image} disabled={working}>
         <option value="">firmware image…</option>
         {#each images as i}<option value={i.name}>{i.name}</option>{/each}
       </select>
       <button class="danger" disabled={working || !image} onclick={bulkFirmware}>Update firmware</button>
+      </fieldset>
       <button onclick={() => (selected = [])}>Clear</button>
     </div>
   {/if}
@@ -344,17 +397,25 @@
     <div class="empty">no drives discovered</div>
   {/if}
 
-  <Firmware {images} {act} onerror={(e) => (error = e)} />
+  <Jobs {jobs} {act} {writable} />
+  <fieldset class="plain" disabled={!writable}>
+    <Firmware {images} {act} onerror={(e) => (error = e)} />
+  </fieldset>
   <Events {events} />
 </div>
 
 {#if pane}
   <aside class="pane">
     <button class="close" onclick={() => (pane = null)} title="close">✕</button>
-    {#if paneDrive}
-      <DrivePane drive={paneDrive} {images} {act} />
+    {#if pane.type === 'prepare'}
+      {#key pane.n}
+        <Prepare select={pane.select} title={pane.title} preset={pane.preset} {drives} {writable}
+          ondone={prepared} onerror={(e) => (error = e)} />
+      {/key}
+    {:else if paneDrive}
+      <fieldset class="plain" disabled={!writable}><DrivePane drive={paneDrive} {images} {act} onprepare={prepare} /></fieldset>
     {:else if paneGroup}
-      <GroupPane group={paneGroup} {act} />
+      <fieldset class="plain" disabled={!writable}><GroupPane group={paneGroup} {act} onprepare={prepare} /></fieldset>
     {:else}
       <div class="empty">gone</div>
     {/if}
@@ -380,6 +441,12 @@
   .bulk { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 8px 10px; margin-bottom: 10px;
     background: var(--accent-bg); border: 1px solid var(--border); border-radius: var(--radius); position: sticky; top: 0; z-index: 2; }
   .bulk b { margin-right: 6px; }
+  .acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .acts[disabled] { opacity: 0.6; }
+  fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
+  .auth { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+  .auth .ok { color: var(--ok, var(--accent)); }
+  .auth .warn { color: var(--warn); }
   .sep { width: 1px; height: 18px; background: var(--border); }
   button.danger { color: var(--error); }
   .banner { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 6px 10px; margin-bottom: 10px;

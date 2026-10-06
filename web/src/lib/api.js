@@ -4,17 +4,62 @@
 const m = location.pathname.match(/^(\/ui\/(?:proxy|ext)\/[^/]+\/)/)
 export const API = m ? m[1] : '/'
 
+// The storage-admin bearer (#47): every write on :9092 needs one since
+// 0.18.0 (#45). Pasted by the operator (`oc whoami -t`), kept for this tab
+// only (sessionStorage), sent on everything but plain reads.
+const KEY = 'stormdrive.bearer'
+
+export function bearer() {
+  try {
+    return sessionStorage.getItem(KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+export function setBearer(token) {
+  try {
+    if (token) sessionStorage.setItem(KEY, token.trim())
+    else sessionStorage.removeItem(KEY)
+  } catch {}
+}
+
+/// An error from the API: the envelope's message, its HTTP status and
+/// `code` (`unauthorized`, `forbidden`, `conflict`, …).
+export class ApiError extends Error {
+  constructor(message, status, code) {
+    super(message)
+    this.status = status
+    this.code = code
+  }
+  /// Refused for want of (or by) a storage-admin bearer.
+  get auth() {
+    return this.status === 401 || this.status === 403
+  }
+}
+
 async function errorOf(r) {
   let msg = `${r.status} ${r.statusText}`
+  let code
   try {
     const j = await r.json()
     if (j.error) msg = j.error
+    code = j.code
   } catch {}
-  return new Error(msg)
+  if (r.status === 401) msg = `needs storage-admin: sign in with a bearer (${msg})`
+  else if (r.status === 403) msg = `needs storage-admin: this bearer may not (${msg})`
+  return new ApiError(msg, r.status, code)
+}
+
+function withAuth(opts = {}) {
+  const t = bearer()
+  if (!t) return opts
+  return { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${t}` } }
 }
 
 export async function api(path, opts) {
-  const r = await fetch(API + path, opts)
+  const write = opts?.method && opts.method !== 'GET'
+  const r = await fetch(API + path, write ? withAuth(opts) : opts)
   if (!r.ok) throw await errorOf(r)
   return r.json()
 }
@@ -29,11 +74,10 @@ export const post = (path, body) =>
   })
 
 export async function putImage(name, file) {
-  const r = await fetch(API + `api/v1/firmware/images/${encodeURIComponent(name)}`, {
-    method: 'PUT',
-    body: file,
-    headers: { 'Content-Type': 'application/octet-stream' },
-  })
+  const r = await fetch(
+    API + `api/v1/firmware/images/${encodeURIComponent(name)}`,
+    withAuth({ method: 'PUT', body: file, headers: { 'Content-Type': 'application/octet-stream' } }),
+  )
   if (!r.ok) throw await errorOf(r)
   return r.json()
 }

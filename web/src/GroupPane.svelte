@@ -5,7 +5,7 @@
   import { post } from './lib/api.js'
   import { sesDot } from './lib/model.js'
 
-  let { group: g, act } = $props()
+  let { group: g, act, onprepare } = $props()
   const r = $derived(g.report)
   const needs = $derived(g.drives.filter((d) => d.needs_reformat && d.membership !== 'fleet').length)
   const elements = $derived(
@@ -20,10 +20,8 @@
     return ''
   }
 
-  function reformat() {
-    if (!confirm(`REFORMAT the ${needs} out-of-fleet drive(s) in ${g.label} that the kernel cannot use, to 4096-byte sectors?\n\nFORMAT UNIT destroys everything on them. 1–3 hours, all in parallel, no cancel.`)) return
-    act(post(`api/v1/shelves/${g.key}/format`, { block_size: 4096 }))
-  }
+  // Shelf-wide work goes through the drive worker's Prepare pane (#38).
+  const reformat = () => onprepare({ shelf: g.key, unusable: true }, `${g.label}: drives the kernel cannot use`, { format: 4096 })
 </script>
 
 <h2>{g.label}</h2>
@@ -44,7 +42,8 @@
     <div class="row">
       <button onclick={() => act(post(`api/v1/shelves/${g.key}/locate`, { on: true }))}>💡 Locate shelf</button>
       <button onclick={() => act(post(`api/v1/shelves/${g.key}/locate`, { on: false }))}>◦ Off</button>
-      <button class="danger" disabled={!needs} onclick={reformat}>Reformat {needs || ''} → 4096</button>
+      <button class="danger" disabled={!needs} onclick={reformat}>Reformat {needs || ''} → 4096…</button>
+      <button onclick={() => onprepare({ shelf: g.key }, g.label)}>Prepare shelf…</button>
     </div>
     <h3>Elements</h3>
     {#each elements as e}

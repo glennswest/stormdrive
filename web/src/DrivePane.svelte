@@ -9,7 +9,9 @@
     canFormat, canFirmware, canForget, canLocate, formatTarget,
   } from './lib/model.js'
 
-  let { drive: d, images = [], act } = $props()
+  // `onprepare(select, title, preset)` opens the Prepare pane (#38): every
+  // format goes through the drive worker (restart-safe, destroy guard).
+  let { drive: d, images = [], act, onprepare } = $props()
   let image = $state('')
 
   const l = $derived(d.location || {})
@@ -46,11 +48,6 @@
   function test(kind) {
     if (kind === 'destructive_sample' && !confirm(`DESTRUCTIVE test on ${d.name}: writes patterns into sampled regions and destroys data there. Continue?`)) return
     act(post(`api/v1/drives/${d.id}/test`, { kind }))
-  }
-
-  function format(bs) {
-    if (!confirm(`REFORMAT ${d.name} from ${d.block_size} to ${bs}-byte sectors?\n\nFORMAT UNIT destroys every byte on the drive and takes 1–3 hours on a large HDD. There is no cancel.`)) return
-    act(post(`api/v1/drives/${d.id}/format`, { block_size: bs }))
   }
 
   function firmware() {
@@ -144,6 +141,10 @@
     {d.test.kind} {pct(d.test.bytes_done, d.test.bytes_total)}%
     <button onclick={() => act(post(`api/v1/drives/${d.id}/test/cancel`))}>Cancel</button></div>
 {/if}
+{#if d.prep && d.membership !== 'fleet'}<div class="small">prep: {d.prep.phase}{d.prep.pct != null ? ` ${d.prep.pct}%` : ''}</div>{/if}
+{#if ['formatting', 'sanitizing'].includes(d.activity) && !d.format_run && d.prep?.pct != null}
+  <div class="row"><progress max="100" value={d.prep.pct}></progress> {d.activity} {d.prep.pct}% (drive worker)</div>
+{/if}
 {#if d.activity === 'formatting' && d.format_run}
   <div class="row"><progress max="100" value={d.format_run.progress_pct ?? 0}></progress>
     → {d.format_run.to_block_size}: {d.format_run.progress_pct ?? '…'}% {d.format_run.phase}</div>
@@ -170,9 +171,10 @@
     <button onclick={() => act(post(`api/v1/drives/${d.id}/locate`, { on: false }))}>◦ Off</button>
   {/if}
 </div>
-{#if canFormat(d)}
+{#if canFormat(d) || (d.membership !== 'fleet' && d.activity === 'idle')}
   <div class="row">
-    <button class="danger" onclick={() => format(formatTarget(d))}>Format → {formatTarget(d)}</button>
+    {#if canFormat(d)}<button class="danger" onclick={() => onprepare({ drives: [d.id] }, d.name, { format: formatTarget(d) })}>Format → {formatTarget(d)}…</button>{/if}
+    <button onclick={() => onprepare({ drives: [d.id] }, d.name)}>Prepare…</button>
   </div>
 {/if}
 {#if canFirmware(d)}
