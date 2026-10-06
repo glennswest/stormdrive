@@ -437,6 +437,36 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #19: :9092 is TLS and nothing answers anonymously but health (P2, stormcos#81, 2026-10-06) — IN PROGRESS
+
+Owner's rule (stormcos SECURITY.md, 2026-09-25): every listening API on a
+node is TLS with a stormcert pair, every caller authenticates (client
+certificate or token), nothing anonymous but health. Pattern: vmimages#16 /
+stormcluster#5 (one port, TLS told from plain by the first byte).
+- `src/tls.rs`: one listener; a TLS handshake gets TLS from
+  `[api] tls_cert_file`/`tls_key_file` (default `/data/stormcert/stormdrive.{crt,key}`,
+  re-read on change), client certificates requested and verified against
+  `client_ca_files` (default `/data/stormcert/ca.crt`), not required; plain
+  HTTP answers health only (`/api/v1/health`, `/healthz`: stormd's probe)
+- reads: admin token, a node-CA client certificate, or a Kubernetes bearer
+  allowed `get` on `storage.storm.io` (storage-viewer); else 401/403/503.
+  Writes as #45, plus a client certificate (CN user, O groups → SAR)
+- the page shell without a credential answers 401 with the page (it signs
+  in); assets are code only and open; the page sends its bearer on reads
+- `[api] allow_anonymous` (transition, default off): plain HTTP and
+  credential-less reads as before; a credential that is sent is checked;
+  writes keep the #45 gate. The golden's registry config sets it until
+  stormcos mints/mounts the pair and the callers (console, ironprom,
+  stormlb route, rustkube-node placement) present one → issues there
+- test container: https by default, `STORM_STORMDRIVE_CA`, client pair,
+  the pod's service-account token; harness over TLS (rcgen)
+Steps:
+- [ ] plan · [ ] tls.rs + config · [ ] read gate + cert identity · [ ] page
+- [ ] tests (tls.rs harness: plain health, plain data 403, anonymous 401,
+      cert, admin token, bearer allowed/denied, foreign CA refused, reload)
+- [ ] test container TLS · [ ] docs, changelog, v0.21.0 · [ ] sc-build,
+      rebuild dist, golden · [ ] registry config, caller issues, close #19
+
 ### #38 (+ #47): the page submits and follows drive worker jobs (2026-10-06) — DONE (v0.20.0)
 
 Every write since #45 needs a storage-admin bearer, so jobs on the page need
