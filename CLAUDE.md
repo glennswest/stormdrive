@@ -429,7 +429,13 @@ Steps:
 - [x] docs (README, architecture), changelog, v0.18.0
 - [x] issues: rustkube#210 (requester stamp), stormcos#302 (install +
       credential), #47 (page bearer)
-- [ ] sc-build + clippy on the release commit; golden; close #45
+- [x] sc-build on dac3deb (v0.18.0): 170 unit + kube stub + harness (medium
+      writes-need-storage-admin passes) + 9, clippy -D warnings clean,
+      `web/rebuild.sh --check` identical; golden
+      `golden-stormdrive-e54fd49f3502`, release request stormcos#131; #45
+      closed. Live use waits on stormcos#302 (CRDs + credential) and
+      rustkube#210 (requester stamp) for DriveOperations; the first real
+      520→4096 is #30
 
 ### Comment mining (2026-09-28)
 

@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-06
+- **docs:** work plan — #45 done: v0.18.0 verified on dac3deb, golden e54fd49f3502
+
 ## [v0.18.0] — 2026-10-06
 
 ### Breaking
