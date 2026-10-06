@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.17.0** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
+**Version: 0.18.0** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -101,6 +101,9 @@ src/
   components.rs   stormview feed: drives, shelves, HBAs with actions
   api/mod.rs      axum REST :9092, summary card, embeds web/dist (the page)
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} (stormblock#80)
+  kubeapi.rs      apiserver client (reqwest): TokenReview, SAR, objects, Events (#45)
+  kubeauth.rs     the write gate: classify → bearer review / admin token, audit (#45)
+  controller.rs   Drive objects + DriveOperations in the apiserver (#45)
 test/             test container (#11): /test short|medium|long, pick.rs = safety
 tests/suites.rs   the three suites against this daemon on every cargo test
 web/              the page: Svelte 5 + stormview DataGrid (#6); web/dist is
@@ -373,7 +376,7 @@ Steps:
       Not run on a real drive: the disk operations wait on
       #30 (stormblock1) / #31 (NVMe)
 
-### #45: drives and drive operations as Kubernetes objects; destructive = storage-admin (2026-10-06) — IN PROGRESS
+### #45: drives and drive operations as Kubernetes objects; destructive = storage-admin (2026-10-06) — DONE (v0.18.0)
 
 Owner (2026-10-03): "All these need crd/kubernets objects … a security model
 that non admins cant format drives etc." stormcos#250 ships `storage-admin` /
@@ -412,16 +415,21 @@ Design (decided from the issue + owner's comment, no open decision):
   stormdrive; then `component edit stormdrive` adds `[kubernetes]`.
 
 Steps:
-- [ ] kubeapi.rs (client, config `[kubernetes]`, in-cluster fallback)
-- [ ] kubeauth.rs (TokenReview/SAR, cache) + REST gate + audit events
-- [ ] job requester + worker re-check before destroying steps
-- [ ] owner (stormraid probe) on Drive, API, kube status; guard
-- [ ] CRDs + rbac yaml; controller (Drive mirror, DriveOperation reconcile,
+- [x] kubeapi.rs (client, config `[kubernetes]`, in-cluster fallback)
+- [x] kubeauth.rs (TokenReview/SAR, cache) + REST gate (every write, not
+      only destructive: "never operate on them") + audit
+- [x] job requester + worker re-check before every step
+- [x] owner (stormraid probe) on Drive, API, kube status; guard
+- [x] CRDs + rbac yaml; controller (Drive mirror, DriveOperation reconcile,
       Events)
-- [ ] test suites adjusted (destructive calls → 401 on the harness), tests
-- [ ] docs (README, architecture, SECURITY section), changelog, v0.18.0
-- [ ] issues: rustkube (requester stamp), stormcos (install + credential)
-- [ ] sc-build + clippy; golden; close #45
+- [x] test suites adjusted (writes skip without a bearer; medium
+      writes-need-storage-admin), tests/kube.rs (stub apiserver: gate
+      401/403/404, controller Refused ×3 for no stamp / denied / no match,
+      other node untouched, Events, audit.log)
+- [x] docs (README, architecture), changelog, v0.18.0
+- [x] issues: rustkube#210 (requester stamp), stormcos#302 (install +
+      credential), #47 (page bearer)
+- [ ] sc-build + clippy on the release commit; golden; close #45
 
 ### Comment mining (2026-09-28)
 

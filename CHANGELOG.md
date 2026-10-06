@@ -3,6 +3,15 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.18.0] — 2026-10-06
+
+### Breaking
+- Every write on :9092 needs a storage-admin: a Kubernetes bearer the apiserver allows on `storage.storm.io` (TokenReview + SubjectAccessReview) or the node-local `[api] admin_token`. With neither configured, every write is refused. `[api] api_token` is read as `admin_token` (#45)
+
+### Added
+- `Drive` and `DriveOperation` Kubernetes objects (`deploy/crds.yaml`) and their controller; `[kubernetes]` config; `deploy/rbac.yaml`; example operation (#45)
+- Worker jobs record and re-check their requester before every step; audit log (`<data_dir>/audit.log`, `audit` events); `owner` on every drive (stormraid members detected); `writes` in `/api/v1/health` (#45)
+
 ### 2026-10-06
 - **BREAKING:** every write on :9092 needs a storage-admin (#45, stormcos#250): a Kubernetes bearer the apiserver allows (TokenReview + SubjectAccessReview on `storage.storm.io`; drive operations are `create driveoperations`, other drive writes `update drives`) or the node-local `[api] admin_token`. 401 / 403 / 503; reads and worker dry runs stay open; `[api] admin_gate = "audit"` for rollout. No apiserver and no admin token = every write refused
 - **feat:** audit — every write decision is a JSON line (who, method, path, resource, verb, target, decision, reason, status) in the log and `<data_dir>/audit.log`, and an `audit` event
