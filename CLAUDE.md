@@ -437,6 +437,29 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #43: drain docs vs the engine; drains that never get tracked (2026-10-06)
+
+stormcos#65 consistency pass: docs say `push_health` sends `drain:false` so
+"the engine never decides" and `drain_on_failing=false` stops the drain.
+Truth (stormblock `drives.rs` health handler): `failed`/`missing` drain
+whatever `drain` says; degraded/failing/failed auto-rebuild (`[rebuild]
+automatic`, default on); with a rebuild running the drain waits for it and
+`POST …/drain` answers 409. Found behind it, in the code:
+- a 409 (rebuild running) on our drain start is never retried (health is
+  pushed on change only) → the engine's own drain after the rebuild is
+  never adopted → the drive is never retired (no leave, LED, "safe to pull")
+- `poll_drains` "resumed" after the engine forgot a drain calls
+  `start_drain`, which returns early on the `running` record → never resumed
+Plan:
+- [ ] drain state `pending` (wanted, not started): set when a start fails;
+      every fleet tick retries pending drains (`start_drain` adopts an
+      engine drain already running); health back to healthy clears it
+- [ ] "resumed" marks the record pending instead
+- [ ] docs: architecture (health push, drain, migration flow), README
+      `drain_on_failing`/`push_health`, example toml, config comment,
+      fleet.rs comment; presentation (placement consumer, status slide)
+- [ ] tests (pure `drain_due`), sc-build, v0.19.1, golden
+
 ### #18: serve /metrics (P1, stormcos#64, 2026-10-06) — DONE (v0.19.0)
 
 `GET /metrics` on :9092, Prometheus text, unauthenticated (a read). Upstream
