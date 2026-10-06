@@ -3,6 +3,15 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.20.0] — 2026-10-06
+
+### Added
+- The page submits and follows drive worker jobs: Prepare (steps, dry-run preview, destroy confirmed by serial) from the bulk bar, shelf and drive panes; a Jobs panel with per-drive progress, cancel and resume; the `prep` phase in the state column (#38)
+- The page signs in with a storage-admin bearer (tab-only `sessionStorage`, sent on writes); read only while the node enforces and none is set (#47)
+
+### Changed
+- The page's formats go through the drive worker (restart-safe, destroy guard) instead of `/api/v1/format`, which stays for API callers (#38)
+
 ### 2026-10-06
 - **feat(web):** Prepare — submit drive worker jobs from the page (bulk bar, shelf pane, drive pane): steps, dry-run preview with refusals and reasons, destroy confirmed by typing each held drive's serial (#38)
 - **feat(web):** Jobs panel — every worker job with per-drive state, step, progress and error; cancel and resume (#38)

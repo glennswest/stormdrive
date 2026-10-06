@@ -256,7 +256,7 @@ No TLS yet (#19).
 
 ## Status
 
-- **v0.19.1** (October 2026). Each release's golden and release request
+- **v0.20.0** (October 2026). Each release's golden and release request
   are recorded in CLAUDE.md's work plan and in CHANGELOG.md.
 - **Tested:** 176 unit tests, model/page tests (212 drives), and the
   daemon run against a stand-in apiserver and a seeded restart, on dev.
