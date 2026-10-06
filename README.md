@@ -545,7 +545,7 @@ These are documented as design only; the code does not do them:
 - `/metrics` (#18); TLS and read access on :9092 (#19)
 - `DriveOperation`s run only once the apiserver stamps their requester
   (rustkube#210) and stormcos installs the CRDs and gives stormdrive a
-  credential (stormcos#302); the page has no way to present a bearer yet
+  credential (stormcos#302); the page has no way to present a bearer yet (#47)
 - SCSI log sense / ATA SMART for SAS and SATA health (#22); wear-out
   projection (#23); persisted events (#25)
 - a node-wide sequencer with a stormblock redundancy check before a fleet

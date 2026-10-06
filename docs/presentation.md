@@ -239,7 +239,7 @@ no auth (#19) yet.
 | Planned | Issue |
 |---|---|
 | `/metrics`: SMART, temperature, wear and errors per drive | #18 |
-| Auth / TLS on :9092 (`[api] api_token` is parsed, not enforced) | #19 |
+| TLS and read access on :9092 (writes need storage-admin since 0.18.0, #45) | #19 |
 | Drive worker: ATA security erase · jobs on the page · scheduling default | #36 · #38 · decision #37 |
 | Shelf (IOM) firmware · a vendor firmware image source | #35 · #29 |
 | SAS/SATA health: SCSI log sense, ATA SMART | #22 |
