@@ -3,6 +3,16 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.21.0] — 2026-10-06
+
+### Breaking
+- :9092 is TLS from the node's stormcert pair, and nothing answers anonymously but health: plain HTTP answers `/api/v1/health` and `/healthz` only; every read needs the admin token, a node-CA client certificate or a bearer allowed `get` on `storage.storm.io` (`storage-viewer`). `[api] allow_anonymous = true` keeps the old behaviour during the transition (#19)
+
+### Added
+- `[api] tls_cert_file`, `tls_key_file` (re-read on change), `client_ca_files`, `allow_anonymous`; `/healthz`; `reads.anonymous` in health (#19)
+- Writes by a node-CA client certificate, reviewed as its CN/O groups (#19)
+- The page sends its bearer on reads and opens sign-in on a 401; the test container speaks https with the node CA, a client pair or the pod's token (#19)
+
 ### 2026-10-06
 - **BREAKING:** :9092 is TLS from the stormcert pair (`[api] tls_cert_file`/`tls_key_file`, default `/data/stormcert/stormdrive.{crt,key}`, re-read on change), and nothing answers anonymously but health: plain HTTP answers `/api/v1/health` and `/healthz` only (403 `tls_required`), reads need the admin token, a node-CA client certificate (`client_ca_files`) or a bearer allowed `get` on `storage.storm.io` (#19)
 - **feat:** writes also accept a node-CA client certificate, reviewed as its CN/O groups (SubjectAccessReview); audited as `cert:<cn>` (#19)
