@@ -197,11 +197,28 @@ are listed under [Not yet](#not-yet).
     host.
   - **Detail pane:** clicking a drive or shelf opens it. The drive pane
     holds designation, overcommit, tests, format, firmware, locate, usage,
-    drain and progress. The shelf pane shows SES elements and has locate and
-    reformat.
+    drain and progress. The shelf pane shows SES elements and has locate,
+    reformat and Prepare shelf.
   - **Bulk bar:** acts on the ticked drives; ticking a group means every
-    drive it shows. It offers tests, locate, designation, format → 4096/512
-    and firmware.
+    drive it shows. It offers tests, locate, designation, Prepare, format →
+    4096/512 and firmware.
+  - **Prepare** (the drive worker, #38): every format on the page (bulk,
+    shelf, drive) and the rest of drive preparation go through it. Pick the
+    steps (format 4096/512, sanitize block/crypto/overwrite, partition,
+    enroll with a tier, role), preview them as a dry run (which drives run,
+    which are refused and why), type the serial of each drive that holds a
+    slab or a filesystem before it may be destroyed, then run.
+  - **Jobs:** every worker job, open ones first. Each drive shows its
+    state, step, progress and error, with Cancel (what has not started)
+    and Resume (what a restart interrupted). The state column shows each
+    out-of-fleet drive's `prep` phase (unusable / ready).
+  - **Sign in** (#47): every write needs a storage-admin since 0.18.0.
+    Paste a bearer (`oc whoami -t`); it is kept in this tab's
+    `sessionStorage` and sent as `Authorization: Bearer` on writes. While
+    the node enforces (`writes.gate` in `/api/v1/health`) and no bearer is
+    set, the page is read only: write controls are disabled, and a 401/403
+    reads "needs storage-admin". A worker dry run is a read and works
+    signed out.
   - It polls every 4 s, and rows are keyed, so a refresh updates cells
     instead of rebuilding the table.
 - **Events** (`src/events.rs`). An in-memory ring of the last 4096 events,
@@ -584,13 +601,13 @@ These are documented as design only; the code does not do them:
 - TLS and read access on :9092 (#19)
 - `DriveOperation`s run only once the apiserver stamps their requester
   (rustkube#210) and stormcos installs the CRDs and gives stormdrive a
-  credential (stormcos#302); the page has no way to present a bearer yet (#47)
+  credential (stormcos#302)
 - SCSI log sense / ATA SMART for SAS and SATA health (#22); wear-out
   projection (#23); persisted events (#25)
 - a node-wide sequencer with a stormblock redundancy check before a fleet
   drive's firmware reset (#24)
 - in the drive worker: ATA SECURITY ERASE for SATA drives without ATA
-  Sanitize (#36); using it from the page (#38); the scheduling default is
+  Sanitize (#36); the scheduling default is
   your decision (#37)
 - SES shelf (IOM) firmware (#35)
 - waiting on your decision:

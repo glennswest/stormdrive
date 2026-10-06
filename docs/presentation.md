@@ -167,7 +167,9 @@ Lifecycle is three separate fields:
   - shelves, HBAs and NVMe are rows, each with its drives nested;
   - filters, a detail pane, and a bulk bar where ticking a shelf means its
     drives;
-  - checked against 212 drives in a jsdom test.
+  - Prepare (dry run, destroy by serial) and Jobs for the drive worker;
+    sign in with a storage-admin bearer (#38, #47);
+  - checked against 212 drives, and the worker flow, in jsdom tests.
 
 ---
 
@@ -241,7 +243,7 @@ No TLS yet (#19).
 | Planned | Issue |
 |---|---|
 | TLS and read access on :9092 (writes need storage-admin since 0.18.0, #45) | #19 |
-| Drive worker: ATA security erase · jobs on the page · scheduling default | #36 · #38 · decision #37 |
+| Drive worker: ATA security erase · scheduling default · a test step | #36 · decision #37 · #40 |
 | Shelf (IOM) firmware · a vendor firmware image source | #35 · #29 |
 | SAS/SATA health: SCSI log sense, ATA SMART | #22 |
 | Wear-out projection · persisted events | #23 · #25 |

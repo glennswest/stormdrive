@@ -4,6 +4,14 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-06
+- **feat(web):** Prepare — submit drive worker jobs from the page (bulk bar, shelf pane, drive pane): steps, dry-run preview with refusals and reasons, destroy confirmed by typing each held drive's serial (#38)
+- **feat(web):** Jobs panel — every worker job with per-drive state, step, progress and error; cancel and resume (#38)
+- **feat(web):** the state column shows each out-of-fleet drive's `prep` phase; worker progress shows for formatting/sanitizing (#38)
+- **feat(web):** sign in with a storage-admin bearer (sessionStorage, sent on writes); read only while the node enforces and none is set; 401/403 read "needs storage-admin" (#47)
+- **change(web):** the page's formats (bulk, shelf, drive) go through the drive worker instead of `/api/v1/format` (#38)
+- **docs:** work plan — #38 + #47
+
+### 2026-10-06
 - **docs:** work plan — #43 done: v0.19.1 verified on 17cd78e, golden 12ef14fdf9d0
 
 ## [v0.19.1] — 2026-10-06

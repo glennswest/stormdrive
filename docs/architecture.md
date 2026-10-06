@@ -461,8 +461,9 @@ kept.
     `restart` warning event names the drive. `draining` (the fleet loop
     resumes it) and `missing` are left alone. `main` awaits all of this
     before the monitor and the API start.
-- **Not built:** ATA SECURITY ERASE (#36), and a UI for jobs on the page
-  (#38; stormconsole sees the `prep` metric in the feed).
+- **Not built:** ATA SECURITY ERASE (#36). The page submits and follows
+  jobs (Prepare, Jobs, #38); stormconsole sees the `prep` metric in the
+  feed.
 
 ### Sequencing — Design, not built
 
@@ -598,16 +599,41 @@ DataGrid cells are text, `health` (HealthDot), `metrics` (toned values) or
 `actions` (buttons). So a row stays compact, and everything else lives in a
 side pane opened by clicking the row. The drive pane holds designation,
 overcommit, tests, format, firmware, locate, usage, drain and progress. The
-shelf pane shows SES elements and has locate and reformat. The HBA pane
-shows firmware, BIOS and NVDATA.
+shelf pane shows SES elements and has locate, reformat and Prepare shelf.
+The HBA pane shows firmware, BIOS and NVDATA.
 
 **Selection:** a ticked group means every drive it shows under the current
 filter (`selectedDrives` in `web/src/lib/model.js`). The bulk bar sends
 only the eligible drives and says how many it skipped:
 
-- format and firmware go through the server's batch endpoints;
+- format (and every other preparation step) goes to the drive worker
+  through the Prepare pane (below); firmware goes through the batch
+  endpoint;
 - tests, designation and locate are per-drive calls, 8 at a time. A
-  server-side bulk for those belongs to the drive worker (#5).
+  server-side bulk test belongs to the drive worker (#40).
+
+**Prepare and Jobs (#38).** `Prepare.svelte` builds a worker request from
+the selection (`{drives}` from the bulk bar or a drive, `{shelf}` or
+`{shelf, unusable}` from the shelf pane) and the steps
+(`web/src/lib/worker.js`, unit-tested). It always previews first: a
+`dry_run` (a read, open without a bearer) returns `runnable` and `refused`
+with reasons. Refusals that say a drive *holds* a slab or a filesystem are
+the ones `destroy` lifts. The pane asks for each such drive's serial, typed
+exactly (a /dev name never counts, as on the server), and sends the
+serials it matched as `destroy`. Any change to the steps throws the preview
+away. `Jobs.svelte` lists `/api/v1/worker/jobs` (polled with the rest), open
+first, with per-drive state, step, progress and error, Cancel and Resume.
+The page's formats used to call `/api/v1/format`; they go through the
+worker now, so they survive a restart and get the destroy guard.
+`/api/v1/format` stays for API callers.
+
+**Sign in (#47).** `lib/api.js` keeps a storage-admin bearer in
+`sessionStorage` and sends it on every request that is not a GET. Errors
+keep the HTTP status and the envelope's `code`; 401/403 read "needs
+storage-admin". While `/api/v1/health` → `writes.gate` is `enforce` and no
+bearer is set, write controls sit in a `<fieldset disabled>` (the bulk
+bar's actions, the drive and shelf panes, firmware upload) and row actions
+are off. The server decides regardless.
 
 The eligibility rules in `model.js` mirror `src/drive.rs`'s guards so the
 page offers only what the server would accept. The server still checks
