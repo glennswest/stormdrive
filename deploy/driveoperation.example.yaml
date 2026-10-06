@@ -1,0 +1,25 @@
+# Reformat every 520-byte drive in bays 0-11 of one NetApp shelf to 4096-byte
+# sectors and partition it for stormblock (#45, #30). Needs storage-admin.
+# Try it with dryRun: true first: status.plan says which drives would run and
+# why the others are refused.
+#
+#   kubectl apply -f driveoperation.example.yaml
+#   kubectl get driveoperations
+#   kubectl get drives -l storm.io/node=c2nr0q2
+apiVersion: storage.storm.io/v1
+kind: DriveOperation
+metadata:
+  name: shelf-a-to-4k
+spec:
+  node: c2nr0q2
+  select:
+    shelf: "500a098000000000"   # logical id, serial, or SES SCSI id (kubectl get drives -o wide)
+    bays: "0-11"
+    unusable: true              # only drives the kernel cannot use (520/528-byte sectors)
+  steps:
+    - op: format
+      blockSize: 4096
+    - op: partition
+      role: data
+  destroy: []                   # stable ids / WWNs / serials whose current data may go
+  dryRun: true

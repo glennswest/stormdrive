@@ -1,0 +1,60 @@
+# stormdrive's own permissions (#45): what each node's stormdrive needs, and
+# no more. Changing a drive — creating a DriveOperation — is a person's object
+# write, decided by the release's storage-admin ClusterRole (stormcos
+# 47-storage-rbac.yaml); stormdrive's credential cannot create one.
+#
+# Bind both roles to the identity in stormdrive's [kubernetes] token_file (or
+# its ServiceAccount):
+#   - stormdrive-controller: keep this node's Drive objects, read
+#     DriveOperations and keep their status, post Events on them;
+#   - system:auth-delegator (built in): TokenReview + SubjectAccessReview, to
+#     ask who a bearer is and whether that user may change drives.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stormdrive-controller
+rules:
+  - apiGroups: ["storage.storm.io"]
+    resources: ["drives"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["storage.storm.io"]
+    resources: ["drives/status", "driveoperations/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["storage.storm.io"]
+    resources: ["driveoperations"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stormdrive
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stormdrive-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: stormdrive-controller
+subjects:
+  - kind: ServiceAccount
+    name: stormdrive
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stormdrive-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: stormdrive
+    namespace: kube-system

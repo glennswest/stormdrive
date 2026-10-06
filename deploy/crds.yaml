@@ -1,0 +1,160 @@
+# stormdrive's Kubernetes kinds (#45), in the release's storage group
+# (stormcos 47-storage-rbac.yaml: storage-admin may do everything to
+# storage.storm.io, storage-viewer may read it). Cluster-scoped: a drive is
+# hardware, it belongs to no namespace.
+#
+# - Drive: one per physical drive, written by the stormdrive of the node that
+#   has it. Read it; writing it changes nothing on the drive (the node puts
+#   its report back).
+# - DriveOperation: format, sanitize, partition, enroll on one node's drives.
+#   Creating one is the destructive act, so only storage-admin can. The node's
+#   stormdrive re-checks the requester the apiserver stamped on it
+#   (storage.storm.io/requester) with a SubjectAccessReview before it starts
+#   and before every step.
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: drives.storage.storm.io
+spec:
+  group: storage.storm.io
+  scope: Cluster
+  names:
+    kind: Drive
+    plural: drives
+    singular: drive
+    shortNames: [drv]
+    categories: [storage]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Node, type: string, jsonPath: .status.node }
+        - { name: Device, type: string, jsonPath: .status.name }
+        - { name: Model, type: string, jsonPath: .status.model }
+        - { name: Size, type: integer, jsonPath: .status.capacityBytes }
+        - { name: Sector, type: integer, jsonPath: .status.blockSize }
+        - { name: Enclosure, type: string, jsonPath: .status.enclosure, priority: 1 }
+        - { name: Bay, type: integer, jsonPath: .status.bay }
+        - { name: Health, type: string, jsonPath: .status.health.status }
+        - { name: Owner, type: string, jsonPath: .status.owner }
+        - { name: Prep, type: string, jsonPath: .status.prep.phase }
+        - { name: SAS, type: string, jsonPath: .status.sasAddress, priority: 1 }
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: A physical drive on a node, as that node's stormdrive sees it. The name is the drive's stable id (from its WWN, else model + serial).
+          properties:
+            spec:
+              type: object
+              description: The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here.
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                node: { type: string }
+                name: { type: string, description: "Kernel name (sdb, nvme0n1)." }
+                path: { type: string }
+                model: { type: string }
+                serial: { type: string }
+                firmware: { type: string }
+                wwid: { type: string, nullable: true }
+                capacityBytes: { type: integer }
+                blockSize: { type: integer, description: "Logical sector size: 512, 4096, or 520/528 on a drive that needs a reformat." }
+                needsReformat: { type: boolean }
+                owner: { type: string, enum: [free, stormblock, stormraid] }
+                enclosure: { type: string, nullable: true }
+                bay: { type: integer, nullable: true }
+                sasAddress: { type: string, nullable: true }
+                membership: { type: string }
+                activity: { type: string }
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: driveoperations.storage.storm.io
+spec:
+  group: storage.storm.io
+  scope: Cluster
+  names:
+    kind: DriveOperation
+    plural: driveoperations
+    singular: driveoperation
+    shortNames: [dop]
+    categories: [storage]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Node, type: string, jsonPath: .spec.node }
+        - { name: Phase, type: string, jsonPath: .status.phase }
+        - { name: Requester, type: string, jsonPath: .status.requester }
+        - { name: Job, type: string, jsonPath: .status.job, priority: 1 }
+        - { name: Message, type: string, jsonPath: .status.message }
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: Format, sanitize, partition or enroll a selection of one node's drives. A drive worker job (stormdrive POST /api/v1/worker/jobs) as an object.
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [node, select, steps]
+              properties:
+                node:
+                  type: string
+                  description: The node whose drives these are (its stormdrive runs the operation).
+                select:
+                  type: object
+                  description: Which drives. Every field given must match; at least one of drives, shelf, model, unusable.
+                  properties:
+                    drives: { type: array, items: { type: string }, description: "Handles: stable id, WWN, /dev path or name, serial." }
+                    shelf: { type: string, description: "Logical id, serial, sysfs id or SES SCSI id." }
+                    bays: { type: string, description: "Bays on that shelf, e.g. 0-11,14." }
+                    model: { type: string }
+                    unusable: { type: boolean, description: "Drives the kernel cannot use (520/528-byte sectors)." }
+                steps:
+                  type: array
+                  description: In order, per drive. format/sanitize, then partition, then enroll; each at most once.
+                  items:
+                    type: object
+                    required: [op]
+                    properties:
+                      op: { type: string, enum: [format, sanitize, partition, enroll] }
+                      blockSize: { type: integer, description: "format: 512 or 4096." }
+                      block_size: { type: integer }
+                      method: { type: string, enum: [block, crypto, overwrite], description: "sanitize." }
+                      role: { type: string, enum: [data, system], description: "partition/enroll." }
+                      tier: { type: string, description: "enroll: the slab's tier (default from the drive kind)." }
+                destroy:
+                  type: array
+                  items: { type: string }
+                  description: Drives whose current contents (a stormblock slab, a stormraid set, a filesystem) may be destroyed, by stable id, WWN or serial — never a /dev name. An owner has to let go first (leave the fleet, delete the RaidSet).
+                dryRun:
+                  type: boolean
+                  description: Report the plan (which drives would run, which are refused and why) and do nothing.
+                resume:
+                  type: integer
+                  description: Raise to resume the drives a restart or an unreachable apiserver interrupted.
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                phase: { type: string, description: "Pending, Refused, Planned, Running, Interrupted, Succeeded, Failed, Cancelled." }
+                message: { type: string }
+                requester: { type: string, nullable: true }
+                job: { type: string }
+                observedGeneration: { type: integer, nullable: true }
+                resumed: { type: integer }
+                drives:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
