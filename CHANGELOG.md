@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.19.1] — 2026-10-06
+
+### Fixed
+- An automatic drain the engine refuses (409 during a rebuild) or does not answer stays `pending`, is retried each fleet tick and adopts the engine's own drain, so the drive still retires; a drain the engine forgot across a restart is started again (#43)
+
+### Documentation
+- The engine drains a drive reported `failed` regardless of `drain`, and rebuilds failing/failed drives; `drain_on_failing = false` stops only stormdrive's drain and retire (#43, stormcos#65)
+
 ### 2026-10-06
 - **fix:** an automatic drain the engine refuses (409 while it rebuilds the drive's volumes) or does not answer stays `pending` and is retried every fleet tick, adopting the drain the engine starts after its rebuild — the drive now still retires (#43)
 - **fix:** a drain the engine forgot across its restart is started again (it was skipped: the record still read `running`) (#43)
