@@ -24,7 +24,7 @@ HBAs, SAS shelves (SES), PCIe slots                     │  inventory.json
           drain, overcommit (Bearer token)        stormblock :9090
 ```
 
-## What it does today (v0.17.0)
+## What it does today (v0.18.0)
 
 Everything below is in the code on `main`. Items the code does **not** do yet
 are listed under [Not yet](#not-yet).
@@ -334,7 +334,15 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `stormblock.api_token` | `""` | engine bearer token; see below |
 | `stormblock.token_file` | `""` | file holding it; see below |
 | `stormblock.admin_token` | `""` | for `DELETE`s; empty = `$STORMBLOCK_ADMIN_TOKEN`, then the api token |
-| `api.api_token` | `""` | **parsed and not enforced**: the API is open (#19) |
+| `api.admin_token` | `""` | node-local break-glass bearer for writes; empty = `$STORMDRIVE_ADMIN_TOKEN`, then `admin_token_file` (`api_token` is read as this) |
+| `api.admin_token_file` | `""` | root-only file holding it |
+| `api.admin_gate` | `enforce` | `audit` lets refused writes through and logs them (rollout only) |
+| `kubernetes.api_url` | `""` | the apiserver; empty = `$STORMDRIVE_KUBE_API`, then in-cluster. None = only the admin token writes, no CRD objects |
+| `kubernetes.ca_file` | `""` | its CA; empty = `$STORMDRIVE_KUBE_CA`, then the service account's |
+| `kubernetes.token_file` | `""` | stormdrive's own credential (re-read every call); empty = `$STORMDRIVE_KUBE_TOKEN_FILE`, then the service account's |
+| `kubernetes.insecure` | `false` | skip TLS verification (lab only) |
+| `kubernetes.controller` | `true` | keep `Drive` objects, run this node's `DriveOperation`s |
+| `kubernetes.interval_secs` | `5` | between controller passes |
 | `firmware.chunk_kib` | `32` | download chunk; raised to the drive's offset boundary |
 | `firmware.max_image_mib` | `256` | largest image upload (also the request body limit) |
 | `worker.max_per_hba` | `8` | drive-worker low-level steps at once behind one HBA |
@@ -356,10 +364,79 @@ usable. A failed attempt is retried after 10 minutes.
 While no token is found, it looks again on every call. On a 401 it re-reads
 the token and retries once if it changed.
 
+## Who may change a drive (#45)
+
+Owner: "non admins cant format drives etc." (stormcos#250). **Reads are open;
+every write needs a storage-admin** (`src/kubeauth.rs`):
+
+- a **Kubernetes bearer** (`Authorization: Bearer …`): stormdrive asks the
+  apiserver who it is (TokenReview) and whether that user may act
+  (SubjectAccessReview on `storage.storm.io`). Format, sanitize, partition,
+  enroll, firmware, tests, fleet join/leave and worker jobs are `create
+  driveoperations`; designation, overcommit, locate, drain, cancels are
+  `update drives/<id>`; forget is `delete drives/<id>`; shelf locate is
+  `update enclosures/<key>`; firmware images are `create`/`delete
+  firmwareimages`. The release's `storage-admin` role allows all of it,
+  `storage-viewer` none of it. Answers are cached a minute;
+- or the node-local **admin token** (`[api] admin_token`), for a node with no
+  apiserver.
+
+No credential or an unknown one → 401; a user without the role → 403 with
+the apiserver's reason; the apiserver unreachable → 503. A worker job
+**dry run** is a read and stays open. `GET /api/v1/health` says how writes
+are decided (`writes: {gate, apiserver, admin_token}`).
+
+A worker job remembers who asked and **asks the apiserver again before every
+step** on every drive: a role revoked mid-batch stops the rest. An apiserver
+that cannot answer then interrupts the drive (resume later); it never runs
+unchecked.
+
+**Audit:** every write decision (allowed, refused, audit-only) is one JSON
+line `{time, who, method, path, resource, verb, target, decision, reason,
+status}` in the log and `<data_dir>/audit.log`, and an `audit` event in
+`/api/v1/events`.
+
+**Owner:** every drive reports `owner`: `stormblock` (in the fleet, or a slab
+on it), `stormraid` (a RAID set superblock, `STORMRD1`), else `free`. An owned
+drive refuses format, sanitize and partition until the owner lets go (leave
+the fleet; delete the RaidSet) and the operation names it in `destroy` by
+stable id, WWN or serial.
+
+### As Kubernetes objects
+
+With `[kubernetes]` set, each node's stormdrive keeps two cluster-scoped kinds
+in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
+`deploy/rbac.yaml`, stormcos#302):
+
+- **`Drive`**, one per drive, named by its stable id, labelled
+  `storm.io/node`, `storm.io/shelf`, `storm.io/bay`, …; status has model,
+  size, sector size (`blockSize`, 520 = needs reformat), enclosure, bay, SAS
+  address, health, owner, prep. `kubectl get drives`. Writing one changes
+  nothing (the node puts its report back).
+- **`DriveOperation`**: a drive-worker job as an object (`node`, `select`,
+  `steps`, `destroy`, `dryRun`, `resume`) — see
+  `deploy/driveoperation.example.yaml`. Only storage-admin can create one.
+  The node's stormdrive takes the requester **the apiserver stamped** on it
+  (`storage.storm.io/requester`, rustkube#210), re-checks it with a
+  SubjectAccessReview, runs the job (which survives restarts in jobs.json),
+  and keeps `status` (phase Pending/Refused/Planned/Running/Interrupted/
+  Succeeded/Failed/Cancelled, per-drive progress) plus a Kubernetes Event per
+  decision. **No stamp → Refused**: the object alone is never trusted.
+  Deleting it cancels the steps not yet started; raising `spec.resume`
+  resumes interrupted drives.
+
+```bash
+kubectl get drives -l storm.io/node=c2nr0q2 -o wide
+kubectl apply -f deploy/driveoperation.example.yaml   # dryRun: true first
+kubectl get driveoperations
+```
+
 ## API
 
 All JSON on :9092. Errors are `{"error": "...", "code": "not_found" |
-"bad_request" | "conflict" | "stormblock" | "internal"}`. A drive `{id}` is
+"bad_request" | "conflict" | "stormblock" | "internal" | "unauthorized" |
+"forbidden" | "unavailable"}`. Every non-GET needs a storage-admin bearer
+([above](#who-may-change-a-drive-45)). A drive `{id}` is
 its DriveId, WWID (any case), `/dev` path or kernel name, or serial, looked up
 in that order. A shelf `{key}` is its logical id (with or without `0x`, any
 case), serial, shelf id, or an SES device's SCSI id.
@@ -368,7 +445,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 |---|---|
 | `GET /`, `/ui`, `/ui/` | the embedded page; works behind a proxy prefix |
 | `GET /assets/app.{js,css}`, `/ui/assets/…` | the page's two assets |
-| `GET /api/v1/health` | `{status, version, node}` — liveness |
+| `GET /api/v1/health` | `{status, version, node, writes}` — liveness, and how writes are decided |
 | `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
 | `GET /api/v1/monitor` | health-poll cost, stuck drives, last discovery pass |
 | `GET /api/v1/drives` | every drive, with any running test/format/firmware run inlined |
@@ -403,16 +480,17 @@ Body-free forms, for stormview renderers that POST with no body:
 `…/format/{block_size}`, `/shelves/{key}/locate/{on|off}`,
 `/shelves/{key}/format/{block_size}`.
 
-There is no `/metrics` endpoint yet (#18), and no authentication (#19).
+There is no `/metrics` endpoint yet (#18), and no TLS (#19).
 
 ```bash
+T="Authorization: Bearer $(oc whoami -t)"     # a storage-admin's bearer
 curl -s http://localhost:9092/api/v1/drives | python3 -m json.tool
-curl -s -X POST http://localhost:9092/api/v1/drives/sdb/locate -d '{"on":true}' -H 'Content-Type: application/json'
+curl -s -H "$T" -X POST http://localhost:9092/api/v1/drives/sdb/locate -d '{"on":true}' -H 'Content-Type: application/json'
 curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:9092/api/v1/placement?since=<generation>"
-curl -s -X POST http://localhost:9092/api/v1/format -H 'Content-Type: application/json' \
+curl -s -H "$T" -X POST http://localhost:9092/api/v1/format -H 'Content-Type: application/json' \
      -d '{"drives":["sdb","sdc"],"block_size":4096}'
-curl -s -X PUT --data-binary @image.lod http://localhost:9092/api/v1/firmware/images/image.lod
-curl -s -X POST http://localhost:9092/api/v1/firmware -H 'Content-Type: application/json' \
+curl -s -H "$T" -X PUT --data-binary @image.lod http://localhost:9092/api/v1/firmware/images/image.lod
+curl -s -H "$T" -X POST http://localhost:9092/api/v1/firmware -H 'Content-Type: application/json' \
      -d '{"model":"ST1200MM0098","image":"image.lod"}'
 ```
 
@@ -464,7 +542,10 @@ for installs outside stormcos.
 
 These are documented as design only; the code does not do them:
 
-- `/metrics` (#18) and API authentication (#19)
+- `/metrics` (#18); TLS and read access on :9092 (#19)
+- `DriveOperation`s run only once the apiserver stamps their requester
+  (rustkube#210) and stormcos installs the CRDs and gives stormdrive a
+  credential (stormcos#302); the page has no way to present a bearer yet
 - SCSI log sense / ATA SMART for SAS and SATA health (#22); wear-out
   projection (#23); persisted events (#25)
 - a node-wide sequencer with a stormblock redundancy check before a fleet

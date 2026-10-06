@@ -538,8 +538,24 @@ The route table, request bodies and handle resolution are in the
   `locate`). Each writable field maps onto an existing REST verb. Every object
   is a projection of the inventory; there is no second store.
 - Errors use stormblock's `{error, code}` envelope.
-- **Auth: none.** `[api] api_token` is in the config schema from day one, so
-  turning auth on is not a format change, but nothing checks it yet (#19).
+- **Writes need a storage-admin (#45, `kubeauth.rs`).** A middleware
+  classifies every non-GET into a `storage.storm.io` resource + verb and
+  checks the bearer: the node-local admin token, or TokenReview +
+  SubjectAccessReview against the apiserver (cached a minute). The decision
+  rides into the handler as a `Requester`; a worker job keeps it and the
+  worker re-checks it (uncached) before each step. Every decision is an
+  audit line (log, `<data_dir>/audit.log`, event ring). Reads stay open; TLS
+  and read access are #19.
+- **Drives and operations as Kubernetes objects (#45, `controller.rs`).**
+  With an apiserver, a loop (every `kubernetes.interval_secs`) writes one
+  `Drive` per inventory drive (merge-patch + `/status`, only when changed or
+  every 5 min; deletes this node's objects whose drive was forgotten) and
+  runs this node's `DriveOperation`s: requester from the apiserver's stamp
+  (`storage.storm.io/requester`, rustkube#210; none → Refused), a fresh
+  SubjectAccessReview, `worker::submit_for` (the job records the operation
+  name), status from the job, a Kubernetes Event per transition. Plain
+  reqwest (`kubeapi.rs`), no kube-rs. The CRDs and the controller's role are
+  `deploy/crds.yaml` and `deploy/rbac.yaml`.
 - **No `/metrics` yet** (#18). At 160 drives × ~6 gauges it would be ~1,000
   series per node.
 

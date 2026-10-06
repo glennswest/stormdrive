@@ -3,6 +3,16 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-06
+- **BREAKING:** every write on :9092 needs a storage-admin (#45, stormcos#250): a Kubernetes bearer the apiserver allows (TokenReview + SubjectAccessReview on `storage.storm.io`; drive operations are `create driveoperations`, other drive writes `update drives`) or the node-local `[api] admin_token`. 401 / 403 / 503; reads and worker dry runs stay open; `[api] admin_gate = "audit"` for rollout. No apiserver and no admin token = every write refused
+- **feat:** audit — every write decision is a JSON line (who, method, path, resource, verb, target, decision, reason, status) in the log and `<data_dir>/audit.log`, and an `audit` event
+- **feat:** worker jobs record their `requester` and re-check it with the apiserver before every step; an unreachable apiserver interrupts the drive (resume), a revoked role fails it
+- **feat:** `owner` on every drive (`free` / `stormblock` / `stormraid`): stormraid superblocks (`STORMRD1`) are detected and held like a stormblock slab
+- **feat:** `Drive` and `DriveOperation` as Kubernetes objects (`deploy/crds.yaml`, `storage.storm.io/v1`): with `[kubernetes]` set, a controller keeps this node's Drive objects and runs its DriveOperations (requester from the apiserver's stamp, rustkube#210, re-checked by SubjectAccessReview; status, Events, cancel on delete, `spec.resume`); `deploy/rbac.yaml` is its own role; `deploy/driveoperation.example.yaml`
+- **feat:** `GET /api/v1/health` reports `writes {gate, apiserver, admin_token}`; kube Drive status adds `owner`, `enclosure`, `bay`, `sasAddress`
+- **test:** medium `writes-need-storage-admin`; suites skip (not fail) writes when the run has no bearer; the harness runs with an admin token
+- **docs:** README "Who may change a drive", config keys, architecture; work plan for #45
+
 ### 2026-09-28
 - **docs:** work plan — #5 done: v0.17.0 verified on da27975
 - **docs:** work plan — comment mining since 2026-09-25: #39 (restart leaves non-worker ops stuck busy, P1), #40 (worker test step); live-pass additions on #30, #31
