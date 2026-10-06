@@ -33,6 +33,7 @@ pub mod scsi;
 pub mod ses;
 pub mod smart;
 pub mod stormblock;
+pub mod tls;
 pub mod topology;
 pub mod usage;
 pub mod worker;

@@ -5,19 +5,24 @@
 //! is the API contract the suites check — errors, refusals, the feed, kube,
 //! placement, the page, a long wave — and that the suites report pass/skip
 //! correctly and exit 0. On a test machine the same suites meet real drives.
+//! Served over TLS from a CA minted here (#19), as on a node.
+
+mod common;
 
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use stormdrive_test::env::Env;
+use stormdrive_test::env::{Env, Tls};
 use stormdrive_test::report::Report;
 
 struct Daemon {
     child: Child,
     dir: PathBuf,
     base: String,
+    ca: String,
+    client_pair: (String, String),
 }
 
 impl Drop for Daemon {
@@ -33,9 +38,14 @@ async fn start() -> Daemon {
     let dir = std::env::temp_dir().join(format!("stormdrive-harness-{}-{port}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("stormdrive.toml");
+    let ca = common::Ca::new("harness node CA");
+    let (ca_file, crt, key) = common::node_certs(&dir, &ca);
     std::fs::write(
         &cfg,
-        "[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nadmin_token = \"harness-admin\"\n",
+        format!(
+            "[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nadmin_token = \"harness-admin\"\n{}",
+            common::api_toml(&ca_file, &crt, &key)
+        ),
     )
     .unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_stormdrive"))
@@ -45,10 +55,12 @@ async fn start() -> Daemon {
         .stdout(Stdio::null())
         .spawn()
         .expect("start stormdrive");
-    let base = format!("http://127.0.0.1:{port}");
-    let d = Daemon { child, dir, base };
+    let base = format!("https://127.0.0.1:{port}");
+    let client_pair = ca.issue("stormdrive-test", &["storm:tests"], false);
+    let http = common::client(&ca, None);
+    let d = Daemon { child, dir, base, ca: ca.pem(), client_pair };
     for _ in 0..100 {
-        if reqwest::get(format!("{}/api/v1/health", d.base)).await.is_ok_and(|r| r.status().is_success()) {
+        if http.get(format!("{}/api/v1/health", d.base)).send().await.is_ok_and(|r| r.status().is_success()) {
             return d;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -57,8 +69,14 @@ async fn start() -> Daemon {
 }
 
 fn env(d: &Daemon, suite: &str, secs: u64) -> Env {
+    let (c, k) = &d.client_pair;
     Env {
         base: Some(d.base.clone()),
+        base_from_node: false,
+        // The node CA, and a client pair from it: reads by certificate,
+        // writes by the admin token (a bearer wins over the certificate).
+        tls: Tls { ca: Some(d.ca.clone().into_bytes()), identity: Some(format!("{c}\n{k}").into_bytes()) },
+        read_token: None,
         run_id: format!("harness-{suite}"),
         timeout: Duration::from_secs(secs),
         results: d.dir.join("results"),
@@ -86,7 +104,10 @@ async fn an_unreachable_node_is_could_not_run() {
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let dir = std::env::temp_dir().join(format!("stormdrive-harness-down-{port}"));
     let env = Env {
-        base: Some(format!("http://127.0.0.1:{port}")),
+        base: Some(format!("https://127.0.0.1:{port}")),
+        base_from_node: false,
+        tls: Tls::default(),
+        read_token: None,
         run_id: "harness-down".into(),
         timeout: Duration::from_secs(30),
         results: dir.clone(),

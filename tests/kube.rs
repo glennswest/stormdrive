@@ -121,7 +121,7 @@ async fn start(apiserver: &str) -> Daemon {
     std::fs::write(
         &cfg,
         format!(
-            "node_name = \"harness-node\"\n[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[kubernetes]\napi_url = \"{apiserver}\"\ninterval_secs = 1\n"
+            "node_name = \"harness-node\"\n[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[kubernetes]\napi_url = \"{apiserver}\"\ninterval_secs = 1\n# The write gate over plain HTTP; TLS and reads are tests/tls.rs (#19).\n[api]\nallow_anonymous = true\n"
         ),
     )
     .unwrap();

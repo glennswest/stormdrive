@@ -41,10 +41,14 @@ drain_on_failing = true     # Failing/Failed in the fleet → drain, then retire
 # admin_token = ""          # for DELETEs when the engine sets management.admin_token
 # tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", sas_hdd = "cool", sata_hdd = "cool" }
 
-[api]                       # who may change drives (#45): every write on :9092
+[api]                       # :9092's transport and callers (#19, #45): TLS, nothing anonymous but health
 admin_token = ""            # break-glass bearer for a node with no apiserver; empty = $STORMDRIVE_ADMIN_TOKEN, then admin_token_file
 admin_token_file = ""       # root-only file holding it
 admin_gate = "enforce"      # enforce | audit (let writes through, log what enforce would refuse)
+tls_cert_file = "/data/stormcert/stormdrive.crt"  # serving pair (stormcert-agent serving --cn stormdrive); re-read on change
+tls_key_file = "/data/stormcert/stormdrive.key"   # until it exists: TLS handshakes fail, plain HTTP answers health only
+client_ca_files = ["/data/stormcert/ca.crt"]      # client certificates verified against these (the node CA); missing files skipped
+allow_anonymous = false     # TRANSITION: plain HTTP + reads with no credential as before; sent credentials still checked
 
 [firmware]
 chunk_kib = 32              # WRITE BUFFER / NVMe download chunk

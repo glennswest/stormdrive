@@ -1,15 +1,22 @@
-//! The node's stormdrive, over HTTP, the way any client on the fleet sees it.
+//! The node's stormdrive, over HTTPS (#19), the way any client on the fleet
+//! sees it: the node CA checks the server, a client pair or a bearer says
+//! who the run is.
 
 use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::env::Tls;
 use crate::report::Why;
 
 pub struct Api {
     http: reqwest::Client,
     base: String,
+    tls: Tls,
     token: Option<String>,
+    /// The bearer is a storage-admin one (`STORM_STORMDRIVE_TOKEN`): a
+    /// refused write is then a failure, not a skip.
+    admin: bool,
     /// The node's stormdrive version, from `/api/v1/health` (api-up).
     pub version: std::sync::Mutex<Option<(u64, u64, u64)>>,
 }
@@ -45,13 +52,37 @@ pub fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
 }
 
 impl Api {
-    pub fn new(base: &str, token: Option<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .expect("http client");
-        Api { http, base: base.trim_end_matches('/').to_string(), token, version: Default::default() }
+    /// `token`: the run's storage-admin bearer; `read_token`: a bearer for
+    /// reads when there is none (the pod's service account).
+    pub fn new(base: &str, tls: &Tls, token: Option<String>, read_token: Option<String>) -> Self {
+        let mut b = reqwest::Client::builder().timeout(Duration::from_secs(60)).connect_timeout(Duration::from_secs(10));
+        if let Some(ca) = &tls.ca {
+            match reqwest::Certificate::from_pem_bundle(ca) {
+                Ok(cs) => {
+                    for c in cs {
+                        b = b.add_root_certificate(c);
+                    }
+                }
+                Err(e) => eprintln!("STORM_STORMDRIVE_CA: {e}"),
+            }
+        }
+        if let Some(id) = &tls.identity {
+            match reqwest::Identity::from_pem(id) {
+                Ok(i) => b = b.identity(i),
+                Err(e) => eprintln!("STORM_STORMDRIVE_CERT/_KEY: {e}"),
+            }
+        }
+        let http = b.build().expect("http client");
+        let admin = token.is_some();
+        Api { http, base: base.trim_end_matches('/').to_string(), tls: tls.clone(), token: token.or(read_token), admin, version: Default::default() }
+    }
+
+    pub fn tls(&self) -> &Tls {
+        &self.tls
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -98,17 +129,30 @@ impl Api {
     /// than failing it — the gate doing its job is not the feature's fault.
     async fn write(&self, req: reqwest::RequestBuilder) -> Result<Reply, Why> {
         let r = self.send(req).await?;
-        if self.token.is_none() && matches!(r.status, 401 | 403) {
+        if !self.admin && matches!(r.status, 401 | 403) {
             return Err(Why::Skip(format!("needs a storage-admin bearer (STORM_STORMDRIVE_TOKEN): HTTP {}", r.status)));
         }
         Ok(r)
     }
 
+    /// A client with only `bearer` (or no credential at all): the node CA
+    /// still checks the server, but no client certificate is presented.
+    fn bare(&self, bearer: Option<&str>) -> Api {
+        let tls = Tls { ca: self.tls.ca.clone(), identity: None };
+        Api::new(&self.base, &tls, bearer.map(str::to_string), None)
+    }
+
     /// The same write with no credential at all, or with `bearer`, whatever
     /// this client holds.
     pub async fn post_as(&self, path: &str, bearer: Option<&str>) -> Result<Reply, Why> {
-        let api = Api::new(&self.base, bearer.map(str::to_string));
+        let api = self.bare(bearer);
         api.send(api.http.post(api.url(path))).await
+    }
+
+    /// The same read with no credential at all, or with `bearer`.
+    pub async fn get_as(&self, path: &str, bearer: Option<&str>) -> Result<Reply, Why> {
+        let api = self.bare(bearer);
+        api.send(api.http.get(api.url(path))).await
     }
 
     /// A streaming GET (kube `?watch=1`): the first `want` lines, or what

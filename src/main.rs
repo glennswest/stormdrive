@@ -102,10 +102,23 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(stormdrive::controller::run(state.clone(), k.clone()));
     }
 
+    // :9092 (#19): TLS from the stormcert pair, and plain HTTP for health,
+    // on one port; the router's guard decides every other request.
+    let api = &state.config.api;
+    let cert = stormdrive::tls::ServingCert::new(api.tls_cert_file.clone().into(), api.tls_key_file.clone().into());
+    let cas: Vec<PathBuf> = api.client_ca_files.iter().map(PathBuf::from).collect();
+    let tls = stormdrive::tls::server_config(cert, &cas)?;
     let app = stormdrive::api::router(state.clone());
-    let listener = tokio::net::TcpListener::bind(&listen).await?;
-    tracing::info!(%listen, version = stormdrive::VERSION, "stormdrive management API up");
-    axum::serve(listener, app)
+    let tcp = tokio::net::TcpListener::bind(&listen).await?;
+    let listener = stormdrive::tls::Listener::new(tcp, tls)?;
+    tracing::info!(
+        %listen,
+        version = stormdrive::VERSION,
+        cert = %api.tls_cert_file,
+        anonymous = api.allow_anonymous,
+        "stormdrive management API up: TLS, and plain HTTP for health"
+    );
+    axum::serve(listener, app.into_make_service_with_connect_info::<stormdrive::tls::Peer>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("shutting down");

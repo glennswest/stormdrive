@@ -50,7 +50,7 @@ async fn a_restart_leaves_no_drive_stuck_busy() {
     let inv = json!({"drives": drives.iter().map(|d| (d["id"].as_str().unwrap().to_string(), d.clone())).collect::<serde_json::Map<_, _>>()});
     std::fs::write(dir.join("inventory.json"), serde_json::to_vec(&inv).unwrap()).unwrap();
     let cfg = dir.join("stormdrive.toml");
-    std::fs::write(&cfg, "node_name = \"harness-node\"\n[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n").unwrap();
+    std::fs::write(&cfg, "node_name = \"harness-node\"\n[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nallow_anonymous = true\n").unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_stormdrive"))
         .args(["--config", cfg.to_str().unwrap(), "--listen", &format!("127.0.0.1:{port}")])
         .args(["--data-dir", dir.to_str().unwrap()])

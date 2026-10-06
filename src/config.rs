@@ -194,9 +194,11 @@ impl Default for StormBlockConfig {
     }
 }
 
-/// Who may change drives (#45, stormcos#250): every write on :9092 needs a
-/// Kubernetes bearer the apiserver allows on `storage.storm.io` (the
-/// release's `storage-admin` role), or the node-local admin token.
+/// :9092's transport and its callers (#19, #45, stormcos#250): TLS from a
+/// stormcert pair, nothing anonymous but health. A read needs a node-CA
+/// client certificate, a Kubernetes bearer the apiserver allows `get` on
+/// `storage.storm.io` (`storage-viewer`), or the admin token; a write needs
+/// `storage-admin` (bearer or client certificate) or the admin token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApiConfig {
@@ -213,11 +215,34 @@ pub struct ApiConfig {
     /// goes through and is logged as one `enforce` would refuse — for
     /// rolling the gate out, never for running open.
     pub admin_gate: String,
+    /// The serving certificate (PEM, chain first) for :9092 (#19) — what
+    /// `stormcert-agent serving --cn stormdrive` writes. Re-read when it
+    /// changes; while there is none a TLS handshake fails and plain HTTP
+    /// answers health only.
+    pub tls_cert_file: String,
+    pub tls_key_file: String,
+    /// The CAs a client certificate is verified against: the node CA. A
+    /// file that is not there is skipped; with none, only bearers
+    /// authenticate.
+    pub client_ca_files: Vec<String>,
+    /// **Transition only** (#19): serve plain HTTP and reads with no
+    /// credential as before, so a release can carry TLS before every caller
+    /// presents one. A credential that is sent is still checked, and writes
+    /// keep the #45 gate.
+    pub allow_anonymous: bool,
 }
 
 impl Default for ApiConfig {
     fn default() -> Self {
-        Self { admin_token: String::new(), admin_token_file: String::new(), admin_gate: "enforce".into() }
+        Self {
+            admin_token: String::new(),
+            admin_token_file: String::new(),
+            admin_gate: "enforce".into(),
+            tls_cert_file: "/data/stormcert/stormdrive.crt".into(),
+            tls_key_file: "/data/stormcert/stormdrive.key".into(),
+            client_ca_files: vec!["/data/stormcert/ca.crt".into()],
+            allow_anonymous: false,
+        }
     }
 }
 
@@ -281,6 +306,9 @@ impl Config {
         }
         if !matches!(self.api.admin_gate.as_str(), "enforce" | "audit") {
             anyhow::bail!("api.admin_gate {:?}: use enforce or audit", self.api.admin_gate);
+        }
+        if self.api.tls_cert_file.trim().is_empty() != self.api.tls_key_file.trim().is_empty() {
+            anyhow::bail!("api.tls_cert_file and api.tls_key_file go together");
         }
         if self.kubernetes.interval_secs == 0 {
             anyhow::bail!("kubernetes.interval_secs must be non-zero");

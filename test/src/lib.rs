@@ -91,7 +91,17 @@ pub async fn run(suite: &str, env: &Env, r: &mut Report) -> i32 {
         eprintln!("could not run: neither STORM_NODE nor STORM_STORMDRIVE_URL is set");
         return 2;
     };
-    let api = Api::new(&base, env.token.clone());
+    let mut api = Api::new(&base, &env.tls, env.token.clone(), env.read_token.clone());
+    // A node still on plain HTTP (no serving pair yet, `allow_anonymous`,
+    // #19): found from STORM_NODE's https:// by asking health over http://.
+    if base.starts_with("https://") && env.base_from_node && api.get("api/v1/health").await.is_err() {
+        let plain = format!("http://{}", &base["https://".len()..]);
+        let p = Api::new(&plain, &env.tls, env.token.clone(), env.read_token.clone());
+        if p.get("api/v1/health").await.is_ok_and(|r| r.ok()) {
+            eprintln!("note: {base} does not speak TLS; using {plain} (stormdrive before #19, or no serving pair)");
+            api = p;
+        }
+    }
     let limit = env.timeout + Duration::from_secs(30);
     let result = match suite {
         "short" => tokio::time::timeout(limit, short::run(env, &api, r)).await,

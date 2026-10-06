@@ -14,6 +14,7 @@ use crate::report::{ensure, Outcome, Report, Why};
 pub async fn run(env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     crate::api_up(api, r).await?;
     r.run("writes-need-storage-admin", writes_need_admin(api, env)).await;
+    r.run("reads-need-a-credential", reads_need_credential(api)).await;
     r.run("not-found-envelope", not_found(api)).await;
     r.run("bad-requests", bad_requests(api, env)).await;
     r.run("refusals-on-guarded-drive", refusals(api)).await;
@@ -42,7 +43,7 @@ fn status_is(reply: &crate::api::Reply, want: &[u16], what: &str) -> Result<(), 
 /// Every write needs a storage-admin bearer (#45, stormcos#250): with none,
 /// or a made-up one, a write is refused before it reaches a drive — even one
 /// that names no drive at all. With the run's bearer it gets past the gate
-/// (and is then a plain 404). Reads stay open.
+/// (and is then a plain 404). Reads with the run's credential answer.
 async fn writes_need_admin(api: &Api, env: &Env) -> Outcome {
     api.need((0, 18, 0), "the write gate")?;
     let h = api.get("api/v1/health").await?.json("GET health")?;
@@ -60,11 +61,47 @@ async fn writes_need_admin(api: &Api, env: &Env) -> Outcome {
     for (p, what) in [("api/v1/format", "a batch format"), ("api/v1/worker/jobs", "a worker job (not a dry run)")] {
         status_is(&api.post_as(p, None).await?, &[401], what)?;
     }
-    status_is(&api.get("api/v1/drives").await?, &[200], "a read")?;
-    let mut detail = "no bearer / made-up bearer → 401 on designation, format, worker job; reads open".to_string();
+    status_is(&api.get("api/v1/drives").await?, &[200], "a read with the run's credential")?;
+    let mut detail = "no bearer / made-up bearer → 401 on designation, format, worker job; the run reads".to_string();
     if let Some(t) = &env.token {
         status_is(&api.post_as(path, Some(t)).await?, &[404], "the run's bearer, unknown drive")?;
         detail.push_str("; the run's bearer gets through to a 404");
+    }
+    Ok(detail)
+}
+
+/// Nothing answers anonymously but health (#19, stormcos#81): with no
+/// credential a read is 401 (the page's shell too, which then signs in), a
+/// made-up bearer is 401 whatever the node allows, and plain HTTP answers
+/// health only. A node on `allow_anonymous` (the transition) skips the
+/// anonymous half.
+async fn reads_need_credential(api: &Api) -> Outcome {
+    api.need((0, 21, 0), "TLS and read credentials")?;
+    let h = api.get_as("api/v1/health", None).await?;
+    status_is(&h, &[200], "health with no credential")?;
+    for path in ["api/v1/drives", "metrics", "api/v1/placement"] {
+        status_is(&api.get_as(path, Some("not-a-real-bearer")).await?, &[401], &format!("{path} with a made-up bearer"))?;
+    }
+    if h.body["reads"]["anonymous"] == serde_json::json!(true) {
+        return Err(Why::Skip("the node runs api.allow_anonymous (transition): made-up bearers refused, anonymous reads served".into()));
+    }
+    for path in ["api/v1/drives", "metrics", "api/v1/placement", "api/v1/components", "api/v1/worker/jobs"] {
+        let r = api.get_as(path, None).await?;
+        status_is(&r, &[401], &format!("{path} with no credential"))?;
+        ensure(r.body["code"] == "unauthorized", format!("{path}: envelope {}", r.text))?;
+    }
+    let shell = api.get_as("", None).await?;
+    status_is(&shell, &[401], "the page with no credential")?;
+    ensure(shell.content_type.starts_with("text/html"), "the page's 401 is not the page")?;
+    status_is(&api.get_as("assets/app.js", None).await?, &[200], "the page's code")?;
+    let mut detail = "no credential → 401 on drives, metrics, placement, feed, jobs, page; health and assets open".to_string();
+    if let Some(rest) = api.base().strip_prefix("https://") {
+        let plain = Api::new(&format!("http://{rest}"), &Default::default(), None, None);
+        status_is(&plain.get("api/v1/health").await?, &[200], "health over plain HTTP")?;
+        let d = plain.get("api/v1/drives").await?;
+        status_is(&d, &[403], "drives over plain HTTP")?;
+        ensure(d.body["code"] == "tls_required", format!("plain HTTP envelope {}", d.text))?;
+        detail.push_str("; plain HTTP: health only (403 tls_required)");
     }
     Ok(detail)
 }

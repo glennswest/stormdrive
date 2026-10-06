@@ -212,29 +212,81 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/summary", get(summary))
         // Kubernetes-shaped resources, served by this daemon (stormblock#80).
         .merge(kube::router())
-        .layer(axum::middleware::from_fn_with_state(state.clone(), gate_writes))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), guard))
         .layer(axum::extract::DefaultBodyLimit::max(
             state.config.firmware.max_image_mib as usize * 1024 * 1024 + 4096,
         ))
         .with_state(state)
 }
 
-/// Every write passes the gate (#45, `kubeauth`): a storage-admin bearer or
-/// the node's admin token. The requester rides into the handler as an
-/// extension (a worker job keeps it for the re-check). A worker job that is
-/// only a dry run is a read and stays open.
-async fn gate_writes(
+/// Every request but health passes the gate (#19, #45, `kubeauth`):
+/// - plain HTTP answers health only (unless `allow_anonymous`);
+/// - a read needs the admin token, a node-CA client certificate, or a
+///   bearer allowed `get` on `storage.storm.io`; the page's shell, asked
+///   with no credential, is answered 401 with the page (it signs in);
+/// - a write needs a storage-admin bearer or client certificate, or the
+///   admin token. The requester rides into the handler as an extension (a
+///   worker job keeps it for the re-check). A worker job that is only a dry
+///   run is gated as a read.
+async fn guard(
     State(s): State<Arc<AppState>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    use crate::kubeauth::{audit_line, classify, Decision};
+    use crate::kubeauth::{audit_line, classify, is_health, is_page_asset, is_page_shell, read_access, Credential, Decision};
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
-    let Some(access) = classify(&method, &path) else {
+    if is_health(&path) {
         return next.run(req).await;
-    };
+    }
+    // Set by the listener (`tls::Peer`); absent = treated as plain HTTP.
+    let peer = req.extensions().get::<axum::extract::ConnectInfo<crate::tls::Peer>>().map(|c| c.0.clone());
+    let (tls, cert) = peer.map(|p| (p.tls, p.client)).unwrap_or((false, None));
+    if !tls && !s.gate.anonymous() {
+        return ApiError {
+            status: StatusCode::FORBIDDEN,
+            code: "tls_required",
+            message: "plain HTTP answers /api/v1/health only: use https://, verified against the node CA".into(),
+        }
+        .into_response();
+    }
+    if is_page_asset(&path) {
+        return next.run(req).await;
+    }
+    let bearer = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
+        .map(str::to_string);
+    let cred = Credential { bearer: bearer.as_deref(), cert: cert.as_ref() };
     let mut req = req;
+    let write = match classify(&method, &path) {
+        Some(access) if method == "POST" && path.trim_end_matches('/') == "/api/v1/worker/jobs" => {
+            let (parts, body) = req.into_parts();
+            let bytes = match axum::body::to_bytes(body, 4 << 20).await {
+                Ok(b) => b,
+                Err(e) => return ApiError::bad_request(format!("body: {e}")).into_response(),
+            };
+            let dry = serde_json::from_slice::<serde_json::Value>(&bytes).ok().is_some_and(|v| v["dry_run"] == json!(true) || v["dryRun"] == json!(true));
+            req = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+            (!dry).then_some(access)
+        }
+        other => other,
+    };
+    let Some(access) = write else {
+        let access = read_access(&path);
+        return match s.gate.check_read(cred, &access).await {
+            Decision::Allowed(r) | Decision::AuditOnly(r, _) => {
+                req.extensions_mut().insert(r);
+                next.run(req).await
+            }
+            Decision::Refused(401, _, _) if is_page_shell(&path) && cred.bearer.is_none() => {
+                (StatusCode::UNAUTHORIZED, Html(INDEX_HTML)).into_response()
+            }
+            Decision::Refused(code, _, why) => refused(code, why),
+        };
+    };
     if method == "POST" && path.trim_end_matches('/') == "/api/v1/worker/jobs" {
         let (parts, body) = req.into_parts();
         let bytes = match axum::body::to_bytes(body, 4 << 20).await {
@@ -247,25 +299,13 @@ async fn gate_writes(
             return next.run(req).await;
         }
     }
-    let bearer = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
-        .map(str::to_string);
-    let decision = s.gate.check(bearer.as_deref(), &access).await;
+    let decision = s.gate.check(cred, &access).await;
     let (requester, verdict, reason) = match decision {
         Decision::Allowed(r) => (r, "allowed", String::new()),
         Decision::AuditOnly(r, why) => (r, "allowed-audit-only", why),
         Decision::Refused(code, who, why) => {
             audit(&s, &audit_line(&method, &path, &access, &who, "refused", &why, Some(code)), &access).await;
-            let status = StatusCode::from_u16(code).unwrap_or(StatusCode::UNAUTHORIZED);
-            let code = match code {
-                403 => "forbidden",
-                503 => "unavailable",
-                _ => "unauthorized",
-            };
-            return ApiError { status, code, message: why }.into_response();
+            return refused(code, why);
         }
     };
     let who = requester.who.clone();
@@ -273,6 +313,17 @@ async fn gate_writes(
     let resp = next.run(req).await;
     audit(&s, &audit_line(&method, &path, &access, &who, verdict, &reason, Some(resp.status().as_u16())), &access).await;
     resp
+}
+
+/// The gate's refusal as the API's error envelope.
+fn refused(code: u16, why: String) -> Response {
+    let status = StatusCode::from_u16(code).unwrap_or(StatusCode::UNAUTHORIZED);
+    let code = match code {
+        403 => "forbidden",
+        503 => "unavailable",
+        _ => "unauthorized",
+    };
+    ApiError { status, code, message: why }.into_response()
 }
 
 /// One audit record: log + audit.log + the event ring (kind `audit`; a
@@ -383,6 +434,8 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "version": crate::VERSION,
         "node": s.node_name,
         "writes": s.gate.describe(),
+        // #19: whether reads with no credential (and plain HTTP) are served.
+        "reads": { "anonymous": s.gate.anonymous() },
     }))
 }
 
@@ -395,8 +448,9 @@ async fn resolve_id(s: &AppState, handle: &str) -> Result<DriveId, ApiError> {
 }
 
 /// What health polling costs on this node, and which drives are stuck.
-/// Prometheus text (#18): drives, shelves, the poller. Open, like every
-/// read; built from cached state only.
+/// Prometheus text (#18): drives, shelves, the poller. A read like any
+/// other (#19): a scraper presents a node-CA client certificate or a
+/// bearer. Built from cached state only.
 async fn metrics(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let page = {
         let inv = s.inventory.read().await;

@@ -47,15 +47,21 @@
   const enforcing = $derived(node?.writes?.gate === 'enforce')
   const writable = $derived(!enforcing || !!token)
 
+  // A read refused 401 (#19: nothing on :9092 answers anonymously but
+  // health): the page opens the sign-in box instead of showing an error.
+  let locked = $state(false)
+
   function signIn() {
     setBearer(pasted)
     token = bearer()
     pasted = ''
     signingIn = false
+    refresh()
   }
   function signOut() {
     setBearer('')
     token = ''
+    refresh()
   }
 
   /// Open the Prepare pane on a worker selection.
@@ -95,8 +101,14 @@
       hbas = hb.hbas || []
       jobs = jb.jobs || []
       error = ''
+      locked = false
     } catch (e) {
-      error = e.message || String(e)
+      if (e.signIn) {
+        if (!locked) signingIn = true
+        locked = true
+        drives = []
+        error = token ? 'this bearer is not one the node knows: sign in again' : ''
+      } else error = e.message || String(e)
     }
   }
 
@@ -323,7 +335,10 @@
       {#if counts.busy}<span class="acc"><b>{counts.busy}</b> busy</span>{/if}
     </div>
     <div class="auth">
-      {#if token}
+      {#if locked && !signingIn}
+        <span class="warn">sign in to see this node's drives</span>
+        <button onclick={() => (signingIn = true)}>Sign in</button>
+      {:else if token && !locked}
         <span class="ok">signed in</span> <button onclick={signOut}>Sign out</button>
       {:else if signingIn}
         <input type="password" placeholder="bearer (oc whoami -t)" bind:value={pasted} autocomplete="off"

@@ -4,9 +4,10 @@
 const m = location.pathname.match(/^(\/ui\/(?:proxy|ext)\/[^/]+\/)/)
 export const API = m ? m[1] : '/'
 
-// The storage-admin bearer (#47): every write on :9092 needs one since
-// 0.18.0 (#45). Pasted by the operator (`oc whoami -t`), kept for this tab
-// only (sessionStorage), sent on everything but plain reads.
+// The bearer (#47, #19): every write on :9092 needs a storage-admin one since
+// 0.18.0 (#45), and every read a storage-viewer one since 0.21.0 (#19).
+// Pasted by the operator (`oc whoami -t`), kept for this tab only
+// (sessionStorage), sent on every request.
 const KEY = 'stormdrive.bearer'
 
 export function bearer() {
@@ -32,9 +33,13 @@ export class ApiError extends Error {
     this.status = status
     this.code = code
   }
-  /// Refused for want of (or by) a storage-admin bearer.
+  /// Refused for want of (or by) a bearer.
   get auth() {
     return this.status === 401 || this.status === 403
+  }
+  /// No bearer, or one the node does not know: sign in.
+  get signIn() {
+    return this.status === 401
   }
 }
 
@@ -46,7 +51,7 @@ async function errorOf(r) {
     if (j.error) msg = j.error
     code = j.code
   } catch {}
-  if (r.status === 401) msg = `needs storage-admin: sign in with a bearer (${msg})`
+  if (r.status === 401) msg = `sign in with a bearer: storage-viewer to read, storage-admin to change (${msg})`
   else if (r.status === 403) msg = `needs storage-admin: this bearer may not (${msg})`
   return new ApiError(msg, r.status, code)
 }
@@ -58,8 +63,7 @@ function withAuth(opts = {}) {
 }
 
 export async function api(path, opts) {
-  const write = opts?.method && opts.method !== 'GET'
-  const r = await fetch(API + path, write ? withAuth(opts) : opts)
+  const r = await fetch(API + path, withAuth(opts))
   if (!r.ok) throw await errorOf(r)
   return r.json()
 }

@@ -156,11 +156,11 @@ async fn wave(env: &Env, api: &Api, n: usize, budget: Duration) -> Result<Wave, 
     // (1) readers.
     let mut tasks = tokio::task::JoinSet::new();
     let base = api.url("");
-    let token = env.token.clone();
+    let (tls, token, read_token) = (api.tls().clone(), env.token.clone(), env.read_token.clone());
     for i in 0..w.readers {
-        let (base, token) = (base.clone(), token.clone());
+        let (base, tls, token, read_token) = (base.clone(), tls.clone(), token.clone(), read_token.clone());
         tasks.spawn(async move {
-            let api = Api::new(&base, token);
+            let api = Api::new(&base, &tls, token, read_token);
             let mut lat = vec![];
             let mut errs = vec![];
             for k in 0..REQUESTS_PER_READER {
