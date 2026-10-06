@@ -475,7 +475,8 @@ Steps:
       vmimages/stormcos#320); stormcos#352 (pair, mount, ironprom, route,
       check-metrics, test SA); stormconsole#49 + rustkube-node#60 commented.
       Drop the line once stormcos#352 + stormconsole#49 ship
-- [ ] golden, close #19
+- [x] golden `golden-stormdrive-99a433d7a82c`, release request stormcos#313;
+      #19 closed
 
 ### #38 (+ #47): the page submits and follows drive worker jobs (2026-10-06) — DONE (v0.20.0)
 
