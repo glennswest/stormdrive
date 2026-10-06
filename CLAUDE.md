@@ -437,25 +437,27 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #18: serve /metrics (P1, stormcos#64, 2026-10-06)
+### #18: serve /metrics (P1, stormcos#64, 2026-10-06) — DONE (v0.19.0)
 
 `GET /metrics` on :9092, Prometheus text, unauthenticated (a read). Upstream
 `smartctl_exporter` names where they fit, `stormdrive_*` otherwise. Every
 drive series carries `device`, `serial`, `model`, `enclosure`, `bay`.
 stormcos `deploy/test/check-metrics.sh` probes it (200 + one sample).
-- [ ] NVMe log 0x02: also spare threshold, data units read/written, power
+- [x] NVMe log 0x02: also spare threshold, data units read/written, power
       cycles, unsafe shutdowns, error-log entries (`HealthReport.nvme`)
-- [ ] `metrics.rs` (pure render): `smartctl_device` info, smart_status,
-      temperature, power_on_seconds, percentage_used, available_spare(+
-      threshold), critical_warning, media_errors, num_err_log_entries,
-      power_cycle_count, bytes_read/written, capacity_bytes, block_size;
-      `stormdrive_drive_info`, `_health_status{status}`, `_io_errors_total`
-      (SCSI ioerr_cnt — failed commands, not media errors),
-      `_last_poll_timestamp_seconds`, used/free bytes; enclosure element
-      temperature / status; poller stats; build info
-- [ ] route, tests (render + suites/short `/metrics`), docs, v0.19.0, golden
+- [x] `metrics.rs` (pure render from cached state): smartctl_device_*,
+      `stormdrive_drive_*` (info, health_status, io_errors_total = SCSI
+      ioerr_cnt, last poll, usage), enclosure SES sensors, poller, build info
+- [x] route; unit tests (format validity, labels, escaping, missing and
+      never-polled drives, shelf); short suite `metrics`; docs; v0.19.0
+- [x] sc-build on 51efbe8: 175 unit + harness (short `metrics` passes) +
+      kube + restart + 9, clippy clean, web dist identical; release binary
+      on dev: 1,159 samples, 0 lines failing check-metrics.sh's regex;
+      golden `golden-stormdrive-a59663904c60`, stormcos#313
 - HDD reallocated/pending sectors need SCSI log sense / ATA SMART (#22):
   emitted when #22 collects them, not before
+- Found on dev: NVMe-oF namespaces (stormblock exports) discovered as
+  drives → #49
 
 ### #39: a restart leaves drives stuck formatting/testing/updating_firmware (P1, 2026-10-06) — DONE (v0.18.1)
 
@@ -585,7 +587,7 @@ Survey against the issue's list:
         stormcos#131. Not yet seen in a real browser on a node: rides
         the release. Bulk test/join + per-domain sequencing stay on #5,
         metrics on #18
-- [ ] Metrics per drive — #18
+- [x] Metrics per drive — #18 (v0.19.0)
 
 ### #12: per-drive usage (2026-09-27) — DONE
 
@@ -755,7 +757,7 @@ with stable id. Found:
 - [x] Wear trending: persisted samples (on change or daily)
 - [ ] Wear-out projection — #23
 - [x] Event ring + `GET /api/v1/events` (in memory; persistence is #25)
-- [ ] Prometheus `/metrics` — #18
+- [x] Prometheus `/metrics` (#18, v0.19.0)
 - [x] `GET /api/v1/summary` for the stormd card
 
 ### Phase 3: Location awareness — DONE

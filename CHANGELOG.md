@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-06
+- **docs:** work plan — #18 done: v0.19.0 verified on 51efbe8, golden a59663904c60; #49 filed (NVMe-oF namespaces discovered as drives)
+
 ## [v0.19.0] — 2026-10-06
 
 ### Added
