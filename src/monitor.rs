@@ -301,6 +301,7 @@ async fn apply_outcome(
             critical_warning: sample.critical_warning,
             messages: why.clone(),
             collected_at: Some(SystemTime::now()),
+            nvme: sample.nvme,
         };
     } else {
         // No answer: the last readings stand; only the verdict and the

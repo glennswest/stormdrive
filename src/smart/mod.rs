@@ -20,6 +20,22 @@ pub struct Sample {
     /// identify/log reads succeed).
     pub kernel_ok: bool,
     pub messages: Vec<String>,
+    /// The rest of the NVMe SMART/Health log (None for SAS/SATA).
+    pub nvme: Option<NvmeCounters>,
+}
+
+/// NVMe SMART/Health log (0x02) counters beyond what health decides on;
+/// served on /metrics (#18).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NvmeCounters {
+    pub available_spare_threshold_pct: u8,
+    /// Data units are 1000 × 512 bytes; these are bytes.
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub power_cycles: u64,
+    pub unsafe_shutdowns: u64,
+    /// Error Information Log entries over the controller's life.
+    pub error_log_entries: u64,
 }
 
 /// Collect a sample for one drive. Blocking (ioctls, sysfs reads) — call

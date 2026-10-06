@@ -25,6 +25,7 @@ pub mod hotplug;
 pub mod inventory;
 pub mod kubeapi;
 pub mod kubeauth;
+pub mod metrics;
 pub mod monitor;
 pub mod placement;
 pub mod poller;

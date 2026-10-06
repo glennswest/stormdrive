@@ -291,8 +291,10 @@ sets every 10 minutes. Location re-resolution is sysfs only: it walks the
 PCIe slot table per NVMe drive, about 160 × 160 small reads, tens of
 milliseconds.
 
-Not here: per-drive Prometheus series (`/metrics`) is #18. At 160 drives ×
-~6 gauges it is ~1,000 series per node, ~10,000 per rack.
+`/metrics` (#18, `metrics.rs`) adds nothing to a poll: it renders the
+cached inventory, shelves and poller stats. At 160 NVMe drives × ~25 series
+it is ~4,000 series per node, ~40,000 per rack; SAS/SATA drives carry about
+half that.
 
 ### Location (`topology.rs`)
 - SAS bays: `/sys/class/enclosure/*/` — each enclosure device exposes
@@ -567,8 +569,14 @@ The route table, request bodies and handle resolution are in the
   name), status from the job, a Kubernetes Event per transition. Plain
   reqwest (`kubeapi.rs`), no kube-rs. The CRDs and the controller's role are
   `deploy/crds.yaml` and `deploy/rbac.yaml`.
-- **No `/metrics` yet** (#18). At 160 drives × ~6 gauges it would be ~1,000
-  series per node.
+- **`/metrics`** (#18, `metrics.rs`): Prometheus text, open, from cached
+  state. `smartctl_exporter` names (`smartctl_device_temperature`,
+  `_power_on_seconds`, `_percentage_used`, `_media_errors`, …) where one
+  fits, `stormdrive_*` otherwise; every drive series is labelled `device`,
+  `serial`, `model`, `enclosure`, `bay`. SAS/SATA `ioerr_cnt` is
+  `stormdrive_drive_io_errors_total`, never `media_errors`. The NVMe log
+  0x02 counters beyond health (spare threshold, data units, power cycles,
+  unsafe shutdowns, error-log entries) are kept on `HealthReport.nvme`.
 
 ### The page (`web/`, #6)
 Built for hundreds of drives: a stormview `DataGrid` whose top rows are

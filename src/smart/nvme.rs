@@ -29,6 +29,14 @@ pub fn decode_smart_page(page: &[u8; 512]) -> Sample {
         media_errors: u128_at(160),
         kernel_ok: true,
         messages: Vec::new(),
+        nvme: Some(super::NvmeCounters {
+            available_spare_threshold_pct: page[4],
+            bytes_read: u128_at(32).saturating_mul(512_000),
+            bytes_written: u128_at(48).saturating_mul(512_000),
+            power_cycles: u128_at(112),
+            unsafe_shutdowns: u128_at(144),
+            error_log_entries: u128_at(176),
+        }),
     }
 }
 
@@ -156,6 +164,12 @@ mod tests {
         page[5] = 13; // percentage used
         page[128..144].copy_from_slice(&1234u128.to_le_bytes()); // POH
         page[160..176].copy_from_slice(&7u128.to_le_bytes()); // media errors
+        page[4] = 10; // spare threshold
+        page[32..48].copy_from_slice(&2u128.to_le_bytes()); // data units read
+        page[48..64].copy_from_slice(&3u128.to_le_bytes()); // data units written
+        page[112..128].copy_from_slice(&41u128.to_le_bytes()); // power cycles
+        page[144..160].copy_from_slice(&5u128.to_le_bytes()); // unsafe shutdowns
+        page[176..192].copy_from_slice(&9u128.to_le_bytes()); // error log entries
 
         let s = decode_smart_page(&page);
         assert_eq!(s.critical_warning, 0x04);
@@ -164,6 +178,11 @@ mod tests {
         assert_eq!(s.wear_pct, Some(13));
         assert_eq!(s.power_on_hours, Some(1234));
         assert_eq!(s.media_errors, 7);
+        let n = s.nvme.unwrap();
+        assert_eq!(
+            (n.available_spare_threshold_pct, n.bytes_read, n.bytes_written, n.power_cycles, n.unsafe_shutdowns, n.error_log_entries),
+            (10, 1_024_000, 1_536_000, 41, 5, 9)
+        );
         assert!(s.kernel_ok);
     }
 

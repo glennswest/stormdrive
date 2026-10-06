@@ -359,6 +359,9 @@ pub struct HealthReport {
     pub critical_warning: u8,
     pub messages: Vec<String>,
     pub collected_at: Option<SystemTime>,
+    /// NVMe log 0x02 counters (#18); absent for SAS/SATA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvme: Option<crate::smart::NvmeCounters>,
 }
 
 impl HealthReport {

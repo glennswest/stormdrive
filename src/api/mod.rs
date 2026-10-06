@@ -162,6 +162,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/components", get(components_feed))
         .route("/ws/components", get(ws_components))
         .route("/api/v1/monitor", get(monitor_stats))
+        .route("/metrics", get(metrics))
         .route("/api/v1/drives", get(list_drives))
         .route("/api/v1/drives/{id}", get(get_drive).delete(forget_drive))
         .route("/api/v1/drives/{id}/health", get(get_drive_health))
@@ -394,6 +395,17 @@ async fn resolve_id(s: &AppState, handle: &str) -> Result<DriveId, ApiError> {
 }
 
 /// What health polling costs on this node, and which drives are stuck.
+/// Prometheus text (#18): drives, shelves, the poller. Open, like every
+/// read; built from cached state only.
+async fn metrics(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    let page = {
+        let inv = s.inventory.read().await;
+        let shelves = s.shelves.read().await;
+        crate::metrics::render(crate::VERSION, &s.node_name, inv.drives.values(), &shelves, &s.poller.stats())
+    };
+    ([(axum::http::header::CONTENT_TYPE, crate::metrics::CONTENT_TYPE)], page)
+}
+
 async fn monitor_stats(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::to_value(s.poller.stats()).unwrap_or_default())
 }

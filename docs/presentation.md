@@ -184,8 +184,9 @@ Lifecycle is three separate fields:
 | Kubernetes-shaped | `/apis/storage.storm.io/v1/{drives,enclosures}`, `?watch=1`, PATCH a Drive |
 | The page | `/`, `/ui`, `/ui/`, `/assets/app.{js,css}`; works under stormd's proxy prefix |
 
-Errors are `{error, code}`, stormblock's shape. No `/metrics` (#18) and
-no auth (#19) yet.
+Errors are `{error, code}`, stormblock's shape. `/metrics` serves
+per-drive SMART, temperature, wear and errors in Prometheus text (#18).
+No TLS yet (#19).
 
 ---
 
@@ -238,7 +239,6 @@ no auth (#19) yet.
 
 | Planned | Issue |
 |---|---|
-| `/metrics`: SMART, temperature, wear and errors per drive | #18 |
 | TLS and read access on :9092 (writes need storage-admin since 0.18.0, #45) | #19 |
 | Drive worker: ATA security erase · jobs on the page · scheduling default | #36 · #38 · decision #37 |
 | Shelf (IOM) firmware · a vendor firmware image source | #35 · #29 |
@@ -268,6 +268,6 @@ no auth (#19) yet.
   - a firmware image: #29;
   - a 160-bay chassis: #31;
   - a drain under I/O load: #30.
-- **Issues that matter most:** #18 metrics · #19 auth · #5 drive worker ·
+- **Issues that matter most:** #19 auth · #5 drive worker ·
   #30 the shelf live pass · stormcos#166 (read-only `/sys` blocks LEDs and
   rescans in the golden).

@@ -28,6 +28,7 @@ pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("events", events(api)).await;
     r.run("hbas", hbas(api)).await;
     r.run("page", page(api)).await;
+    r.run("metrics", metrics(api)).await;
     Ok(())
 }
 
@@ -192,4 +193,26 @@ async fn page(api: &Api) -> Outcome {
         ensure(a.status == 200 && a.content_type.starts_with(ty) && !a.text.is_empty(), format!("GET /{asset}: {} {}", a.status, a.content_type))?;
     }
     Ok("page, app.js, app.css".into())
+}
+
+/// `/metrics` (#18) is Prometheus text, and every drive the node has is in
+/// it, by serial.
+async fn metrics(api: &Api) -> Outcome {
+    api.need((0, 19, 0), "/metrics")?;
+    let m = api.get("metrics").await?;
+    ensure(m.status == 200 && m.content_type.starts_with("text/plain"), format!("GET /metrics: {} {}", m.status, m.content_type))?;
+    let mut samples = 0;
+    for line in m.text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let (name, value) = line.rsplit_once(' ').ok_or_else(|| Why::Fail(format!("not a sample: {line}")))?;
+        ensure(value.parse::<f64>().is_ok(), format!("not a number: {line}"))?;
+        ensure(name.starts_with("smartctl_") || name.starts_with("stormdrive_"), format!("unexpected family: {line}"))?;
+        samples += 1;
+    }
+    ensure(m.text.contains("stormdrive_build_info{"), "no stormdrive_build_info")?;
+    let ds = crate::drives(api).await?;
+    for d in &ds {
+        let serial = s(d, "serial").replace('\\', "\\\\").replace('"', "\\\"");
+        ensure(m.text.contains(&format!("serial=\"{serial}\"")), format!("{}: not in /metrics", s(d, "name")))?;
+    }
+    Ok(format!("{samples} samples, {} drives", ds.len()))
 }

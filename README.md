@@ -251,7 +251,7 @@ stormdrive's suites follow stormcentral's
 
 | Suite | Budget | What it proves |
 |---|---|---|
-| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled; card, placement (+304), feed, kube Drives, events, HBAs, the page |
+| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled; card, placement (+304), feed, kube Drives, events, HBAs, the page, `/metrics` (every drive by serial) |
 | `medium` | < 30 min | 404 envelope, malformed requests refused (400); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost, page under `/ui/` |
 | `long` | the night window | waves until the window ends: 4 + drives/8 API readers (4–64) and a smoke test on every idle, usable drive; p50/p95, errors, drives left busy, stuck or timed-out health reads, event growth. A wave slower than 2× the first (+250 ms), or leaving residue, fails |
 
@@ -455,6 +455,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/health` | `{status, version, node, writes}` — liveness, and how writes are decided |
 | `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
 | `GET /api/v1/monitor` | health-poll cost, stuck drives, last discovery pass |
+| `GET /metrics` | Prometheus text: per-drive SMART, temperature, wear, errors, last poll; shelf sensors; the poller (see below) |
 | `GET /api/v1/drives` | every drive, with any running test/format/firmware run inlined |
 | `GET /api/v1/drives/{id}` · `DELETE` | one drive · forget a missing, out-of-fleet drive |
 | `GET /api/v1/drives/{id}/health` | health report + trend |
@@ -487,7 +488,38 @@ Body-free forms, for stormview renderers that POST with no body:
 `…/format/{block_size}`, `/shelves/{key}/locate/{on|off}`,
 `/shelves/{key}/format/{block_size}`.
 
-There is no `/metrics` endpoint yet (#18), and no TLS (#19).
+There is no TLS yet (#19).
+
+### `/metrics` (#18)
+
+Prometheus text on the API port, open like every read, built from cached
+state (a scrape sends nothing to a drive). `smartctl_exporter` names where
+one fits. Every drive series carries `device`, `serial`, `model`,
+`enclosure` (shelf key) and `bay`; empty when unknown.
+
+| Series | What |
+|---|---|
+| `smartctl_device{interface,firmware_version}` | 1 per drive |
+| `smartctl_device_smart_status` | 1 when health is good/warning, 0 failing/failed; absent while unknown |
+| `smartctl_device_temperature{temperature_type="current"}` | °C |
+| `smartctl_device_power_on_seconds` | NVMe |
+| `smartctl_device_percentage_used`, `_available_spare`, `_available_spare_threshold` | NVMe wear |
+| `smartctl_device_critical_warning`, `_media_errors`, `_num_err_log_entries`, `_power_cycle_count`, `_bytes_read`, `_bytes_written` | NVMe log 0x02 |
+| `smartctl_device_capacity_bytes`, `smartctl_device_block_size{blocks_type}` | geometry (logical as the drive reports it, 520 included) |
+| `stormdrive_drive_info{id,wwn,kind,firmware,membership,designation,activity,owner}` | 1 per drive |
+| `stormdrive_drive_health_status{status}` | 1 for the current verdict |
+| `stormdrive_drive_io_errors_total` | SAS/SATA: sysfs `ioerr_cnt`, failed commands since boot (not media errors) |
+| `stormdrive_drive_unsafe_shutdowns_total` | NVMe |
+| `stormdrive_drive_last_poll_timestamp_seconds` | last health poll the drive answered |
+| `stormdrive_drive_used_bytes`, `_free_bytes` | from stormblock's slabs (#12) |
+| `stormdrive_enclosure_info`, `_ok`, `_last_scan_timestamp_seconds` | per shelf |
+| `stormdrive_enclosure_element_ok`, `_temperature_celsius`, `_fan_rpm`, `_volts`, `_amps` `{type,index}` | per installed SES element |
+| `stormdrive_poll_*`, `stormdrive_discovery_seconds`, `stormdrive_build_info` | the daemon |
+
+A missing drive keeps `smartctl_device`, `stormdrive_drive_info` and its
+last-poll time; its readings go. Reallocated / pending sectors and grown
+defects on HDDs need SCSI log sense / ATA SMART (#22) and appear when that
+lands.
 
 ```bash
 T="Authorization: Bearer $(oc whoami -t)"     # a storage-admin's bearer
@@ -549,7 +581,7 @@ for installs outside stormcos.
 
 These are documented as design only; the code does not do them:
 
-- `/metrics` (#18); TLS and read access on :9092 (#19)
+- TLS and read access on :9092 (#19)
 - `DriveOperation`s run only once the apiserver stamps their requester
   (rustkube#210) and stormcos installs the CRDs and gives stormdrive a
   credential (stormcos#302); the page has no way to present a bearer yet (#47)
