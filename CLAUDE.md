@@ -437,6 +437,24 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #46: slab format + drive close need the admin token or a storage-admin bearer (stormblock#274, 2026-10-06) — IN PROGRESS
+
+stormblock#274: `POST /api/v1/slabs` and `DELETE /api/v1/drives/{id}` are
+destructive on the engine; the node token gets 401 under `admin_gate =
+enforce`. `DELETE …/drain` stays ordinary (we sent it as admin).
+- [ ] engine client: destructive calls try, in order, the engine admin token
+      (`stormblock.admin_token` / `$STORMBLOCK_ADMIN_TOKEN`, then the file
+      `stormblock.admin_token_file` / `$STORMBLOCK_ADMIN_TOKEN_FILE` /
+      `/run/stormblock-admin/admin_token`, re-read each call), then
+      stormdrive's own Kubernetes credential (`[kubernetes]` token file /
+      service account), then the node token (an `audit` engine); next on
+      401/403; a final refusal logs what is needed
+- [ ] format_slab destructive; cancel_drain ordinary
+- [ ] deploy/rbac.yaml: `slabs` create for stormdrive's SA (drives delete is
+      already in stormdrive-controller)
+- [ ] tests (stand-in engine: admin token / SA bearer / node token order,
+      drain cancel on the node token), docs, changelog, v0.21.1, golden
+
 ### #19: :9092 is TLS and nothing answers anonymously but health (P2, stormcos#81, 2026-10-06) — DONE (v0.21.0)
 
 Owner's rule (stormcos SECURITY.md, 2026-09-25): every listening API on a
