@@ -548,7 +548,7 @@ mod tests {
         let carol = ClientIdentity { cn: "carol".into(), groups: vec!["storage-admins".into()] };
         let op = classify("POST", "/api/v1/format").unwrap();
         let d = g.check(Credential { bearer: None, cert: Some(&carol) }, &op).await;
-        assert!(matches!(d, Decision::Refused(401, w, _) if w == "cert:carol"), "{d:?}");
+        assert!(matches!(d, Decision::Refused(401, ref w, _) if w == "cert:carol"), "{d:?}");
         // A bearer wins over the certificate it rides with.
         let d = g.check(Credential { bearer: Some("t"), cert: Some(&carol) }, &op).await;
         assert_eq!(d, Decision::Allowed(Requester::admin_token()));
