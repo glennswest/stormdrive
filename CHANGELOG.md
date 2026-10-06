@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.19.0] — 2026-10-06
+
+### Added
+- `GET /metrics`: Prometheus text per drive (SMART status, temperature, power-on time, wear, spare, NVMe error and IO counters, SAS/SATA failed commands, health verdict, last poll, usage), per shelf (SES sensors) and for the poller; smartctl_exporter names where one fits (#18, stormcos#64)
+- NVMe health keeps the rest of log 0x02 as `health.nvme`
+
 ### 2026-10-06
 - **feat:** `GET /metrics` — Prometheus text: per-drive SMART status, temperature, power-on time, wear, spare, NVMe error/IO counters, SAS/SATA failed-command count, health verdict, last poll time, usage; shelf SES sensors; poller stats. smartctl_exporter names where one fits; labels `device`, `serial`, `model`, `enclosure`, `bay` (#18, stormcos#64)
 - **feat:** the NVMe health sample keeps the rest of log 0x02 (spare threshold, data units read/written, power cycles, unsafe shutdowns, error-log entries) as `health.nvme`
