@@ -437,20 +437,25 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #39: a restart leaves drives stuck formatting/testing/updating_firmware (P1, 2026-10-06)
+### #39: a restart leaves drives stuck formatting/testing/updating_firmware (P1, 2026-10-06) — DONE (v0.18.1)
 
-`activity` is persisted; only worker jobs recover (`worker::recover`). A
+`activity` is persisted; only worker jobs recovered (`worker::recover`). A
 legacy format (`format::start`), a test (`drivetest`) or a firmware update
 (`firmware`) in flight at a restart left the drive busy forever.
-- [ ] `worker::orphan_action` (pure): Formatting/Sanitizing owned by a
+- [x] `worker::orphan_action` (pure): Formatting/Sanitizing owned by a
       running worker job → leave; a SCSI legacy format (record `running`) →
       re-attach; any other Testing/Formatting/Sanitizing/UpdatingFirmware →
-      Idle, record `interrupted`, warning event. Draining/Missing untouched
-- [ ] `format::reattach`: TUR until ready, rescan, verify the block size
-      against the record, finish like a normal run (handle in `formats`)
-- [ ] recover runs before the monitor and the API (awaited in main)
-- [ ] tests: an inventory with each activity → idle or re-attached
-- [ ] docs, changelog, sc-build, v0.18.1, golden
+      Idle, record `interrupted`, `restart` warning event. Draining/Missing
+      untouched
+- [x] `format::reattach`: TUR until ready, rescan, verify the block size
+      against the record, `finish` shared with a normal run
+- [x] recover awaited in main before the monitor and the API
+- [x] tests: unit (every activity) + `tests/restart.rs` (real daemon on a
+      seeded inventory.json: none busy after, records + events)
+- [x] sc-build on 24de9cb (v0.18.1): 171 unit + restart + kube + suites +
+      9, clippy -D warnings clean, `web/rebuild.sh --check` identical;
+      golden `golden-stormdrive-ecd23cdbb356`, release request stormcos#313.
+      Not exercised on a real drive mid-format: that is #30
 
 ### Comment mining (2026-09-28)
 

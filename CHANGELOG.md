@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-06
+- **docs:** work plan — #39 done: v0.18.1 verified on 24de9cb, golden ecd23cdbb356
+
 ## [v0.18.1] — 2026-10-06
 
 ### Fixed
