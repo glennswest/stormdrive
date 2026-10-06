@@ -437,6 +437,29 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #38 (+ #47): the page submits and follows drive worker jobs (2026-10-06)
+
+Every write since #45 needs a storage-admin bearer, so jobs on the page need
+#47's sign-in first (same change).
+- [ ] `lib/api.js`: bearer from `sessionStorage` (`Authorization: Bearer` on
+      every request but plain GETs); errors keep `status` + envelope `code`;
+      401/403 read "needs storage-admin"
+- [ ] header: Sign in (paste `oc whoami -t`) / Sign out; `writes.gate` from
+      health; while it enforces and no bearer: write controls disabled
+      (`<fieldset disabled>`, row actions off), "needs storage-admin"
+- [ ] `lib/worker.js` (pure, tested): steps from the form, request, which
+      refusals need `destroy`, serial match, job summary, cancel/resume
+- [ ] `Prepare.svelte` (side pane): steps (format 4096/512, sanitize
+      block/crypto/overwrite, partition, enroll + tier, role) → dry run
+      (runnable / refused + reasons) → type each held drive's serial →
+      submit; from the bulk bar (drives), the shelf pane (shelf), a drive
+- [ ] the page's formats (bulk, shelf, drive) go through Prepare (worker:
+      restart-safe, destroy guard); `/api/v1/format` stays for API users
+- [ ] `Jobs.svelte`: jobs, per-drive state/phase/%/error, cancel, resume
+- [ ] state column: `prep` (unusable / ready, worker progress)
+- [ ] page test: sign-in header, prepare dry run → destroy → submit, jobs;
+      `web/rebuild.sh`, docs, v0.20.0, golden; close #38 and #47
+
 ### #43: drain docs vs the engine; drains that never get tracked (2026-10-06) — DONE (v0.19.1)
 
 stormcos#65 consistency pass: docs say `push_health` sends `drain:false` so
