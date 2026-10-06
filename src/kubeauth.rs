@@ -127,12 +127,15 @@ enum Review {
     Unauthenticated(String),
 }
 
+/// Bearer, resource, verb, name.
+type CacheKey = (String, &'static str, &'static str, Option<String>);
+
 pub struct Gate {
     kube: Option<Arc<KubeApi>>,
     admin_token: Option<String>,
     enforce: bool,
     audit_log: Option<PathBuf>,
-    cache: Mutex<HashMap<(String, &'static str, &'static str, Option<String>), (Instant, Review)>>,
+    cache: Mutex<HashMap<CacheKey, (Instant, Review)>>,
 }
 
 fn non_empty(s: Option<String>) -> Option<String> {
