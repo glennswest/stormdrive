@@ -437,6 +437,21 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #39: a restart leaves drives stuck formatting/testing/updating_firmware (P1, 2026-10-06)
+
+`activity` is persisted; only worker jobs recover (`worker::recover`). A
+legacy format (`format::start`), a test (`drivetest`) or a firmware update
+(`firmware`) in flight at a restart left the drive busy forever.
+- [ ] `worker::orphan_action` (pure): Formatting/Sanitizing owned by a
+      running worker job → leave; a SCSI legacy format (record `running`) →
+      re-attach; any other Testing/Formatting/Sanitizing/UpdatingFirmware →
+      Idle, record `interrupted`, warning event. Draining/Missing untouched
+- [ ] `format::reattach`: TUR until ready, rescan, verify the block size
+      against the record, finish like a normal run (handle in `formats`)
+- [ ] recover runs before the monitor and the API (awaited in main)
+- [ ] tests: an inventory with each activity → idle or re-attached
+- [ ] docs, changelog, sc-build, v0.18.1, golden
+
 ### Comment mining (2026-09-28)
 
 Findings in issue comments since 2026-09-18 that nobody had filed:
