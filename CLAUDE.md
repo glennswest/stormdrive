@@ -437,7 +437,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #19: :9092 is TLS and nothing answers anonymously but health (P2, stormcos#81, 2026-10-06) — IN PROGRESS
+### #19: :9092 is TLS and nothing answers anonymously but health (P2, stormcos#81, 2026-10-06) — DONE (v0.21.0)
 
 Owner's rule (stormcos SECURITY.md, 2026-09-25): every listening API on a
 node is TLS with a stormcert pair, every caller authenticates (client
@@ -461,11 +461,21 @@ stormcluster#5 (one port, TLS told from plain by the first byte).
 - test container: https by default, `STORM_STORMDRIVE_CA`, client pair,
   the pod's service-account token; harness over TLS (rcgen)
 Steps:
-- [ ] plan · [ ] tls.rs + config · [ ] read gate + cert identity · [ ] page
-- [ ] tests (tls.rs harness: plain health, plain data 403, anonymous 401,
-      cert, admin token, bearer allowed/denied, foreign CA refused, reload)
-- [ ] test container TLS · [ ] docs, changelog, v0.21.0 · [ ] sc-build,
-      rebuild dist, golden · [ ] registry config, caller issues, close #19
+- [x] plan · [x] tls.rs + config · [x] read gate + cert identity · [x] page
+- [x] tests (tls.rs: plain health only/403 tls_required, anonymous 401 +
+      401 page shell, admin token, alice viewer reads/403 write, bob 403,
+      cert reads, cert write by SAR + audit, foreign CA refused, server
+      checked, pair appearing later served, allow_anonymous)
+- [x] test container TLS (medium `reads-need-a-credential`), harness over
+      TLS · [x] docs, changelog, v0.21.0
+- [x] sc-build on 4443927 (v0.21.0): 179 unit + kube + restart + suites over
+      TLS + tls 3 + 9, clippy -D warnings clean; `web/rebuild.sh --check`:
+      9 JS + 3 page tests (new signin), dist identical
+- [x] registry config `[api] allow_anonymous = true` (transition, like
+      vmimages/stormcos#320); stormcos#352 (pair, mount, ironprom, route,
+      check-metrics, test SA); stormconsole#49 + rustkube-node#60 commented.
+      Drop the line once stormcos#352 + stormconsole#49 ship
+- [ ] golden, close #19
 
 ### #38 (+ #47): the page submits and follows drive worker jobs (2026-10-06) — DONE (v0.20.0)
 
