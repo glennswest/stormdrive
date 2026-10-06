@@ -820,9 +820,18 @@ monitor tick runs after every discovery/health round:
   container, stormcos#104), `/etc/stormblock/api_token`,
   `/var/lib/stormblock/api_token`. The engine mints it at boot, maybe after
   stormdrive starts, so an absent token is looked up again on every call,
-  and a 401 re-reads it and retries once when it changed. `DELETE`s use
-  `stormblock.admin_token` / `$STORMBLOCK_ADMIN_TOKEN` when set (the
-  engine's `management.admin_token`), else the same token.
+  and a 401 re-reads it and retries once when it changed.
+- **Destructive verbs (stormblock#274).** Slab format (`POST
+  /api/v1/slabs`) and drive close (`DELETE /api/v1/drives/{id}`) need the
+  engine's admin token or a Kubernetes bearer the engine's
+  SubjectAccessReview allows (`storage.storm.io` `slabs` create, `drives`
+  delete). stormdrive tries, in order and on to the next after a 401/403:
+  the admin token (`stormblock.admin_token` / `$STORMBLOCK_ADMIN_TOKEN`, then
+  `stormblock.admin_token_file` / `$STORMBLOCK_ADMIN_TOKEN_FILE` /
+  `/run/stormblock-admin/admin_token`, re-read every call), its own
+  `[kubernetes]` credential (granted by `deploy/rbac.yaml`'s
+  `stormdrive-engine` + `stormdrive-controller`), then the node token (an
+  `audit` engine). A drain cancel is ordinary: the node token.
 
 - **Register with labels + identity.** `POST /api/v1/drives {path, labels,
   uuid}` — `labels` are the location as `Location::labels()` resolves it

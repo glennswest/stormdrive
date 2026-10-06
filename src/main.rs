@@ -59,7 +59,11 @@ async fn main() -> anyhow::Result<()> {
 
     let node_name = config.node_name();
     let data_dir = config.data_dir.clone();
-    let stormblock = StormBlockClient::new(config.stormblock.clone());
+    // #46: destructive engine verbs fall back to stormdrive's own Kubernetes
+    // credential (storage-admin) when no engine admin token is readable.
+    let stormblock = StormBlockClient::new(config.stormblock.clone()).with_kube_token_file(
+        stormdrive::kubeapi::resolve(&config.kubernetes).and_then(|(_, _, t)| t).map(std::path::PathBuf::from),
+    );
     let listen = config.listen_addr.clone();
     let poller = stormdrive::poller::Sampler::new(
         Arc::new(stormdrive::smart::collect),

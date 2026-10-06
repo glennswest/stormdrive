@@ -38,7 +38,13 @@ drain_on_failing = true     # Failing/Failed in the fleet → drain, then retire
 # absent and on a 401, so the engine may mint or rotate it at any time.
 # api_token = ""
 # token_file = ""
-# admin_token = ""          # for DELETEs when the engine sets management.admin_token
+# The engine's admin token, for slab format and drive close (stormblock#274).
+# Empty = $STORMBLOCK_ADMIN_TOKEN, then the file (admin_token_file,
+# $STORMBLOCK_ADMIN_TOKEN_FILE, /run/stormblock-admin/admin_token). Without
+# one, stormdrive's [kubernetes] credential is presented (bind it to
+# storage-admin or deploy/rbac.yaml's stormdrive-engine), then the node token.
+# admin_token = ""
+# admin_token_file = ""
 # tier_map = { nvme_ssd = "hot", sas_ssd = "warm", sata_ssd = "warm", sas_hdd = "cool", sata_hdd = "cool" }
 
 [api]                       # :9092's transport and callers (#19, #45): TLS, nothing anonymous but health

@@ -9,6 +9,11 @@
 #     DriveOperations and keep their status, post Events on them;
 #   - system:auth-delegator (built in): TokenReview + SubjectAccessReview, to
 #     ask who a bearer is and whether that user may change drives.
+#   - stormdrive-engine (#46, stormblock#274): the engine's destructive verbs
+#     it makes for a drive it was told to join, enrol or leave — format a slab
+#     (slabs create) and close a drive (drives delete, which
+#     stormdrive-controller already grants). Not needed where the engine's
+#     admin token is mounted at stormblock.admin_token_file.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -54,6 +59,28 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: stormdrive
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stormdrive-engine
+rules:
+  - apiGroups: ["storage.storm.io"]
+    resources: ["slabs"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stormdrive-engine
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: stormdrive-engine
 subjects:
   - kind: ServiceAccount
     name: stormdrive

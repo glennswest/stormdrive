@@ -365,7 +365,8 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `stormblock.tier_map` | `{}` | kind → slab tier, e.g. `{ sas_hdd = "cold" }` |
 | `stormblock.api_token` | `""` | engine bearer token; see below |
 | `stormblock.token_file` | `""` | file holding it; see below |
-| `stormblock.admin_token` | `""` | for `DELETE`s; empty = `$STORMBLOCK_ADMIN_TOKEN`, then the api token |
+| `stormblock.admin_token` | `""` | engine admin token for slab format + drive close (stormblock#274); empty = `$STORMBLOCK_ADMIN_TOKEN`, then `admin_token_file`; see below |
+| `stormblock.admin_token_file` | `""` | file holding it, re-read every destructive call; empty = `$STORMBLOCK_ADMIN_TOKEN_FILE`, then `/run/stormblock-admin/admin_token` |
 | `api.admin_token` | `""` | node-local break-glass bearer for writes; empty = `$STORMDRIVE_ADMIN_TOKEN`, then `admin_token_file` (`api_token` is read as this) |
 | `api.admin_token_file` | `""` | root-only file holding it |
 | `api.admin_gate` | `enforce` | `audit` lets refused writes through and logs them (rollout only) |
@@ -399,6 +400,25 @@ usable. A failed attempt is retried after 10 minutes.
 
 While no token is found, it looks again on every call. On a 401 it re-reads
 the token and retries once if it changed.
+
+**Destructive engine verbs** (stormblock#274): formatting a slab (`POST
+/api/v1/slabs`, on join and the worker's `enroll`) and closing a drive
+(`DELETE /api/v1/drives/{id}`, on leave) are refused the node token under
+the engine's `admin_gate = "enforce"`. For these stormdrive presents, until
+one is not refused (401/403):
+
+1. the engine's admin token: `stormblock.admin_token`,
+   `$STORMBLOCK_ADMIN_TOKEN`, then the file `stormblock.admin_token_file`,
+   `$STORMBLOCK_ADMIN_TOKEN_FILE`, `/run/stormblock-admin/admin_token`
+   (re-read every call);
+2. stormdrive's own Kubernetes credential (`[kubernetes]` token file, else
+   the service account's), which the engine reviews for `storage.storm.io`
+   `slabs` create / `drives` delete — bind it to `storage-admin` or to
+   `deploy/rbac.yaml`'s narrower `stormdrive-engine`;
+3. the node token (an engine in `audit`, or one older than #274).
+
+A final refusal is logged with what the engine wants. A drain cancel
+(`DELETE …/drain`) is ordinary and always goes on the node token.
 
 ## Who may read or change a drive (#19, #45)
 

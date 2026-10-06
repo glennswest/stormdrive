@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-06
+- **fix:** slab format (`POST /api/v1/slabs`) and drive close (`DELETE /api/v1/drives/{id}`) are destructive on the engine since stormblock#274 and refused the node token: stormdrive now presents the engine's admin token (`stormblock.admin_token`, `$STORMBLOCK_ADMIN_TOKEN`, new `stormblock.admin_token_file` / `$STORMBLOCK_ADMIN_TOKEN_FILE` / `/run/stormblock-admin/admin_token`, re-read every call), then its own `[kubernetes]` credential (storage-admin), then the node token, moving on after a 401/403; a final refusal logs what the engine wants (#46)
+- **fix:** a drain cancel (`DELETE …/drain`) is ordinary on the engine and goes on the node token, not the admin token (#46)
+- **feat:** `deploy/rbac.yaml` `stormdrive-engine` ClusterRole: `slabs` create on `storage.storm.io` for stormdrive's service account (#46)
+- **docs:** README, architecture, example config: destructive engine verbs and their credentials (#46)
+
 ## [v0.21.0] — 2026-10-06
 
 ### Breaking

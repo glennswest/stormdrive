@@ -168,9 +168,16 @@ pub struct StormBlockConfig {
     /// then `/run/stormblock/engine/api_token`, `/etc/stormblock/api_token`,
     /// `/var/lib/stormblock/api_token`. Re-read while absent and on a 401.
     pub token_file: String,
-    /// Destructive verbs (`DELETE`) need the engine's `admin_token` when a
-    /// node sets one. Empty = `$STORMBLOCK_ADMIN_TOKEN`, then `api_token`.
+    /// The engine's admin token, for its destructive verbs: slab format
+    /// (`POST /api/v1/slabs`) and drive close (`DELETE /api/v1/drives/{id}`)
+    /// (stormblock#274). Empty = `$STORMBLOCK_ADMIN_TOKEN`, then
+    /// `admin_token_file`. Without one, stormdrive's own Kubernetes
+    /// credential (`[kubernetes]`) is presented, then the node token.
     pub admin_token: String,
+    /// Where the engine minted its admin token, re-read on every destructive
+    /// call. Empty = `$STORMBLOCK_ADMIN_TOKEN_FILE`, then
+    /// `/run/stormblock-admin/admin_token`.
+    pub admin_token_file: String,
 }
 
 fn yes() -> bool {
@@ -190,6 +197,7 @@ impl Default for StormBlockConfig {
             api_token: String::new(),
             token_file: String::new(),
             admin_token: String::new(),
+            admin_token_file: String::new(),
         }
     }
 }

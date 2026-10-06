@@ -24,6 +24,10 @@ const DEFAULT_TOKEN_FILES: &[&str] = &[
     "/var/lib/stormblock/api_token",
 ];
 
+/// Where the engine mints its admin token (stormblock#274: never under
+/// `/run/stormblock`, which every service mounts).
+const DEFAULT_ADMIN_TOKEN_FILE: &str = "/run/stormblock-admin/admin_token";
+
 #[derive(Clone)]
 pub struct StormBlockClient {
     cfg: StormBlockConfig,
@@ -32,9 +36,12 @@ pub struct StormBlockClient {
     /// after we start, and may rotate it: `None` is re-read on every call,
     /// and a 401 re-reads it once.
     token: Arc<RwLock<Option<String>>>,
-    /// Named explicitly (config or env) for destructive verbs; `None` =
-    /// the ordinary token covers them.
-    admin_token: Option<String>,
+    /// The engine's admin token for destructive verbs (stormblock#274).
+    admin: TokenSource,
+    /// stormdrive's own Kubernetes credential (the `[kubernetes]` token file
+    /// or the service account's): the engine reviews it for `storage-admin`
+    /// when no admin token is at hand (#46).
+    kube_token_file: Option<PathBuf>,
 }
 
 /// Where the engine token comes from, in stormblock's own CLI order: a
@@ -119,9 +126,13 @@ impl DrainStatus {
 
 impl StormBlockClient {
     pub fn new(cfg: StormBlockConfig) -> Self {
-        let admin_token = non_empty(&cfg.admin_token).or_else(|| {
-            std::env::var("STORMBLOCK_ADMIN_TOKEN").ok().as_deref().and_then(non_empty)
-        });
+        let admin = TokenSource::resolve(
+            &cfg.admin_token,
+            std::env::var("STORMBLOCK_ADMIN_TOKEN").ok(),
+            &cfg.admin_token_file,
+            std::env::var("STORMBLOCK_ADMIN_TOKEN_FILE").ok(),
+            &[DEFAULT_ADMIN_TOKEN_FILE],
+        );
         let token = TokenSource::from_config(&cfg).read();
         if token.is_none() && cfg.enabled {
             tracing::warn!("no stormblock engine token yet; engine calls will retry the lookup");
@@ -133,8 +144,16 @@ impl StormBlockClient {
                 .build()
                 .expect("reqwest client"),
             token: Arc::new(RwLock::new(token)),
-            admin_token,
+            admin,
+            kube_token_file: None,
         }
+    }
+
+    /// Present this Kubernetes credential (a file, re-read every call) on
+    /// destructive verbs when no admin token is readable.
+    pub fn with_kube_token_file(mut self, file: Option<PathBuf>) -> Self {
+        self.kube_token_file = file;
+        self
     }
 
     /// Re-read the engine token and remember it; the new value.
@@ -144,33 +163,76 @@ impl StormBlockClient {
         t
     }
 
-    /// The token for this call. An absent token is looked up again every
-    /// time: the engine writes it at boot, maybe after we start.
-    fn bearer(&self, admin: bool) -> Option<String> {
-        if admin {
-            if let Some(t) = &self.admin_token {
-                return Some(t.clone());
-            }
-        }
+    /// The node token for an ordinary call. An absent token is looked up
+    /// again every time: the engine writes it at boot, maybe after we start.
+    fn bearer(&self) -> Option<String> {
         let cached = self.token.read().unwrap_or_else(|e| e.into_inner()).clone();
         cached.or_else(|| self.reload_token())
     }
 
-    /// Every engine call goes through here (stormblock#107: all of
+    /// What a destructive call presents, in order (stormblock#274): the
+    /// engine's admin token, then stormdrive's Kubernetes credential (allowed
+    /// when bound to `storage-admin`), then the node token (an engine with
+    /// `admin_gate = "audit"`, or one older than #274). Re-read every call:
+    /// these are rare, and a token minted or rotated later is picked up.
+    fn admin_bearers(&self) -> Vec<(&'static str, String)> {
+        let mut out: Vec<(&'static str, String)> = Vec::new();
+        let mut push = |who: &'static str, t: Option<String>| {
+            if let Some(t) = t {
+                if !out.iter().any(|(_, have)| *have == t) {
+                    out.push((who, t));
+                }
+            }
+        };
+        push("admin token", self.admin.read());
+        push("kubernetes bearer", self.kube_token_file.as_deref().and_then(read_token_file));
+        push("node token", self.bearer());
+        out
+    }
+
+    /// A destructive verb: each credential in turn until one is not refused
+    /// (401/403). The last refusal is returned, and logged with what the
+    /// engine wants.
+    async fn send_admin(&self, req: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+        let bearers = self.admin_bearers();
+        let mut req = Some(req);
+        let mut last = None;
+        for (i, (who, t)) in bearers.iter().enumerate() {
+            let Some(r) = req.take() else { break };
+            if i + 1 < bearers.len() {
+                req = r.try_clone();
+            }
+            let resp = r.bearer_auth(t).send().await?;
+            let s = resp.status();
+            if s != reqwest::StatusCode::UNAUTHORIZED && s != reqwest::StatusCode::FORBIDDEN {
+                return Ok(resp);
+            }
+            tracing::debug!(credential = *who, status = s.as_u16(), "stormblock refused a destructive verb");
+            last = Some(resp);
+        }
+        match last {
+            Some(resp) => {
+                tracing::warn!(
+                    status = resp.status().as_u16(),
+                    tried = ?bearers.iter().map(|(w, _)| *w).collect::<Vec<_>>(),
+                    "stormblock refused a destructive verb (slab format / drive close): it needs the engine's \
+                     admin token (stormblock.admin_token_file, default {DEFAULT_ADMIN_TOKEN_FILE}) or a \
+                     Kubernetes bearer allowed storage.storm.io (storage-admin)"
+                );
+                Ok(resp)
+            }
+            None => Ok(req.expect("request unsent").send().await?),
+        }
+    }
+
+    /// Every ordinary engine call goes through here (stormblock#107: all of
     /// `/api/v1` needs `Authorization: Bearer`). A 401 re-reads the token
     /// and, when it changed, retries once.
-    async fn send(
-        &self,
-        req: reqwest::RequestBuilder,
-        admin: bool,
-    ) -> anyhow::Result<reqwest::Response> {
+    async fn send(&self, req: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
         let retry = req.try_clone();
-        let used = self.bearer(admin);
+        let used = self.bearer();
         let resp = with_bearer(req, used.as_deref()).send().await?;
         if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
-            return Ok(resp);
-        }
-        if admin && self.admin_token.is_some() {
             return Ok(resp);
         }
         let fresh = self.reload_token();
@@ -204,7 +266,7 @@ impl StormBlockClient {
     /// GET /api/v1/drives — stormblock's view of its open drives.
     pub async fn list_drives(&self) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.url("/api/v1/drives")), false)
+            .send(self.http.get(self.url("/api/v1/drives")))
             .await?
             .error_for_status()?
             .json()
@@ -240,7 +302,7 @@ impl StormBlockClient {
             body["uuid"] = Value::String(u.to_string());
         }
         Ok(self
-            .send(self.http.post(self.url("/api/v1/drives")).json(&body), false)
+            .send(self.http.post(self.url("/api/v1/drives")).json(&body))
             .await?
             .error_for_status()?
             .json()
@@ -266,7 +328,7 @@ impl StormBlockClient {
             .http
             .put(self.drive_url(id_or_path, "/labels"))
             .json(&serde_json::json!({ "labels": map }));
-        self.send(req, false)
+        self.send(req)
             .await?
             .error_for_status()?;
         Ok(())
@@ -292,7 +354,7 @@ impl StormBlockClient {
             "drive": { "uuid": uuid.to_string(), "wwn": wwn, "serial": serial, "path": path },
         });
         let resp = self
-            .send(self.http.put(self.drive_url(path, "/overcommit")).json(&body), false)
+            .send(self.http.put(self.drive_url(path, "/overcommit")).json(&body))
             .await?;
         if matches!(resp.status(), reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED) {
             return Ok(false);
@@ -301,10 +363,11 @@ impl StormBlockClient {
         Ok(true)
     }
 
-    /// DELETE /api/v1/drives/{id} — id may be a UUID or a path.
+    /// DELETE /api/v1/drives/{id} — id may be a UUID or a path. Destructive
+    /// on the engine (stormblock#274): the admin token or a storage-admin bearer.
     pub async fn delete_drive(&self, id_or_path: &str, force: bool) -> anyhow::Result<()> {
         let q = if force { "?force=true" } else { "" };
-        self.send(self.http.delete(self.drive_url(id_or_path, q)), true)
+        self.send_admin(self.http.delete(self.drive_url(id_or_path, q)))
             .await?
             .error_for_status()?;
         Ok(())
@@ -314,7 +377,7 @@ impl StormBlockClient {
     /// identity (stormblock#70 item 2). Empty means nothing lives there.
     pub async fn drive_slabs(&self, id_or_path: &str) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.drive_url(id_or_path, "/slabs")), false)
+            .send(self.http.get(self.drive_url(id_or_path, "/slabs")))
             .await?
             .error_for_status()?
             .json()
@@ -325,7 +388,7 @@ impl StormBlockClient {
     /// GET /api/v1/slabs — the whole pool, for the summary card.
     pub async fn list_slabs(&self) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.url("/api/v1/slabs")), false)
+            .send(self.http.get(self.url("/api/v1/slabs")))
             .await?
             .error_for_status()?
             .json()
@@ -343,7 +406,8 @@ impl StormBlockClient {
 
     /// POST /api/v1/slabs {device_path, tier} — format the drive as a slab.
     /// `role`: `data` or `system` (stormblock's default is `system`); None
-    /// leaves it to the engine, as a whole-disk join always has.
+    /// leaves it to the engine, as a whole-disk join always has. Destructive
+    /// on the engine (stormblock#274): the admin token or a storage-admin bearer.
     pub async fn format_slab(&self, device_path: &str, tier: &str, role: Option<&str>) -> anyhow::Result<Value> {
         let mut body = serde_json::json!({ "device_path": device_path, "tier": tier });
         if let Some(r) = role {
@@ -351,7 +415,7 @@ impl StormBlockClient {
         }
         let req = self.http.post(self.url("/api/v1/slabs")).json(&body);
         Ok(self
-            .send(req, false)
+            .send_admin(req)
             .await?
             .error_for_status()?
             .json()
@@ -374,7 +438,7 @@ impl StormBlockClient {
             .post(self.drive_url(id_or_path, "/health"))
             .json(&serde_json::json!({ "state": state, "reason": reason, "drain": drain }));
         Ok(self
-            .send(req, false)
+            .send(req)
             .await?
             .error_for_status()?
             .json()
@@ -384,7 +448,7 @@ impl StormBlockClient {
     /// POST /api/v1/drives/{id}/drain — empty every slab on the drive.
     pub async fn start_drain(&self, id_or_path: &str) -> anyhow::Result<DrainStatus> {
         Ok(self
-            .send(self.http.post(self.drive_url(id_or_path, "/drain")), false)
+            .send(self.http.post(self.drive_url(id_or_path, "/drain")))
             .await?
             .error_for_status()?
             .json()
@@ -394,7 +458,7 @@ impl StormBlockClient {
     /// GET /api/v1/drives/{id}/drain — where the drain is.
     pub async fn drain_status(&self, id_or_path: &str) -> anyhow::Result<Option<DrainStatus>> {
         let resp = self
-            .send(self.http.get(self.drive_url(id_or_path, "/drain")), false)
+            .send(self.http.get(self.drive_url(id_or_path, "/drain")))
             .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -403,8 +467,9 @@ impl StormBlockClient {
     }
 
     /// DELETE /api/v1/drives/{id}/drain — stop a drain; what moved stays moved.
+    /// Ordinary on the engine (detach-like): the node token.
     pub async fn cancel_drain(&self, id_or_path: &str) -> anyhow::Result<()> {
-        self.send(self.http.delete(self.drive_url(id_or_path, "/drain")), true)
+        self.send(self.http.delete(self.drive_url(id_or_path, "/drain")))
             .await?
             .error_for_status()?;
         Ok(())
@@ -617,17 +682,109 @@ mod tests {
         assert!(!c.set_overcommit("/dev/sdb", oc, uuid, None, "S").await.unwrap());
     }
 
-    #[test]
-    fn admin_token_is_used_only_for_destructive_verbs() {
-        let cfg = StormBlockConfig {
-            api_token: "ops".into(),
+    /// A stand-in engine with stormblock#274's classes: slab format and drive
+    /// close take the admin token `root` or the storage-admin bearer `sa`
+    /// (`viewer` is a valid bearer without the role: 403), and the node token
+    /// `node` only when `audit`; a drain cancel is ordinary. Records every
+    /// bearer it was shown.
+    async fn engine_274(audit: bool, seen: Arc<RwLock<Vec<String>>>) -> String {
+        use axum::http::{HeaderMap, StatusCode};
+        let bearer = |h: &HeaderMap| {
+            h.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").trim_start_matches("Bearer ").to_string()
+        };
+        let destructive = {
+            let seen = seen.clone();
+            move |h: HeaderMap| {
+                let seen = seen.clone();
+                async move {
+                    let b = bearer(&h);
+                    seen.write().unwrap().push(b.clone());
+                    let code = match b.as_str() {
+                        "root" | "sa" => StatusCode::OK,
+                        "node" if audit => StatusCode::OK,
+                        "viewer" => StatusCode::FORBIDDEN,
+                        _ => StatusCode::UNAUTHORIZED,
+                    };
+                    (code, axum::Json(serde_json::json!({ "id": "slab-1" })))
+                }
+            }
+        };
+        let ordinary = {
+            let seen = seen.clone();
+            move |h: HeaderMap| {
+                let seen = seen.clone();
+                async move {
+                    let b = bearer(&h);
+                    seen.write().unwrap().push(b.clone());
+                    if b == "node" { StatusCode::OK } else { StatusCode::UNAUTHORIZED }
+                }
+            }
+        };
+        let app = axum::Router::new()
+            .route("/api/v1/slabs", axum::routing::post(destructive.clone()))
+            .route("/api/v1/drives/{id}", axum::routing::delete(destructive))
+            .route("/api/v1/drives/{id}/drain", axum::routing::delete(ordinary));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn destructive_verbs_present_the_admin_token_then_the_kube_bearer_then_the_node_token() {
+        let d = scratch("admin274");
+        let admin_file = d.join("admin_token");
+        let kube_file = d.join("kube_token");
+        let seen = Arc::new(RwLock::new(Vec::new()));
+        let take = |seen: &Arc<RwLock<Vec<String>>>| std::mem::take(&mut *seen.write().unwrap());
+        let client = |url: &str| {
+            StormBlockClient::new(StormBlockConfig {
+                url: url.into(),
+                api_token: "node".into(),
+                admin_token_file: admin_file.to_str().unwrap().into(),
+                ..Default::default()
+            })
+            .with_kube_token_file(Some(kube_file.clone()))
+        };
+
+        // enforce, nothing but the node token: refused, and the error says so.
+        let url = engine_274(false, seen.clone()).await;
+        let c = client(&url);
+        assert!(c.format_slab("/dev/sdb", "hdd", Some("data")).await.is_err());
+        assert_eq!(take(&seen), ["node"]);
+
+        // stormdrive's Kubernetes credential, bound to storage-admin.
+        std::fs::write(&kube_file, "sa\n").unwrap();
+        c.format_slab("/dev/sdb", "hdd", Some("data")).await.unwrap();
+        assert_eq!(take(&seen), ["sa"]);
+
+        // The engine's admin token, minted after we started: re-read, first.
+        std::fs::write(&admin_file, "root\n").unwrap();
+        c.delete_drive("/dev/sdb", false).await.unwrap();
+        assert_eq!(take(&seen), ["root"]);
+
+        // A drain cancel is ordinary: the node token, admin token or not.
+        c.cancel_drain("/dev/sdb").await.unwrap();
+        assert_eq!(take(&seen), ["node"]);
+
+        // A bearer without the role (403) falls through to the node token,
+        // which an audit-mode engine lets by; enforce refuses both.
+        std::fs::remove_file(&admin_file).unwrap();
+        std::fs::write(&kube_file, "viewer").unwrap();
+        let audit = engine_274(true, seen.clone()).await;
+        client(&audit).delete_drive("/dev/sdb", false).await.unwrap();
+        assert_eq!(take(&seen), ["viewer", "node"]);
+        assert!(c.delete_drive("/dev/sdb", false).await.is_err());
+        assert_eq!(take(&seen), ["viewer", "node"]);
+
+        // An explicit admin token wins over the file.
+        let c = StormBlockClient::new(StormBlockConfig {
+            url,
+            api_token: "node".into(),
             admin_token: "root".into(),
             ..Default::default()
-        };
-        let c = StormBlockClient::new(cfg);
-        assert_eq!(c.bearer(false).as_deref(), Some("ops"));
-        assert_eq!(c.bearer(true).as_deref(), Some("root"));
-        let c = StormBlockClient::new(StormBlockConfig { api_token: "ops".into(), ..Default::default() });
-        assert_eq!(c.bearer(true).as_deref(), Some("ops"));
+        });
+        c.format_slab("/dev/sdb", "hdd", None).await.unwrap();
+        assert_eq!(take(&seen), ["root"]);
     }
 }
