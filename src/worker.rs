@@ -9,6 +9,9 @@
 //! - `security_erase {enhanced?}`: ATA SECURITY ERASE UNIT for a SATA drive
 //!   that has the Security feature set and not Sanitize (#36), under a
 //!   one-time password kept in the job record until the erase is done.
+//! - `test {kind}`: a drive test (drivetest.rs) — smoke, read_scan or
+//!   destructive_sample — with its verdict in the job; a failed test stops
+//!   the drive's later steps (#40).
 //! - `partition {role}`: a GPT with one stormblock partition (gpt.rs).
 //! - `enroll {tier, role}`: hand it to stormblock — open the partition (or
 //!   the whole disk) with its labels and stable uuid, format a slab.
@@ -89,6 +92,8 @@ pub enum Step {
         #[serde(default)]
         enhanced: Option<bool>,
     },
+    /// A drive test (#40). Read-only unless `destructive_sample`.
+    Test { kind: crate::drivetest::TestKind },
     Partition {
         #[serde(default)]
         role: Role,
@@ -104,7 +109,7 @@ pub enum Step {
 impl Step {
     fn rank(&self) -> u8 {
         match self {
-            Step::Format { .. } | Step::Sanitize { .. } | Step::SecurityErase { .. } => 0,
+            Step::Format { .. } | Step::Sanitize { .. } | Step::SecurityErase { .. } | Step::Test { .. } => 0,
             Step::Partition { .. } => 1,
             Step::Enroll { .. } => 2,
         }
@@ -114,13 +119,21 @@ impl Step {
     }
     /// Destroys what is on the drive.
     pub fn destroys(&self) -> bool {
-        self.rank() <= 1
+        match self {
+            Step::Test { kind } => kind.is_destructive(),
+            _ => self.rank() <= 1,
+        }
+    }
+    /// Only reads the drive: a smoke test or a read scan.
+    pub fn read_only(&self) -> bool {
+        matches!(self, Step::Test { kind } if !kind.is_destructive())
     }
     pub fn name(&self) -> &'static str {
         match self {
             Step::Format { .. } => "format",
             Step::Sanitize { .. } => "sanitize",
             Step::SecurityErase { .. } => "security_erase",
+            Step::Test { .. } => "test",
             Step::Partition { .. } => "partition",
             Step::Enroll { .. } => "enroll",
         }
@@ -129,6 +142,7 @@ impl Step {
         match self {
             Step::Format { block_size } => format!("format → {block_size}"),
             Step::Sanitize { method } => format!("sanitize ({})", serde_json::to_value(method).unwrap_or_default().as_str().unwrap_or("?")),
+            Step::Test { kind } => format!("test ({})", serde_json::to_value(kind).unwrap_or_default().as_str().unwrap_or("?")),
             Step::SecurityErase { enhanced } => match enhanced {
                 Some(true) => "security erase (enhanced)".into(),
                 Some(false) => "security erase (normal)".into(),
@@ -270,16 +284,19 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
     if d.activity == Activity::Missing {
         return Err("missing".into());
     }
-    if d.membership == Membership::Fleet {
+    // Only reading (smoke tests, read scans, #40): allowed where the
+    // single-drive test route allows it — fleet, reserved, mounted drives.
+    let read_only = steps.iter().all(Step::read_only);
+    if d.membership == Membership::Fleet && !read_only {
         return Err("in the fleet — leave (drain) first".into());
     }
     if d.activity != Activity::Idle {
         return Err(format!("busy: {}", serde_json::to_value(d.activity).unwrap_or_default().as_str().unwrap_or("?")));
     }
-    if d.designation == Designation::Reserved {
+    if d.designation == Designation::Reserved && !read_only {
         return Err("designated reserved".into());
     }
-    if cx.mounted {
+    if cx.mounted && !read_only {
         return Err("has mounted partitions".into());
     }
     let destroys = steps.iter().any(Step::destroys);
@@ -301,7 +318,7 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
                     cx.nvme_siblings
                 ));
             }
-            Step::Partition { .. } | Step::Enroll { .. } if !formats_first && (!d.usable || !crate::drive::USABLE_BLOCK_SIZES.contains(&d.block_size)) => {
+            Step::Partition { .. } | Step::Enroll { .. } | Step::Test { .. } if !formats_first && (!d.usable || !crate::drive::USABLE_BLOCK_SIZES.contains(&d.block_size)) => {
                 return Err(format!("{}-byte sectors: add a format step first", d.block_size));
             }
             Step::Enroll { .. } => {
@@ -1086,6 +1103,38 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
             state.persist().await;
             r.map(|_| format!("{method:?} sanitize complete").to_lowercase())
         }
+        Step::Test { kind } => {
+            let handle = crate::drivetest::start(state.clone(), d.clone(), *kind).await;
+            loop {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let run = handle.run.lock().unwrap().clone();
+                let pct = (run.bytes_total > 0).then(|| (run.bytes_done.saturating_mul(100) / run.bytes_total).min(100) as u8);
+                state.worker.progress(job, idx, pct, &format!("test ({})", serde_json::to_value(kind).unwrap_or_default().as_str().unwrap_or("?")));
+                if run.state == crate::drivetest::TestState::Running {
+                    continue;
+                }
+                // The test's own task puts the drive back to idle after the
+                // verdict; the next step's guard must not see it testing.
+                for _ in 0..30 {
+                    let testing = matches!(state.inventory.read().await.drives.get(&d.id), Some(x) if x.activity == Activity::Testing);
+                    if !testing {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                let read = run.bytes_done >> 20;
+                return match run.state {
+                    crate::drivetest::TestState::Passed => Ok(format!("{} test passed ({read} MiB)", step.describe())),
+                    crate::drivetest::TestState::Cancelled => Err(format!("{} cancelled", step.describe())),
+                    _ => Err(format!(
+                        "{} FAILED, {} error(s){} — the later steps do not run",
+                        step.describe(),
+                        run.errors.len(),
+                        run.errors.first().map(|e| format!(": {e}")).unwrap_or_default()
+                    )),
+                };
+            }
+        }
         Step::SecurityErase { enhanced } => {
             let sg = crate::scsi::sg_path_for_block(&d.name).unwrap_or_else(|| d.path.clone());
             let ours = state.worker.with(job, idx, |x| x.ata_password.clone()).flatten();
@@ -1562,6 +1611,46 @@ mod tests {
         assert!(why.contains("sd-Xy7") && why.contains("IDENTIFY"), "{why}");
         let Recover::Interrupt(why) = recover_action(&dj(DjState::Running, DriveKind::SataHdd), Some(&se)) else { panic!() };
         assert!(why.contains("before a password was set"), "{why}");
+    }
+
+    #[test]
+    fn a_test_step_reads_where_the_single_drive_route_reads() {
+        use crate::drivetest::TestKind;
+        let smoke = Step::Test { kind: TestKind::Smoke };
+        let s: Step = serde_json::from_value(json!({ "op": "test", "kind": "read_scan" })).unwrap();
+        assert_eq!(s, Step::Test { kind: TestKind::ReadScan });
+        assert!(s.low_level() && !s.destroys() && s.read_only());
+        assert_eq!(s.describe(), "test (read_scan)");
+        let destr = Step::Test { kind: TestKind::DestructiveSample };
+        assert!(destr.destroys() && !destr.read_only());
+        // A qualify gate: format, test, then partition and enroll.
+        assert!(validate_steps(&[FMT, smoke.clone(), part(), enroll()]).is_ok());
+        assert!(validate_steps(&[part(), smoke.clone()]).is_err(), "a test after the partition is not a qualify gate");
+
+        let base = Drive::test_fixture("sdc");
+        let mut fleet = base.clone();
+        fleet.membership = Membership::Fleet;
+        assert_eq!(guard(&fleet, std::slice::from_ref(&smoke), false, &cx()), Ok(()), "reading a fleet drive is allowed");
+        assert!(guard(&fleet, &[smoke.clone(), part()], false, &cx()).unwrap_err().contains("in the fleet"), "not when the job also writes");
+        assert!(guard(&fleet, std::slice::from_ref(&destr), false, &cx()).unwrap_err().contains("in the fleet"));
+        let mounted = Context { mounted: true, ..cx() };
+        assert_eq!(guard(&base, std::slice::from_ref(&smoke), false, &mounted), Ok(()));
+        assert!(guard(&base, std::slice::from_ref(&destr), false, &mounted).is_err());
+        let mut reserved = base.clone();
+        reserved.designation = Designation::Reserved;
+        assert_eq!(guard(&reserved, std::slice::from_ref(&smoke), false, &cx()), Ok(()));
+        // In use: reading is fine; the destructive sample needs `destroy`.
+        let mut held = base.clone();
+        held.in_use_by = Some("stormblock (partition 2)".into());
+        assert_eq!(guard(&held, std::slice::from_ref(&smoke), false, &cx()), Ok(()));
+        assert!(guard(&held, std::slice::from_ref(&destr), false, &cx()).unwrap_err().contains("destroy"));
+        assert_eq!(guard(&held, std::slice::from_ref(&destr), true, &cx()), Ok(()));
+        // Nothing to read on a 520-byte drive until it is formatted.
+        let mut odd = base.clone();
+        odd.block_size = 520;
+        odd.usable = false;
+        assert!(guard(&odd, std::slice::from_ref(&smoke), false, &cx()).unwrap_err().contains("format step first"));
+        assert_eq!(guard(&odd, &[FMT, smoke], false, &cx()), Ok(()));
     }
 
     #[test]

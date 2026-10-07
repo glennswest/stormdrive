@@ -14,7 +14,7 @@
     QUICK, groupDrives, selectedDrives, healthDot, sesDot, human,
     canFirmware, canTest, canLocate, needsAttention,
   } from './lib/model.js'
-  import { prepMetric } from './lib/worker.js'
+  import { prepMetric, testJob } from './lib/worker.js'
   import DrivePane from './DrivePane.svelte'
   import GroupPane from './GroupPane.svelte'
   import Prepare from './Prepare.svelte'
@@ -302,10 +302,15 @@
     selected = []
   })
 
+  // One worker job on the server (#40): it runs to the end with the tab
+  // closed, and Jobs shows each drive's verdict.
   const bulkTest = (kind) => bulk(async () => {
     const ok = pickedDrives.filter(canTest)
     if (!ok.length) return say('none of the selected drives can be tested now')
-    summary(await each(ok, 8, (d) => post(`api/v1/drives/${d.id}/test`, { kind })), `${kind.replace('_', ' ')} test`)
+    const job = await post('api/v1/worker/jobs', testJob(ok.map((d) => d.id), kind))
+    say(`${kind.replace('_', ' ')} test: job ${job.id}, ${job.drives?.filter((d) => d.state !== 'refused').length ?? 0} drive(s) queued`)
+    selected = []
+    refresh()
   })
 
   const bulkDesignation = (designation) => bulk(async () => {

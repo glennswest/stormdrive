@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  blankForm, stepsOf, describeStep, destroys, requestOf, heldDrives, namesDrive, destroyList,
+  blankForm, stepsOf, describeStep, destroys, testJob, requestOf, heldDrives, namesDrive, destroyList,
   canCancel, canResume, countsLine, driveLine, sortJobs, openJobOf, prepMetric,
 } from './worker.js'
 
@@ -90,4 +90,14 @@ test('ATA security erase (#36): its own step, enhanced when asked', () => {
   assert.equal(describeStep(s[0]), 'security erase (enhanced)')
   assert.equal(describeStep({ op: 'security_erase' }), 'security erase')
   assert.equal(destroys(s), true)
+})
+
+test('a test step (#40): read-only unless destructive, and the bulk test is one job', () => {
+  const s = stepsOf(blankForm({ format: 4096, test: 'smoke', partition: true, enroll: true }))
+  assert.deepEqual(s.map((x) => x.op), ['format', 'test', 'partition', 'enroll'])
+  assert.equal(describeStep(s[1]), 'test (smoke)')
+  assert.equal(destroys([{ op: 'test', kind: 'smoke' }]), false)
+  assert.equal(destroys([{ op: 'test', kind: 'read_scan' }, { op: 'enroll', role: 'data' }]), false)
+  assert.equal(destroys([{ op: 'test', kind: 'destructive_sample' }]), true)
+  assert.deepEqual(testJob(['a', 'b'], 'read_scan'), { select: { drives: ['a', 'b'] }, steps: [{ op: 'test', kind: 'read_scan' }], destroy: [], dry_run: false })
 })

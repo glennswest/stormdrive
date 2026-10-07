@@ -13,7 +13,7 @@ export const SECURITY_ERASE = [
 
 /// A fresh Prepare form; `preset` overrides (e.g. a format-only job).
 export function blankForm(preset = {}) {
-  return { format: 0, sanitize: '', partition: false, enroll: false, tier: '', role: 'data', ...preset }
+  return { format: 0, sanitize: '', test: '', partition: false, enroll: false, tier: '', role: 'data', ...preset }
 }
 
 /// The steps, in the order the worker runs them: low-level (format, then
@@ -24,6 +24,7 @@ export function stepsOf(f) {
   if (f.sanitize === 'ata') s.push({ op: 'security_erase' })
   else if (f.sanitize === 'ata-enhanced') s.push({ op: 'security_erase', enhanced: true })
   else if (f.sanitize) s.push({ op: 'sanitize', method: f.sanitize })
+  if (f.test) s.push({ op: 'test', kind: f.test })
   if (f.partition) s.push({ op: 'partition', role: f.role })
   if (f.enroll) {
     const e = { op: 'enroll', role: f.role }
@@ -39,6 +40,8 @@ export function describeStep(s) {
       return `format → ${s.block_size}`
     case 'sanitize':
       return `sanitize (${s.method})`
+    case 'test':
+      return `test (${s.kind})`
     case 'security_erase':
       return s.enhanced ? 'security erase (enhanced)' : 'security erase'
     case 'partition':
@@ -50,8 +53,16 @@ export function describeStep(s) {
   }
 }
 
-/// Steps that destroy what is on the drive (format, sanitize, partition).
-export const destroys = (steps) => steps.some((s) => s.op !== 'enroll')
+/// Steps that destroy what is on the drive (format, sanitize, partition, a
+/// destructive test); a smoke test or a read scan only reads.
+export const destroys = (steps) =>
+  steps.some((s) => s.op !== 'enroll' && !(s.op === 'test' && s.kind !== 'destructive_sample'))
+
+/// The drive tests a job can run (#40).
+export const TESTS = ['smoke', 'read_scan', 'destructive_sample']
+
+/// One server-side job that tests these drives (#40): the page's bulk test.
+export const testJob = (ids, kind) => ({ select: { drives: ids }, steps: [{ op: 'test', kind }], destroy: [], dry_run: false })
 
 /// `select` is a worker Select: {drives: [ids]} or {shelf, bays?, unusable?}.
 export function requestOf(select, form, destroy = [], dryRun = false) {

@@ -453,8 +453,9 @@ the tab stopped the rest. Design (the issue's, no open decision):
 - CRD op `test` + `kind`; page: bulk smoke/scan = one worker job; Prepare
   gets a Test choice
 Steps:
-- [ ] step + guard + run + tests · [ ] CRD, page (bulk + Prepare) + JS tests
-- [ ] docs, changelog · [ ] sc-build (blocked: stormcentral#521)
+- [x] step + guard + run + tests · [x] CRD, page (bulk + Prepare) + JS tests
+- [x] docs, changelog
+- [ ] **next:** sc-build (never run: stormcentral#521) + web dist with #26's
 
 ### #35: shelf (IOM) firmware via SES Download Microcode (2026-10-07) — IN PROGRESS
 

@@ -176,6 +176,14 @@ are listed under [Not yet](#not-yet).
        refused on a frozen drive (a hot-replug or a host suspend/resume
        unfreezes it; never retried), on an expired password counter, and
        on a drive whose password this job did not set.
+       Also among the low-level steps: `test {kind:
+       smoke|read_scan|destructive_sample}` (#40). It runs the drive test
+       on the server with its verdict in the job. A failed test stops that
+       drive's later steps, so `format → test → partition → enroll`
+       qualifies a drive before it is enrolled. Only `destructive_sample`
+       destroys, and the destroy rules apply to it. A job of only smoke
+       tests and read scans may also read fleet, reserved and mounted
+       drives, as `POST /api/v1/drives/{id}/test` does.
     3. `partition {role: data|system}`: clears the first and last 4 MiB,
        then writes a GPT with one 1 MiB-aligned partition of stormblock's
        slab type (the same GUIDs as a node disk).

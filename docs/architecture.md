@@ -452,6 +452,13 @@ kept.
     sends Format NVM without secure erase.
   - Sanitize polls log 0x81 (NVMe) or TEST UNIT READY sense 04/1B (SCSI)
     for progress.
+  - Test (#40) runs `drivetest::start` and turns its bytes into percent.
+    It waits for the verdict and for the test's own task to put the drive
+    back to idle, so the next step's guard does not see it testing.
+    Passed is a done line; failed or cancelled fails the drive job, and its
+    later steps do not run (a qualify gate before `enroll`). A read-only
+    test job is let past the fleet/reserved/mounted refusals, as the
+    single-drive route always was.
   - ATA security erase (#36, `erase.rs`): every command goes through
     ATA PASS-THROUGH(16).
     1. IDENTIFY DEVICE: word 82/128 security state, words 89/90 erase
@@ -716,8 +723,9 @@ only the eligible drives and says how many it skipped:
 - format (and every other preparation step) goes to the drive worker
   through the Prepare pane (below); firmware goes through the batch
   endpoint;
-- tests, designation and locate are per-drive calls, 8 at a time. A
-  server-side bulk test belongs to the drive worker (#40).
+- a bulk smoke test or read scan is one worker job (`test` step, #40): it
+  runs to the end with the tab closed, and Jobs shows each verdict;
+- designation and locate are per-drive calls, 8 at a time.
 
 **Prepare and Jobs (#38).** `Prepare.svelte` builds a worker request from
 the selection (`{drives}` from the bulk bar or a drive, `{shelf}` or
