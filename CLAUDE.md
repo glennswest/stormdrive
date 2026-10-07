@@ -456,7 +456,14 @@ its own. Design (the issue's, no open decision):
   a sample (SAS), 2 (SATA), under the sampler timeout
 Steps:
 - [x] parsers + tests · [x] Linux collect · [x] evaluate, report, metrics
-- [x] docs, changelog · [ ] build VM, release, golden; live: the R230's WD
+- [x] docs, changelog
+- [x] build VM on 13cd19f: 217 unit (4 new) + harnesses pass; clippy failed
+      on `poller::Outcome` growing past `large_enum_variant` (#52) → boxed
+      in bd63b9b
+- [ ] **next:** build bd63b9b (clippy), release v0.24.0, golden, close #52 +
+      #22. Blocked 2026-10-07: every build-VM job (plain sc-build now routes
+      there too) is cancelled while queued — stormcentral#535/#536. Live: the
+      R230's WD (SATA behind mpt3sas) once a release carries it
 
 ### #23: wear-out projection from the trend (2026-10-07) — DONE (v0.23.0)
 
