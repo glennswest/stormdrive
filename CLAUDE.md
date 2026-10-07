@@ -446,15 +446,17 @@ placement:{drives:[{drive, node, slabs, legs, bytes}], slabs:[{id, drive,
 state, legs, shared_legs, bytes, drain?}], legs:{policy, health, …},
 rebuild}}]}` (stormblock `src/mgmt/api/placement.rs`). Reduction mirrors
 stormconsole `crates/plugins/stormblock/src/placement.rs`.
-- [ ] `usage.volumes: [{id, name, kind, consumer?, bytes, legs, shared_legs,
+- [x] `usage.volumes: [{id, name, kind, consumer?, bytes, legs, shared_legs,
       state (worst slab state here), rebuild, policy, health}]`, largest
       first; joined like slabs (WWN → serial → path), fabric drives
       (`scheme://`) skipped; **absent** when no volume carries placement
       (engine before v17.1), `[]` when the engine has no volumes
-- [ ] fetched on the slab-listing tick (own 30 s timeout: it walks every
+- [x] fetched on the slab-listing tick (own 30 s timeout: it walks every
       extent map); a failed read keeps the last answer and its time
       (`volumes_collected_at`)
-- [ ] feed metric `volumes`; page: the drive pane lists them
+- [x] feed metric `volumes`; page: the drive pane lists them
+- [x] code + tests + docs pushed (c73abfc); web/dist not rebuilt yet —
+      two sc-build attempts (2026-10-06) got no dev slot in an hour (exit 75)
 - [ ] tests (reduction, absent vs empty, worst state, carry-over), docs
       (README, architecture "Per-drive usage"), changelog, v0.22.0, golden
 
