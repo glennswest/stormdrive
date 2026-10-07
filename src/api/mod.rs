@@ -41,6 +41,8 @@ pub struct AppState {
     pub firmware: RwLock<HashMap<DriveId, Arc<FwHandle>>>,
     /// Fleet drives update firmware one at a time.
     pub fleet_firmware_lock: tokio::sync::Mutex<()>,
+    /// Shelf (IOM) firmware runs by shelf key (#35).
+    pub shelf_firmware: RwLock<crate::iomfw::ShelfRuns>,
     /// Latest SES scan: every shelf the node can talk to, by logical id.
     pub shelves: RwLock<crate::topology::Shelves>,
     /// Latest HBA scan: every PCIe SCSI controller, by PCIe address.
@@ -201,6 +203,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/shelves/{key}/locate", post(shelf_locate))
         .route("/api/v1/shelves/{key}/locate/{state}", post(shelf_locate_by_path))
         .route("/api/v1/shelves/{key}/format", post(format_shelf))
+        .route("/api/v1/shelves/{key}/firmware", get(get_shelf_firmware).post(shelf_firmware))
         .route("/api/v1/shelves/{key}/format/{block_size}", post(format_shelf_by_path))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/hbas", get(list_hbas))
@@ -1283,6 +1286,49 @@ async fn get_shelf(
     let r = resolve_shelf(&s, &key).await?;
     let drives = shelf_drives(&s, &r.key).await;
     Ok(Json(shelf_json(&r, &drives)))
+}
+
+#[derive(Deserialize)]
+struct ShelfFirmwareBody {
+    image: String,
+    /// Go ahead although a drive serving data loses its only path while an
+    /// IOM restarts.
+    #[serde(default)]
+    allow_path_loss: bool,
+}
+
+/// Update the shelf's IOM firmware from an image in the store, one IOM at a
+/// time (#35). Never automatic.
+async fn shelf_firmware(
+    State(s): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Json(body): Json<ShelfFirmwareBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_shelf(&s, &key).await?;
+    if !crate::firmware::valid_image_name(&body.image) {
+        return Err(ApiError::bad_request(format!("image name {:?}", body.image)));
+    }
+    let path = image_dir(&s)?.join(&body.image);
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|_| ApiError::not_found(format!("image {:?} is not in the store", body.image)))?;
+    if data.is_empty() {
+        return Err(ApiError::bad_request(format!("image {:?} is empty", body.image)));
+    }
+    let h = crate::iomfw::start(s.clone(), r, body.image, Arc::new(data), body.allow_path_loss)
+        .await
+        .map_err(ApiError::conflict)?;
+    Ok(Json(json!(h.view())))
+}
+
+async fn get_shelf_firmware(State(s): State<Arc<AppState>>, Path(key): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_shelf(&s, &key).await?;
+    let run = s.shelf_firmware.read().await.get(&r.key).map(|h| h.view());
+    Ok(Json(json!({
+        "shelf": r.key,
+        "ioms": r.esps.iter().map(|e| json!({ "scsi_id": e.scsi_id, "serial": e.serial, "revision": e.revision })).collect::<Vec<_>>(),
+        "run": run,
+    })))
 }
 
 #[derive(Deserialize)]

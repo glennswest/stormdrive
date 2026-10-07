@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         formats: RwLock::new(std::collections::HashMap::new()),
         firmware: RwLock::new(std::collections::HashMap::new()),
         fleet_firmware_lock: tokio::sync::Mutex::new(()),
+        shelf_firmware: RwLock::new(std::collections::HashMap::new()),
         shelves: RwLock::new(std::collections::BTreeMap::new()),
         hbas: RwLock::new(std::collections::BTreeMap::new()),
         inventory_path,

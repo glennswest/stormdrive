@@ -573,6 +573,10 @@ pub struct EspPath {
     /// VPD 0x80 of the SES device — on NetApp shelves this is the IOM's
     /// serial, not the shelf's.
     pub serial: Option<String>,
+    /// The SES device's INQUIRY revision (sysfs `rev`): the IOM's firmware
+    /// version (#35).
+    #[serde(default)]
+    pub revision: Option<String>,
 }
 
 /// Everything we know about one shelf, refreshed each monitor tick.
@@ -798,6 +802,7 @@ mod linux {
             serial: std::fs::read(dir.join("vpd_pg80"))
                 .ok()
                 .and_then(|raw| crate::topology::parse_vpd80(&raw)),
+            revision: read_trim(&dir.join("rev")),
         }
     }
 
@@ -908,6 +913,10 @@ mod linux {
         )))
     }
 }
+
+/// Every SCSI enclosure device: (H:C:T:L, sysfs dir) — Linux only.
+#[cfg(target_os = "linux")]
+pub use linux::enclosure_devices;
 
 /// Read every shelf on the node (empty on non-Linux).
 pub fn scan() -> BTreeMap<String, ShelfReport> {
@@ -1062,6 +1071,7 @@ mod tests {
             sg_path: Some("/dev/sg17".into()),
             sas_address: Some("500a09800853bf4c".into()),
             serial: Some("IOMSERIAL".into()),
+            revision: Some("0300".into()),
         };
         let rep = assemble(
             vec![esp],

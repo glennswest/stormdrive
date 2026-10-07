@@ -23,6 +23,7 @@ pub mod gpt;
 pub mod hba;
 pub mod hotplug;
 pub mod inventory;
+pub mod iomfw;
 pub mod kubeapi;
 pub mod kubeauth;
 pub mod metrics;

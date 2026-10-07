@@ -365,9 +365,10 @@ logical id. It is refreshed every discovery tick, kept in `AppState`,
 and feeds `/api/v1/shelves`, the topology tree, the components feed, the
 kube `Enclosure`, the summary card and the UI's shelf panel. Events fire
 when a shelf appears/disappears, its overall status moves, or an element
-goes bad or recovers. Control is limited to IDENT (bay and shelf locate
-LEDs) built from a fresh status page so the generation code matches and
-no other request bit rides along.
+goes bad or recovers. Control is IDENT (bay and shelf locate LEDs) built
+from a fresh status page, so the generation code matches and no other
+request bit rides along, plus the IOM firmware download (#35, below,
+under Firmware). Each ESP path carries its IOM's revision (sysfs `rev`).
 
 ### HBAs (`hba.rs`)
 
@@ -539,6 +540,26 @@ health-gated, abort-on-regression.
   that refuses or answers "activation requires reset" is committed with
   CA=1 and the record carries `reset_required` — the new image runs
   after the next reset, and `Drive.firmware` is left as-is until then.
+- Shelf IOMs (#35, `iomfw.rs`), all over SES diagnostic page 0x0E:
+  - **Download.** The image is sent in Download Microcode Control pages:
+    subenclosure, the expected generation code from the status page, mode
+    0x07 (offsets, save, activate), buffer offset, image length and chunk
+    length. Chunks are `firmware.chunk_kib`, padded to 4 bytes, at most
+    65,508 per page.
+  - **Watching.** Progress comes from the Download Microcode Status page.
+    The run refuses an IOM already busy or an image over its `max_size`,
+    and stops at the first error status (≥ 0x80). After the last chunk it
+    waits up to 15 min for a terminal status (0x10–0x13), or for an IOM
+    that dropped off and came back idle (restarted on new code). It finds
+    the IOM again by SAS address and reads its new revision from sysfs
+    `rev`.
+  - **One IOM at a time.** The ESPs go in SCSI-id order. Before the next
+    one, every drive on the shelf must have its path count back (10 min,
+    then the run stops and says which). It is refused when a drive serving
+    data would lose its only path (`path_loss_blocker`), unless
+    `allow_path_loss`.
+  - **Records.** Runs are in memory per shelf, like drive firmware runs;
+    events go out on start, per IOM and at the end.
 - Policy: never automatic. Out-of-fleet drives update in parallel;
   fleet drives one at a time behind a node-wide lock; Failing/Failed
   drives are refused unless `force`. One, many, or every drive of a

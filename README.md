@@ -219,6 +219,15 @@ are listed under [Not yet](#not-yet).
   - Out-of-fleet drives update in parallel. Fleet drives and the system disk
     update one at a time.
   - Failing/Failed drives are refused unless `force`.
+  - **Shelf IOMs** (#35, `src/iomfw.rs`): `POST /api/v1/shelves/{key}/firmware
+    {image, allow_path_loss?}` sends an image from the same store through
+    SES Download Microcode (page 0x0E, SEND DIAGNOSTIC, mode 0x07), one IOM
+    (ESP path) at a time. Each IOM's progress is watched on its status page
+    while it restarts, for up to 15 min. The next IOM is touched only once
+    the drives' paths through the first are back. It is refused when a
+    drive serving data (fleet, or holding a slab) has no second path, e.g.
+    a single-pathed shelf, unless `allow_path_loss`. `GET …/firmware` gives
+    each IOM's revision (sysfs `rev`) and the run.
 - **The page** (`web/`, #6). A Svelte 5 page built on stormview's
   DataGrid, for hundreds of drives:
   - **Groups:** each shelf is a top-level row, then each HBA's direct
@@ -633,6 +642,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/firmware/images`, `GET·PUT·DELETE …/images/{name}` | image store; PUT takes the raw image |
 | `GET /api/v1/shelves`, `GET …/shelves/{key}` | SES identity, status, elements, slots, drives |
 | `POST /api/v1/shelves/{key}/locate` | `{"on":bool,"bay"?}` |
+| `GET·POST /api/v1/shelves/{key}/firmware` | `{"image","allow_path_loss"?}` — the shelf's IOMs, one at a time (#35); GET: each IOM's revision + the run |
 | `POST /api/v1/shelves/{key}/format` | `{"block_size","all"?}` — out-of-fleet drives that need it |
 | `GET /api/v1/topology` | controller → shelf → drive tree, with HBA firmware |
 | `GET /api/v1/hbas` | every PCIe SCSI HBA |
@@ -751,7 +761,8 @@ These are documented as design only; the code does not do them:
 - in the drive worker: ATA SECURITY ERASE for SATA drives without ATA
   Sanitize (#36); the scheduling default is
   your decision (#37)
-- SES shelf (IOM) firmware (#35)
+- SES shelf (IOM) firmware (#35) is built but has never met a real shelf
+  or image (#30, #29)
 - waiting on your decision:
   - thermal actuation (#32)
   - drive crypto: SED, crypto erase (#33)

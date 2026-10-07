@@ -457,8 +457,11 @@ no open decision — the image source is #29, the live shelf #30):
 - `EspPath.revision` (sysfs `rev`), `POST/GET /api/v1/shelves/{key}/firmware`
   (gate: a drive operation), events, docs
 Steps:
-- [ ] iomfw.rs pure + tests · [ ] Linux run · [ ] orchestration + API + gate
-- [ ] docs, changelog · [ ] sc-build (blocked: stormcentral#521); live: #30 + #29
+- [x] iomfw.rs pure + tests · [x] Linux run · [x] orchestration + API + gate
+- [x] docs, changelog
+- [ ] **next:** sc-build (never run: stormcentral#521); live: a real shelf
+      (#30) and a NetApp IOM12 image (#29). Not in the page or the feed
+      (an action needs an image name)
 
 ### #42: offer blank drives; enrol by policy on a node with a data slab (2026-10-07) — IN PROGRESS
 

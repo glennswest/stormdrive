@@ -941,6 +941,7 @@ mod tests {
             sg_path: None,
             sas_address: None,
             serial: None,
+            revision: None,
         }
     }
 

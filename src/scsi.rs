@@ -600,8 +600,14 @@ impl Device {
     }
 
     pub fn send_diagnostic(&self, page: &[u8]) -> Result<()> {
+        self.send_diagnostic_timeout(page, T_SHORT)
+    }
+
+    /// SEND DIAGNOSTIC with its own timeout: a Download Microcode chunk may
+    /// be written to flash before the enclosure answers (#35).
+    pub fn send_diagnostic_timeout(&self, page: &[u8], timeout_ms: u32) -> Result<()> {
         let mut d = page.to_vec();
-        self.io(&cdb::send_diagnostic(d.len() as u16), Dir::ToDevice, &mut d, T_SHORT)
+        self.io(&cdb::send_diagnostic(d.len() as u16), Dir::ToDevice, &mut d, timeout_ms)
             .map(|_| ())
     }
 
