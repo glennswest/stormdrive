@@ -437,6 +437,37 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #50: DrivePolicy — per-node tier, reformat + enrol by policy (stormcos#251, 2026-10-07) — IN PROGRESS
+
+stormblock1 (R230 + 2.5" NetApp shelf) → tier `warm`; stormblock2 (3.5"
+Dell) → `cool` (stormcos `docs/STORAGE-TIERS.md`). `tier_map` is per kind
+and the config is shared, and auto_add skips 520-byte drives. Design (from
+the issue + #45/#42, no open decision; rustkube#210 stamp is shipped):
+- CRD `DrivePolicy` (`storage.storm.io/v1`, cluster scope): spec `nodes`
+  and/or `nodeSelector.matchLabels` (one required), `drives` {kinds,
+  minBytes, maxBytes, blockSizes, model, shelf, bays}, `reformat` (512|4096,
+  only on a drive that needs it), `enroll` {role (data), tier (hot|warm|
+  cool|cold, required)}, `suspend`, `dryRun`
+- `src/policy.rs` (pure): spec parse/validate, node match, drive match,
+  verdict per drive (skip + reason, or steps: [format?] partition enroll);
+  never fleet/missing/busy/designated (reserved, spare, failed)/in_use_by/
+  failing; a drive whose policy job failed is not retried until the policy's
+  generation changes
+- controller: list policies (404 = CRD absent, quiet); stamped requester
+  re-checked (`create driveoperations`, what the worker re-checks per step);
+  contents guard (holds a slab/fs → skipped, re-probed every 5 min);
+  one worker job per distinct step list, tagged `policy`; interrupted jobs
+  resumed once the requester re-checks; deleted policy → queued steps
+  cancelled; status per node (`status.nodes.<node>`: phase, requester,
+  drives{id: state, job, reason}); Events on the policy (Accepted, Enrolled,
+  Failed, Refused)
+- deploy/crds.yaml + rbac (drivepolicies get/list/watch, status patch;
+  nodes get for nodeSelector)
+Steps:
+- [ ] policy.rs + tests · [ ] worker `policy` tag, active set · [ ] controller
+- [ ] CRD + rbac + example · [ ] kube harness (Refused unstamped / bob, other
+      node untouched, no CRD = quiet) · [ ] docs, changelog, v0.22.0, golden
+
 ### #26: the volumes on each drive, from the engine's placement (stormconsole#29, 2026-10-06) — IN PROGRESS
 
 The console reads every node's stormdrive but only its own node's engine;
