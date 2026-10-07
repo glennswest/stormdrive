@@ -437,7 +437,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #31: 160-bay NVMe support verified by simulation (owner, 2026-10-07) — IN PROGRESS
+### #31: 160-bay NVMe support verified by simulation (owner, 2026-10-07) — DONE (v0.22.1)
 
 Owner: "160 bay, we need to simulate … The 160 bay will consume half a mil
 or more." No real chassis is coming. stormcos#328 emulates drives in the
@@ -456,7 +456,10 @@ slots/VMD/locate/hotplug: the simulation is stormdrive's own.
 - already covered: poller phasing at 160 (poller test), page at 160 NVMe
   rows (page test). Real hardware parts → the NetApp shelf (#30)
 Steps:
-- [x] sys-root refactor · [x] chassis160 test · [x] docs, changelog · [ ] VM sc-build, golden
+- [x] sys-root refactor · [x] chassis160 test · [x] docs, changelog
+- [x] build VM on 0173550 and d415504 (v0.22.1): chassis160 passes
+      (discovery of 160 simulated bays in 6 ms), 210 unit + harnesses,
+      clippy clean; golden `golden-stormdrive-17eb7dcf6f56`, stormcos#313
 
 ### #24: firmware redundancy gate before a data-serving drive resets (2026-10-07) — DONE (v0.22.0)
 
