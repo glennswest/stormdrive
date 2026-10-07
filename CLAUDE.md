@@ -437,6 +437,25 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #44: shelf RAID sets — bay labels and the failed member's fault LED (stormblock#252, 2026-10-07) — IN PROGRESS
+
+stormblock#252 lays a shelf out as drive-level RAID sets with spares and fails
+a member when stormdrive reports its drive `failed`/`missing`.
+- labels: already pushed (`shelf=<key>`, `bay=<n>`, uuid = our DriveId) on
+  register and on change; docs say to name the stormblock shelf layout
+  (`POST /api/v1/shelves {name}`) by stormdrive's shelf key
+- **gap found:** `push_health` never reports `missing` (missing drives are
+  filtered out) → a pulled fleet drive is reported `missing`, by uuid (its
+  /dev path is gone); the response's `raid_member` goes into the event
+- fault LED: each fleet tick `GET /api/v1/arrays` → bays of `failed`
+  members (drive.uuid → our drive's shelf/bay, else wwn/serial, else the
+  member's `shelf=…/bay=…` labels) → SES RQST FAULT on, off when the bay
+  has no failed member; lit bays persisted (`Inventory.fault_bays`) so a
+  restart can still clear them; events on/off
+Steps:
+- [ ] report missing · [ ] arrays client + pure wanted-bays · [ ] SES fault
+      control + tick · [ ] tests, docs, changelog · [ ] sc-build (#521)
+
 ### #40: a test step in the drive worker (2026-10-07) — IN PROGRESS
 
 Bulk tests ran in the browser, one request per drive, 8 at a time; closing
