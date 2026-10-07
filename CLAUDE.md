@@ -438,6 +438,18 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #21: SIGTERM stops gracefully and persists (2026-10-07) — written, waits on a build
+
+stormd and systemd stop the daemon with SIGTERM, which skipped the final
+`persist()` (only SIGINT was caught).
+- [x] `shutdown_signal()` selects SIGINT and SIGTERM; after the server stops,
+      a `stopping` event, then `persist()` (event log + inventory) (d327a99)
+- [x] `tests/restart.rs` `sigterm_stops_gracefully_and_persists`: SIGTERM to
+      the real daemon → exits 0 within 10 s, events.json ends with the stop
+- [x] docs (README, architecture "Stopping"), changelog
+- [ ] **next:** build (with #22's bd63b9b), release v0.24.0 with #22, golden.
+      Blocked: build-VM jobs cancelled while queued (stormcentral#535/#536)
+
 ### #22: SAS/SATA health — LOG SENSE and ATA SMART (2026-10-07) — IN PROGRESS
 
 SAS/SATA health was sysfs only, so such a drive never reached `failing` on
