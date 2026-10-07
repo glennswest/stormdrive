@@ -437,6 +437,25 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #40: a test step in the drive worker (2026-10-07) — IN PROGRESS
+
+Bulk tests ran in the browser, one request per drive, 8 at a time; closing
+the tab stopped the rest. Design (the issue's, no open decision):
+- `Step::Test {kind: smoke|read_scan|destructive_sample}`, rank 0 (with the
+  low-level steps: HBA lane, before partition/enroll); destroys only when
+  destructive_sample (the destroy rules apply then)
+- guard: a job whose steps are all read-only tests may run on fleet and
+  `in_use_by` drives, as the single-drive route allows; a test needs a
+  usable geometry unless a format comes first
+- run: `drivetest::start`, progress from bytes, wait for the verdict and the
+  drive back to idle; Passed → the done line; Failed/Cancelled → the drive
+  job fails, its later steps do not run (the qualify gate before enroll, #34)
+- CRD op `test` + `kind`; page: bulk smoke/scan = one worker job; Prepare
+  gets a Test choice
+Steps:
+- [ ] step + guard + run + tests · [ ] CRD, page (bulk + Prepare) + JS tests
+- [ ] docs, changelog · [ ] sc-build (blocked: stormcentral#521)
+
 ### #35: shelf (IOM) firmware via SES Download Microcode (2026-10-07) — IN PROGRESS
 
 Never automatic; same image store as drive firmware. Design (the issue's;
