@@ -448,7 +448,7 @@ stormd and systemd stop the daemon with SIGTERM, which skipped the final
       the real daemon → exits 0 within 10 s, events.json ends with the stop
 - [x] docs (README, architecture "Stopping"), changelog
 - [ ] **next:** build (with #22's bd63b9b), release v0.24.0 with #22, golden.
-      Blocked: build-VM jobs cancelled while queued (stormcentral#535/#536)
+      Blocked: build-VM jobs cancelled while queued (stormcentral#541)
 
 ### #22: SAS/SATA health — LOG SENSE and ATA SMART (2026-10-07) — IN PROGRESS
 
@@ -474,7 +474,8 @@ Steps:
       in bd63b9b
 - [ ] **next:** build bd63b9b (clippy), release v0.24.0, golden, close #52 +
       #22. Blocked 2026-10-07: every build-VM job (plain sc-build now routes
-      there too) is cancelled while queued — stormcentral#535/#536. Live: the
+      there too) is cancelled while queued — the master's drain
+      (stormcentral#535/#536, now stuck: stormcentral#541). Live: the
       R230's WD (SATA behind mpt3sas) once a release carries it
 
 ### #23: wear-out projection from the trend (2026-10-07) — DONE (v0.23.0)
