@@ -582,7 +582,10 @@ impl Controller {
         let drives: Vec<crate::drive::Drive> = self.state.inventory.read().await.drives.values().filter(|d| spec.selects_drive(d)).cloned().collect();
         let selected: HashSet<String> = drives.iter().map(|d| d.id.0.to_string()).collect();
         // A skip is only worth keeping while the drive is still selected.
-        records.retain(|id, r| selected.contains(id) || r["job"].is_string());
+        let gone: Vec<String> = records.iter().filter(|(id, r)| !selected.contains(*id) && !r["job"].is_string()).map(|(id, _)| id.clone()).collect();
+        for id in gone {
+            records.remove(&id);
+        }
         let active = self.state.worker.active_drives();
         let mut run: Vec<(crate::drive::Drive, Vec<crate::worker::Step>)> = vec![];
         for d in &drives {
