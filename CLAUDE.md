@@ -437,6 +437,27 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #31: 160-bay NVMe support verified by simulation (owner, 2026-10-07) — IN PROGRESS
+
+Owner: "160 bay, we need to simulate … The 160 bay will consume half a mil
+or more." No real chassis is coming. stormcos#328 emulates drives in the
+engine (ublk, which stormdrive excludes), so it cannot show stormdrive's
+slots/VMD/locate/hotplug: the simulation is stormdrive's own.
+- discovery `scan_in(sys, dev, mounts, cfg)` and topology `locate_in` /
+  `set_locate_in(sys, …)`: the sysfs root as a parameter (the NVMe helpers
+  already take one); `scan`/`locate`/`set_locate` call them with /sys, /dev
+- `tests/chassis160.rs` builds a 160-bay chassis as a sysfs tree: 120 drives
+  behind a PCIe switch, 40 behind VMD (domain 10000), 8 under native
+  multipath (with hidden path nodes), slots 1..160 (`attention` on 150, NPEM
+  LEDs on 10). Then: discovery sees exactly 160; every drive has its
+  `pcie_slot` and bay = slot; locate writes that bay's LED and nothing else;
+  pull one (gone, 159), push a new drive into the same slot (`replaces` the
+  old one, `monitor::replaced_in_bay`)
+- already covered: poller phasing at 160 (poller test), page at 160 NVMe
+  rows (page test). Real hardware parts → the NetApp shelf (#30)
+Steps:
+- [ ] sys-root refactor · [ ] chassis160 test · [ ] docs, changelog · [ ] VM sc-build, golden
+
 ### #24: firmware redundancy gate before a data-serving drive resets (2026-10-07) — DONE (v0.22.0)
 
 Today a fleet (or `in_use_by`) drive updates firmware one at a time behind a
