@@ -3,6 +3,24 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.22.0] — 2026-10-07
+
+### Added
+- `DrivePolicy` (`storage.storm.io/v1`): which drives of which nodes become stormblock slabs of which tier, reformatted first when they need it, through the drive worker under the stamped requester; `requireDataSlab` (#50, #42)
+- Offer: `enrolable` on blank, healthy, out-of-fleet drives with an event; `POST /api/v1/drives/{id}/enroll` (#42)
+- Drive worker steps `security_erase {enhanced?}` (ATA SECURITY ERASE for SATA without Sanitize, #36) and `test {kind}` (server-side bulk tests, a qualify gate before enroll, #40)
+- Shelf (IOM) firmware via SES Download Microcode, one IOM at a time (#35)
+- `usage.volumes`: the volumes on each drive, from the engine's placement (#26)
+- Fault LEDs on bays of failed RAID set members (stormblock#252, #44)
+- Firmware redundancy gate before a data-serving drive resets (#24)
+
+### Fixed
+- A pulled fleet drive is reported `missing` to stormblock (#44)
+- The event log survives a restart; seq continues (#25)
+
+### Changed
+- The page's bulk smoke test / read scan is one worker job (#40); the drive pane lists the volumes on the drive (#26)
+
 ### 2026-10-07
 - **feat:** firmware redundancy gate (#24). A drive that serves data resets only while every volume with legs on it is fully redundant, per the engine's placement (`/api/v1/volumes?placement=true`: redundancy `healthy`, no rebuild, its slab there `ok`). It waits up to `firmware.redundancy_wait_mins` (30) before the download, then again after the update before the lock passes to the next drive. An engine without placement cannot be checked, so that is refused; `force` skips the gate
 - **fix:** a pulled fleet drive is reported `missing` to stormblock (by uuid), so the engine fails its RAID set member and takes a spare. Missing drives were never reported before; the answer's `raid_member` goes into the event (#44)
