@@ -150,7 +150,18 @@ are listed under [Not yet](#not-yet).
        NVMe Format NVM with the LBA format of that data size.
     2. `sanitize {method: block|crypto|overwrite}`: NVMe Sanitize (refused
        while other namespaces share the controller) or SCSI SANITIZE
-       (which SAT maps to ATA SANITIZE).
+       (which SAT maps to ATA SANITIZE). Or `security_erase {enhanced?}`
+       (#36), for a SATA drive that has the ATA Security feature set and
+       not Sanitize. It sends ATA SECURITY ERASE UNIT through ATA
+       PASS-THROUGH(16); enhanced is used when the drive supports it unless
+       `enhanced: false`. It works under a one-time user password, which is
+       saved in the job record (`ata_password` in jobs.json) and a warning
+       event **before** the drive sees it, and cleared once IDENTIFY reads
+       security off again. A drive that loses power mid-erase stays locked
+       with it (`hdparm --user-master u --security-unlock <pw>`). It is
+       refused on a frozen drive (a hot-replug or a host suspend/resume
+       unfreezes it; never retried), on an expired password counter, and
+       on a drive whose password this job did not set.
     3. `partition {role: data|system}`: clears the first and last 4 MiB,
        then writes a GPT with one 1 MiB-aligned partition of stormblock's
        slab type (the same GUIDs as a node disk).
@@ -211,7 +222,8 @@ are listed under [Not yet](#not-yet).
     4096/512 and firmware.
   - **Prepare** (the drive worker, #38): every format on the page (bulk,
     shelf, drive) and the rest of drive preparation go through it. Pick the
-    steps (format 4096/512, sanitize block/crypto/overwrite, partition,
+    steps (format 4096/512, sanitize block/crypto/overwrite or ATA
+    security erase, partition,
     enroll with a tier, role), preview them as a dry run (which drives run,
     which are refused and why), type the serial of each drive that holds a
     slab or a filesystem before it may be destroyed, then run.
@@ -731,7 +743,7 @@ Built but never exercised on real hardware:
 
 - **Firmware updates:** nothing supplies an image (#29).
 - **The drive worker's disk operations** (NVMe Format NVM, both sanitizes,
-  GPT on a real disk, BLKRRPART, enroll through a partition) are tested on
+  the ATA security erase, GPT on a real disk, BLKRRPART, enroll through a partition) are tested on
   synthetic data. The GPT layout is also checked by `sfdisk --verify` on a
   file. On real drives: #30.
 - **The NetApp shelf path:** SES, the 520 → 4096 format, phy/expander (#30).

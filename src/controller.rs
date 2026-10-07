@@ -801,6 +801,7 @@ mod tests {
                     destroy_named: false,
                     started: None,
                     finished: None,
+                    ata_password: None,
                 })
                 .collect(),
             cancel: false,

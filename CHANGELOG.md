@@ -4,6 +4,9 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-07
+- **feat:** drive worker step `security_erase {enhanced?}`: ATA SECURITY ERASE UNIT through ATA PASS-THROUGH(16), for SATA drives with the Security feature set and no Sanitize. It checks IDENTIFY first, and refuses a drive with no security feature set, a frozen drive (never retried), an expired attempt counter, or a password this job did not set. It works under a one-time password that is saved in the job record and a warning event before the drive sees it, and cleared once IDENTIFY reads security off. A failure before ERASE UNIT takes the password off again. A restart interrupts the step and names the password, and a resume checks the drive before erasing again (#36)
+- **feat(web):** Prepare offers ATA security erase (normal / enhanced) (#36)
+- **feat:** `deploy/crds.yaml`: DriveOperation steps accept `security_erase` and `enhanced` (#36)
 - **feat:** `DrivePolicy` (`storage.storm.io/v1`, storage-admin only): which drives of which nodes become stormblock slabs of which tier. A drive the kernel cannot use (520-byte NetApp) is reformatted first, with no hand-run step. The spec has nodes / nodeSelector, a drive selector (kinds, size, sector size, model, shelf, bays), `reformat` (512/4096), `enroll {role, tier}`, `suspend` and `dryRun`. Each node runs it through the drive worker under the stamped requester (re-checked). It never takes a drive in the fleet, holding data, designated reserved/spare/failed, failing or busy. A failed drive waits for a new generation. Status is per node, with Events on the policy; deleting the policy cancels the queued steps (#50, stormcos#251)
 - **feat:** `deploy/crds.yaml` `DrivePolicy`; `deploy/rbac.yaml`: drivepolicies get/list/watch + status, nodes get; `deploy/drivepolicy.example.yaml` (stormblock1 `warm`, stormblock2 `cool`) (#50)
 - **docs:** README "As Kubernetes objects", architecture "Drives enrolled by policy" (#50)

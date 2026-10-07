@@ -4,6 +4,12 @@
 // the last word: it validates the steps and re-checks every guard.
 
 export const SANITIZE = ['block', 'crypto', 'overwrite']
+/// The erase select's other choices: ATA SECURITY ERASE UNIT, for SATA
+/// drives without Sanitize (#36).
+export const SECURITY_ERASE = [
+  ['ata', 'ATA security erase'],
+  ['ata-enhanced', 'ATA security erase (enhanced)'],
+]
 
 /// A fresh Prepare form; `preset` overrides (e.g. a format-only job).
 export function blankForm(preset = {}) {
@@ -15,7 +21,9 @@ export function blankForm(preset = {}) {
 export function stepsOf(f) {
   const s = []
   if (f.format) s.push({ op: 'format', block_size: Number(f.format) })
-  if (f.sanitize) s.push({ op: 'sanitize', method: f.sanitize })
+  if (f.sanitize === 'ata') s.push({ op: 'security_erase' })
+  else if (f.sanitize === 'ata-enhanced') s.push({ op: 'security_erase', enhanced: true })
+  else if (f.sanitize) s.push({ op: 'sanitize', method: f.sanitize })
   if (f.partition) s.push({ op: 'partition', role: f.role })
   if (f.enroll) {
     const e = { op: 'enroll', role: f.role }
@@ -31,6 +39,8 @@ export function describeStep(s) {
       return `format → ${s.block_size}`
     case 'sanitize':
       return `sanitize (${s.method})`
+    case 'security_erase':
+      return s.enhanced ? 'security erase (enhanced)' : 'security erase'
     case 'partition':
       return `partition (${s.role})`
     case 'enroll':

@@ -6,6 +6,9 @@
 //!   NVMe Format NVM with the LBA format of that data size (erase.rs).
 //! - `sanitize {method}`: NVMe Sanitize or SCSI SANITIZE — block, crypto or
 //!   overwrite erase of the whole drive.
+//! - `security_erase {enhanced?}`: ATA SECURITY ERASE UNIT for a SATA drive
+//!   that has the Security feature set and not Sanitize (#36), under a
+//!   one-time password kept in the job record until the erase is done.
 //! - `partition {role}`: a GPT with one stormblock partition (gpt.rs).
 //! - `enroll {tier, role}`: hand it to stormblock — open the partition (or
 //!   the whole disk) with its labels and stable uuid, format a slab.
@@ -81,6 +84,11 @@ pub enum Step {
         block_size: u32,
     },
     Sanitize { method: SanitizeMethod },
+    /// ATA SECURITY ERASE UNIT (#36). `enhanced`: None = when supported.
+    SecurityErase {
+        #[serde(default)]
+        enhanced: Option<bool>,
+    },
     Partition {
         #[serde(default)]
         role: Role,
@@ -96,7 +104,7 @@ pub enum Step {
 impl Step {
     fn rank(&self) -> u8 {
         match self {
-            Step::Format { .. } | Step::Sanitize { .. } => 0,
+            Step::Format { .. } | Step::Sanitize { .. } | Step::SecurityErase { .. } => 0,
             Step::Partition { .. } => 1,
             Step::Enroll { .. } => 2,
         }
@@ -112,6 +120,7 @@ impl Step {
         match self {
             Step::Format { .. } => "format",
             Step::Sanitize { .. } => "sanitize",
+            Step::SecurityErase { .. } => "security_erase",
             Step::Partition { .. } => "partition",
             Step::Enroll { .. } => "enroll",
         }
@@ -120,6 +129,11 @@ impl Step {
         match self {
             Step::Format { block_size } => format!("format → {block_size}"),
             Step::Sanitize { method } => format!("sanitize ({})", serde_json::to_value(method).unwrap_or_default().as_str().unwrap_or("?")),
+            Step::SecurityErase { enhanced } => match enhanced {
+                Some(true) => "security erase (enhanced)".into(),
+                Some(false) => "security erase (normal)".into(),
+                None => "security erase".into(),
+            },
             Step::Partition { role } => format!("partition ({})", role.word()),
             Step::Enroll { tier, role } => format!("enroll ({} slab{})", role.word(), tier.as_ref().map(|t| format!(", tier {t}")).unwrap_or_default()),
         }
@@ -278,6 +292,9 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
     let formats_first = steps.iter().any(|s| matches!(s, Step::Format { .. }));
     for s in steps {
         match s {
+            Step::SecurityErase { .. } if !matches!(d.kind, DriveKind::SataHdd | DriveKind::SataSsd) => {
+                return Err("ATA security erase is for SATA drives; use sanitize".into());
+            }
             Step::Sanitize { .. } if d.kind == DriveKind::NvmeSsd && cx.nvme_siblings > 0 => {
                 return Err(format!(
                     "an NVMe sanitize erases every namespace on the controller; {} other namespace(s) share it",
@@ -365,6 +382,11 @@ pub struct DriveJob {
     pub destroy_named: bool,
     pub started: Option<SystemTime>,
     pub finished: Option<SystemTime>,
+    /// The one-time ATA user password a security erase set (#36), kept until
+    /// the drive reads security-off again: a drive that loses power
+    /// mid-erase stays locked with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ata_password: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +446,15 @@ pub fn recover_action(dj: &DriveJob, step: Option<&Step>) -> Recover {
         DjState::Running => match step {
             Some(Step::Format { .. }) if dj.kind != DriveKind::NvmeSsd => Recover::Reattach,
             Some(Step::Sanitize { .. }) => Recover::Reattach,
+            // ERASE UNIT blocks until the drive is done and cannot be
+            // watched; the drive finishes (or stays locked) on its own.
+            Some(Step::SecurityErase { .. }) => Recover::Interrupt(match &dj.ata_password {
+                Some(p) => format!(
+                    "stormdrive restarted during an ATA security erase; the drive may still be erasing or locked with the one-time password {p}. \
+                     Resume checks it with IDENTIFY and erases again with that password"
+                ),
+                None => "stormdrive restarted during an ATA security erase, before a password was set; resume to run it".into(),
+            }),
             Some(s) => Recover::Interrupt(format!(
                 "stormdrive restarted during {}; check the drive, then resume to run it again",
                 s.name()
@@ -760,6 +791,7 @@ pub async fn submit_tagged(
             destroy_named: named,
             started: None,
             finished: None,
+            ata_password: None,
         });
     }
     let runnable = djs.iter().filter(|d| d.state == DjState::Queued).count();
@@ -1054,6 +1086,54 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
             state.persist().await;
             r.map(|_| format!("{method:?} sanitize complete").to_lowercase())
         }
+        Step::SecurityErase { enhanced } => {
+            let sg = crate::scsi::sg_path_for_block(&d.name).unwrap_or_else(|| d.path.clone());
+            let ours = state.worker.with(job, idx, |x| x.ata_password.clone()).flatten();
+            let (sg1, want) = (sg.clone(), *enhanced);
+            let sec = tokio::task::spawn_blocking(move || crate::erase::ata_security(&sg1)).await.unwrap_or_else(|e| Err(format!("task: {e}")))?;
+            let plan = crate::erase::plan_security_erase(&sec, ours.is_some(), want)?;
+            // The password goes on record — jobs.json written, an event — before
+            // the drive ever sees it.
+            let password = match ours {
+                Some(p) => p,
+                None => {
+                    let p = crate::erase::one_time_password(&random16()?);
+                    state.worker.with(job, idx, |x| x.ata_password = Some(p.clone()));
+                    state.worker.save().await;
+                    state.events.write().await.push(
+                        Some(d.id),
+                        Severity::Warning,
+                        "worker",
+                        format!(
+                            "{} ({}): ATA user password {p} set for a security erase (job {job}). If the drive loses power before the erase finishes it stays locked: hdparm --user-master u --security-unlock {p} /dev/{}, then --security-disable {p}",
+                            d.name, d.serial, d.name
+                        ),
+                    );
+                    p
+                }
+            };
+            set_activity(state, d.id, Activity::Sanitizing).await;
+            state.events.write().await.push(Some(d.id), Severity::Warning, "worker", format!("{}: {} started (all data destroyed)", d.name, step.describe()));
+            let (pw, plan1) = (password.clone(), plan.clone());
+            let r = tokio::task::spawn_blocking(move || crate::erase::ata_security_erase(&sg, &pw, &plan1, &progress))
+                .await
+                .unwrap_or_else(|e| Err(crate::erase::AtaEraseError { message: format!("task: {e}"), password_set: true }));
+            let keep = r.as_ref().err().is_some_and(|e| e.password_set);
+            if !keep {
+                state.worker.with(job, idx, |x| x.ata_password = None);
+            }
+            state.worker.save().await;
+            set_activity(state, d.id, Activity::Idle).await;
+            state.persist().await;
+            match r {
+                Ok(()) => Ok(format!("ATA security erase{} complete; password removed", if plan.enhanced { " (enhanced)" } else { "" })),
+                Err(e) if keep => Err(format!(
+                    "{} — the drive may still be locked with the one-time password {password} (hdparm --user-master u --security-unlock {password} /dev/{}, then --security-disable {password})",
+                    e.message, d.name
+                )),
+                Err(e) => Err(e.message),
+            }
+        }
         Step::Partition { role } => {
             set_activity(state, d.id, Activity::Formatting).await;
             progress(None, "partition");
@@ -1095,6 +1175,14 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
 }
 
 /// The disk's size and logical block size, from sysfs.
+/// 16 bytes from the kernel's random source, for a one-time password.
+fn random16() -> Result<[u8; 16], String> {
+    use std::io::Read;
+    let mut b = [0u8; 16];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|e| format!("/dev/urandom: {e}"))?;
+    Ok(b)
+}
+
 fn read_geometry(name: &str) -> Option<(u64, u32)> {
     let base = format!("/sys/block/{name}");
     let sectors: u64 = std::fs::read_to_string(format!("{base}/size")).ok()?.trim().parse().ok()?;
@@ -1457,6 +1545,7 @@ mod tests {
             destroy_named: false,
             started: None,
             finished: None,
+            ata_password: None,
         };
         assert_eq!(recover_action(&dj(DjState::Running, DriveKind::SasHdd), Some(&FMT)), Recover::Reattach);
         assert_eq!(recover_action(&dj(DjState::Running, DriveKind::NvmeSsd), Some(&Step::Sanitize { method: SanitizeMethod::Crypto })), Recover::Reattach);
@@ -1464,6 +1553,36 @@ mod tests {
         assert!(matches!(recover_action(&dj(DjState::Running, DriveKind::SasHdd), Some(&part())), Recover::Interrupt(_)));
         assert!(matches!(recover_action(&dj(DjState::Queued, DriveKind::SasHdd), Some(&FMT)), Recover::Interrupt(_)), "never started blind");
         assert_eq!(recover_action(&dj(DjState::Done, DriveKind::SasHdd), None), Recover::Leave);
+        // #36: an ATA security erase cannot be watched; the restart says the
+        // password the drive may be locked with.
+        let se = Step::SecurityErase { enhanced: None };
+        let mut locked = dj(DjState::Running, DriveKind::SataHdd);
+        locked.ata_password = Some("sd-Xy7".into());
+        let Recover::Interrupt(why) = recover_action(&locked, Some(&se)) else { panic!() };
+        assert!(why.contains("sd-Xy7") && why.contains("IDENTIFY"), "{why}");
+        let Recover::Interrupt(why) = recover_action(&dj(DjState::Running, DriveKind::SataHdd), Some(&se)) else { panic!() };
+        assert!(why.contains("before a password was set"), "{why}");
+    }
+
+    #[test]
+    fn security_erase_is_a_sata_low_level_step() {
+        let s: Step = serde_json::from_value(json!({ "op": "security_erase", "enhanced": true })).unwrap();
+        assert_eq!(s, Step::SecurityErase { enhanced: Some(true) });
+        let s: Step = serde_json::from_value(json!({ "op": "security_erase" })).unwrap();
+        assert_eq!(s, Step::SecurityErase { enhanced: None });
+        assert!(s.low_level() && s.destroys());
+        assert_eq!(s.describe(), "security erase");
+        assert!(validate_steps(&[s.clone(), part()]).is_ok());
+
+        let mut sata = Drive::test_fixture("sdc");
+        sata.kind = DriveKind::SataHdd;
+        assert_eq!(guard(&sata, std::slice::from_ref(&s), false, &cx()), Ok(()));
+        let mut sas = sata.clone();
+        sas.kind = DriveKind::SasHdd;
+        assert!(guard(&sas, std::slice::from_ref(&s), false, &cx()).unwrap_err().contains("SATA"));
+        let mut nvme = sata;
+        nvme.kind = DriveKind::NvmeSsd;
+        assert!(guard(&nvme, &[s], false, &cx()).unwrap_err().contains("use sanitize"));
     }
 
     #[test]

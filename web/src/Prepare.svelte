@@ -5,7 +5,7 @@
   // The dry run is a read; the submit needs a storage-admin (#45/#47).
   import { post } from './lib/api.js'
   import {
-    SANITIZE, blankForm, stepsOf, describeStep, destroys, requestOf, heldDrives, namesDrive, destroyList,
+    SANITIZE, SECURITY_ERASE, blankForm, stepsOf, describeStep, destroys, requestOf, heldDrives, namesDrive, destroyList,
   } from './lib/worker.js'
 
   let { select, title, preset = {}, drives = [], writable = true, ondone, onerror } = $props()
@@ -71,6 +71,7 @@
     <select bind:value={form.sanitize}>
       <option value="">—</option>
       {#each SANITIZE as m}<option value={m}>{m}</option>{/each}
+      {#each SECURITY_ERASE as [v, label]}<option value={v}>{label}</option>{/each}
     </select>
   </label>
   <label><input type="checkbox" bind:checked={form.partition} /> Partition (GPT, one slab partition)</label>

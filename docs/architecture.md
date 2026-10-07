@@ -401,8 +401,8 @@ as an event; the drive is `usable` again once the kernel re-reads it.
 
 ### The drive worker (`worker.rs`, `erase.rs`, `gpt.rs`, #5)
 One request prepares many drives: a **selection** (drives, shelf + bays,
-model, unusable) × a list of **steps** (format → sanitize → partition →
-enroll, each at most once, in that order). A job keeps one record per
+model, unusable) × a list of **steps** (format → sanitize or
+security_erase → partition → enroll, each at most once, in that order). A job keeps one record per
 drive: state (queued, running, done, failed, refused, interrupted,
 cancelled), the current step, phase and percent, and one line per finished
 step. It persists in `<data_dir>/jobs.json`; the 64 most recent jobs are
@@ -423,6 +423,7 @@ kept.
     `failed`. A failed drive may still be sanitized.
   - An NVMe sanitize is controller-wide, so it is refused while another
     namespace shares the controller.
+  - `security_erase` is for SATA drives only (#36).
 - **Lanes:**
   - Low-level steps take a permit from the drive's HBA semaphore
     (`worker.max_per_hba`; an NVMe controller is its own lane).
@@ -438,6 +439,22 @@ kept.
     sends Format NVM without secure erase.
   - Sanitize polls log 0x81 (NVMe) or TEST UNIT READY sense 04/1B (SCSI)
     for progress.
+  - ATA security erase (#36, `erase.rs`): every command goes through
+    ATA PASS-THROUGH(16).
+    1. IDENTIFY DEVICE: word 82/128 security state, words 89/90 erase
+       times. `plan_security_erase` refuses: no Security feature set,
+       frozen, an expired attempt counter, or a password this job did not
+       set.
+    2. A one-time printable password goes into the drive job
+       (`ata_password`). jobs.json is saved and an event names it, before
+       SECURITY SET PASSWORD.
+    3. ERASE PREPARE, then ERASE UNIT, enhanced when supported. ERASE UNIT
+       blocks, so its SG_IO timeout is the drive's estimate × 1.5 + 30 min
+       (48 h when the drive gives none or says over 508 min). A failure
+       before ERASE UNIT takes the password off again (DISABLE PASSWORD).
+    4. IDENTIFY again: done only when security reads off. Then the
+       password is cleared from the record. A failure that may leave it set
+       keeps it, and the error says how to unlock the drive.
   - Partition clears the head and tail, writes both GPT copies, and waits
     for the kernel's partition node after BLKRRPART.
   - Enroll opens `/dev/<disk>1` (or the disk) in stormblock with labels
@@ -448,7 +465,10 @@ kept.
   - A SCSI format or sanitize, or an NVMe sanitize, that was running is
     re-attached and watched to its end (the drive keeps going without us).
   - An NVMe format or a partition that was in flight, and every queued
-    drive, becomes `interrupted` with the reason. Nothing destructive
+    drive, becomes `interrupted` with the reason. So does an ATA security
+    erase: it can't be watched, and the reason includes the recorded
+    password. Its resume checks IDENTIFY and, with security still on,
+    erases again with that password instead of setting a new one. Nothing destructive
     re-runs until `POST …/resume`.
   - Drives a run outside the worker left busy (#39 — `format::start`,
     `drivetest`, `firmware`: their handles are in memory, `activity` is

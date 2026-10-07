@@ -126,15 +126,16 @@ spec:
                     unusable: { type: boolean, description: "Drives the kernel cannot use (520/528-byte sectors)." }
                 steps:
                   type: array
-                  description: In order, per drive. format/sanitize, then partition, then enroll; each at most once.
+                  description: In order, per drive. format/sanitize/security_erase, then partition, then enroll; each at most once.
                   items:
                     type: object
                     required: [op]
                     properties:
-                      op: { type: string, enum: [format, sanitize, partition, enroll] }
+                      op: { type: string, enum: [format, sanitize, security_erase, partition, enroll] }
                       blockSize: { type: integer, description: "format: 512 or 4096." }
                       block_size: { type: integer }
                       method: { type: string, enum: [block, crypto, overwrite], description: "sanitize." }
+                      enhanced: { type: boolean, description: "security_erase: enhanced erase (default: when the drive supports it)." }
                       role: { type: string, enum: [data, system], description: "partition/enroll." }
                       tier: { type: string, description: "enroll: the slab's tier (default from the drive kind)." }
                 destroy:

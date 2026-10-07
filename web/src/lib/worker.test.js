@@ -82,3 +82,12 @@ test('the prep phase shows when it adds something', () => {
   assert.equal(prepMetric({ membership: 'out', prep: { phase: 'formatting', pct: 3 } }), null, 'the activity metric shows progress')
   assert.equal(prepMetric({ membership: 'out' }), null)
 })
+
+test('ATA security erase (#36): its own step, enhanced when asked', () => {
+  assert.deepEqual(stepsOf(blankForm({ sanitize: 'ata', partition: true })), [{ op: 'security_erase' }, { op: 'partition', role: 'data' }])
+  const s = stepsOf(blankForm({ sanitize: 'ata-enhanced' }))
+  assert.deepEqual(s, [{ op: 'security_erase', enhanced: true }])
+  assert.equal(describeStep(s[0]), 'security erase (enhanced)')
+  assert.equal(describeStep({ op: 'security_erase' }), 'security erase')
+  assert.equal(destroys(s), true)
+})
