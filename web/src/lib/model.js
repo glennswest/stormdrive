@@ -264,3 +264,12 @@ export function volumeLine(v) {
     trouble: (v.state && v.state !== 'ok') || (v.rebuild && v.rebuild !== 'none'),
   }
 }
+
+// Days to wear-out by the trend (#23): "in 412 days (2027-11-23)", or
+// "now" once the line has reached 100 %.
+export function wearOut(p) {
+  if (!p) return ''
+  if (!p.days_left) return 'now (rated endurance reached)'
+  const when = new Date(p.wear_out_unix * 1000).toISOString().slice(0, 10)
+  return `in ${p.days_left} days (${when}), ${p.rate_pct_per_day.toFixed(3)} %/day`
+}

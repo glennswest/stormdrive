@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-07
+- **feat:** days to wear-out (#23). A least-squares line through the last year of the wear trend gives `wear_projection {rate_pct_per_day, days_left, wear_out_unix, …}` on each drive, refitted with every trend sample. There is none under a week, with fewer than two values, or with wear not growing. It appears on /api/v1/drives, the kube Drive status, the feed (`wear-out`, warn under 180 d), Prometheus (`stormdrive_drive_wear_out_days`, `_wear_rate_pct_per_day`) and the drive pane. A `wear` warning event fires when it first drops under `monitor.wear_out_warn_days` (180)
+
 ## [v0.22.1] — 2026-10-07
 
 ### Changed

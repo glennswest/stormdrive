@@ -194,6 +194,11 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     if let Some(sp) = d.health.available_spare_pct {
         metrics.push(Metric::new("spare", sp.to_string()).unit("%"));
     }
+    // Days to its rated endurance by the wear trend (#23).
+    if let Some(p) = d.wear_projection {
+        let m = Metric::new("wear-out", p.days_left.to_string()).unit("d");
+        metrics.push(if p.days_left < crate::wear::WARN_DAYS { m.tone("warn") } else { m.tone("muted") });
+    }
     // NVMe reports media errors; for SCSI/SATA the only counter we read
     // is sysfs `ioerr_cnt` — commands that failed, for any reason — and
     // calling that "media errors" overstated it (#2).
@@ -619,6 +624,7 @@ mod tests {
             in_use_by: None,
             contents: None,
             enrolable: false,
+            wear_projection: None,
             format: None,
             firmware_update: None,
             location: Location::default(),

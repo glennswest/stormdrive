@@ -451,7 +451,7 @@ recorded and never projected. Design (the issue's, no open decision):
 - on /api/v1/drives, kube Drive status, feed metric `wear-out` (warn under
   180 d), Prometheus `stormdrive_drive_wear_out_days`, the drive pane
 Steps:
-- [ ] wear.rs + tests · [ ] monitor + outputs · [ ] page, docs, changelog
+- [x] wear.rs + tests · [x] monitor + outputs · [x] page, docs, changelog
 - [ ] build VM, release, golden
 
 ### #31: 160-bay NVMe support verified by simulation (owner, 2026-10-07) — DONE (v0.22.1)
@@ -1134,7 +1134,7 @@ with stable id. Found:
 - [ ] SCSI/SATA: SG_IO log pages (0x2F, 0x0D, 0x11) + ATA SMART — #22
 - [x] Threshold engine → health state machine, hysteresis
 - [x] Wear trending: persisted samples (on change or daily)
-- [ ] Wear-out projection — #23 (in progress)
+- [x] Wear-out projection — #23
 - [x] Event ring + `GET /api/v1/events` (newest 512 persisted, #25 —
       written, unbuilt)
 - [x] Prometheus `/metrics` (#18, v0.19.0)

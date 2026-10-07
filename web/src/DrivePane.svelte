@@ -6,7 +6,7 @@
   import { post, del } from './lib/api.js'
   import {
     human, shelfKey, healthDot, canJoin, canLeave, canTest, canDestructive,
-    canFormat, canFirmware, canForget, canLocate, formatTarget, volumeLine,
+    canFormat, canFirmware, canForget, canLocate, formatTarget, volumeLine, wearOut,
   } from './lib/model.js'
 
   // `onprepare(select, title, preset)` opens the Prepare pane (#38): every
@@ -90,6 +90,7 @@
   <dt>verdict</dt><dd>{h.status || 'unknown'}</dd>
   {#if h.temperature_c != null}<dt>temp</dt><dd>{h.temperature_c} °C</dd>{/if}
   {#if h.wear_pct != null}<dt>wear</dt><dd>{h.wear_pct} %</dd>{/if}
+  {#if d.wear_projection}<dt>wear-out</dt><dd>{wearOut(d.wear_projection)}</dd>{/if}
   {#if h.available_spare_pct != null}<dt>spare</dt><dd>{h.available_spare_pct} %</dd>{/if}
   {#if h.power_on_hours != null}<dt>power-on</dt><dd>{h.power_on_hours} h</dd>{/if}
   <dt>{d.kind === 'nvme_ssd' ? 'media errs' : 'io errs'}</dt><dd>{h.media_errors ?? 0}</dd>

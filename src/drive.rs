@@ -413,6 +413,10 @@ pub struct Drive {
     /// a console enrols it with one action, a DrivePolicy on its own.
     #[serde(default)]
     pub enrolable: bool,
+    /// Days to wear-out by the wear trend (#23), refitted with every trend
+    /// sample; None until there is enough trend (a week, two values).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wear_projection: Option<crate::wear::WearProjection>,
     /// The last sector-size reformat of this drive, persisted.
     #[serde(default)]
     pub format: Option<FormatRecord>,
@@ -775,6 +779,7 @@ mod tests {
             in_use_by: None,
             contents: None,
             enrolable: false,
+            wear_projection: None,
             format: None,
             firmware_update: None,
             location: Location::default(),

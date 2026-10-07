@@ -217,6 +217,10 @@ fn drive(o: &mut Out, d: &Drive) {
     if let Some(w) = h.wear_pct {
         o.gauge("smartctl_device_percentage_used", "Endurance used, percent (may exceed 100).", &l, w as f64);
     }
+    if let Some(p) = d.wear_projection {
+        o.gauge("stormdrive_drive_wear_out_days", "Days until wear reaches 100 %, by a line through the wear trend (#23).", &l, p.days_left as f64);
+        o.gauge("stormdrive_drive_wear_rate_pct_per_day", "Wear per day by that line.", &l, p.rate_pct_per_day);
+    }
     if let Some(s) = h.available_spare_pct {
         o.gauge("smartctl_device_available_spare", "Available spare, percent.", &l, s as f64);
     }

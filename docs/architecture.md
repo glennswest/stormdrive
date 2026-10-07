@@ -272,8 +272,19 @@ path failover is actually needed.
   A sample is recorded when either value changes, or daily when neither does
   (#15). Recording every poll made 160 drives × 512 samples ≈ 5 MB of
   inventory, rewritten every tick, and the ring only covered 8.5 hours.
-  `GET /api/v1/drives/{id}/health` returns it raw. **Design — not built:** a
-  projected "days to wear-out" from the trend.
+  `GET /api/v1/drives/{id}/health` returns it raw.
+- **Days to wear-out** (#23, `wear.rs`). With every trend sample, a
+  least-squares line goes through the last year's wear_pct samples. It
+  gives `wear_projection {rate_pct_per_day, days_left, wear_out_unix,
+  samples, span_days}` on the drive: the day the line reaches 100 %, the
+  vendor's rated endurance. There is none with fewer than two distinct
+  values, under a week of samples, or wear that is not growing. It is
+  capped at 100 years, and 0 once the line is past 100 %. When
+  `days_left` first drops under `monitor.wear_out_warn_days` (180), a
+  `wear` warning event fires. The projection is on `/api/v1/drives`, the
+  kube Drive status (`wearProjection`), the feed (`wear-out` in days, warn
+  under 180), `stormdrive_drive_wear_out_days` /
+  `_wear_rate_pct_per_day` and the drive pane.
 - **Persisting** (#15): compact JSON, serialised under the inventory lock
   and written outside it (tmp + rename), skipped when unchanged. One async
   mutex spans both, so two persists never land out of order.

@@ -2,6 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  wearOut,
   volumeLine,
   groupDrives,
   groupIdOf,
@@ -113,4 +114,10 @@ test('a volume on a drive reads as what it is, who uses it, and how it stands he
   assert.equal(bad.kind, 'golden')
   assert.equal(bad.detail, '1.0 KiB · 1 leg · mirror2 degraded · here: failed · rebuild needed')
   assert.equal(bad.trouble, true)
+})
+
+test('days to wear-out read as days and a date (#23)', () => {
+  assert.equal(wearOut({ days_left: 412, wear_out_unix: 1_790_000_000 + 412 * 86400, rate_pct_per_day: 0.0333 }), 'in 412 days (2027-11-07), 0.033 %/day')
+  assert.equal(wearOut({ days_left: 0, wear_out_unix: 1_790_000_000, rate_pct_per_day: 1 }), 'now (rated endurance reached)')
+  assert.equal(wearOut(null), '')
 })

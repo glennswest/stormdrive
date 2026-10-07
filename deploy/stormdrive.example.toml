@@ -20,6 +20,7 @@ spare_warn_pct = 20
 spare_crit_pct = 10
 wear_warn_pct  = 80
 wear_crit_pct  = 95
+wear_out_warn_days = 180    # a warning event once the projected days to wear-out drop under this (#23)
 hysteresis     = 3          # consecutive samples before a worsening sticks
 max_concurrent = 8          # health reads in flight at once
 sample_timeout_secs = 10    # a read slower than this is a failed sample

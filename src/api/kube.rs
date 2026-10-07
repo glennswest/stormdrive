@@ -130,6 +130,7 @@ pub fn drive_object(d: &Drive, node: &str) -> Value {
             "owner": d.owner(),
             "contents": d.contents,
             "enrolable": d.enrolable,
+            "wearProjection": d.wear_projection,
             "enclosure": d.location.shelf.as_ref().and_then(|s| s.key()),
             "bay": d.location.bay,
             "sasAddress": d.location.sas_address,
@@ -527,6 +528,7 @@ mod tests {
             in_use_by: None,
             contents: None,
             enrolable: false,
+            wear_projection: None,
             format: None,
             firmware_update: None,
             location: Location {

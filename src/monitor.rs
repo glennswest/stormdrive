@@ -290,6 +290,7 @@ async fn apply_outcome(
     let (candidate, why) = evaluate(&state.config.monitor, &sample, prev);
     let effective = damper.apply(&state.config.monitor, id, current, candidate);
 
+    let mut wear_event = None;
     let mut inv = state.inventory.write().await;
     let Some(d) = inv.drives.get_mut(&id) else { return };
     if out.answered() {
@@ -324,9 +325,25 @@ async fn apply_outcome(
         });
         if due {
             inv.record_trend(id, TrendSample { unix_secs: now, wear_pct: sample.wear_pct, media_errors: sample.media_errors });
+            // Days to wear-out (#23), from the trend just extended.
+            let p = inv.trends.get(&id).and_then(|t| crate::wear::project(t, now));
+            let warn = state.config.monitor.wear_out_warn_days;
+            if let Some(d) = inv.drives.get_mut(&id) {
+                let was = d.wear_projection.map(|p| p.days_left);
+                if let Some(np) = p.filter(|np| np.days_left < warn && was.map_or(true, |w| w >= warn)) {
+                    wear_event = Some(format!(
+                        "{} ({} {}): projected to reach its rated endurance in {} days, at {:.3} %/day",
+                        drive.name, drive.model, drive.serial, np.days_left, np.rate_pct_per_day
+                    ));
+                }
+                d.wear_projection = p;
+            }
         }
     }
     drop(inv);
+    if let Some(msg) = wear_event {
+        state.events.write().await.push(Some(id), Severity::Warning, "wear", msg);
+    }
 
     if effective != current {
         let sev = match effective {
@@ -573,6 +590,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         in_use_by: primary.in_use_by.clone(),
                         contents: primary.contents.clone(),
                         enrolable: false,
+            wear_projection: None,
                         format: None,
                         firmware_update: None,
                         location,

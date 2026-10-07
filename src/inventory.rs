@@ -110,6 +110,7 @@ mod tests {
             in_use_by: None,
             contents: None,
             enrolable: false,
+            wear_projection: None,
             format: None,
             firmware_update: None,
             location: Location::default(),

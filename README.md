@@ -422,6 +422,7 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `monitor.temp_warn_c` / `temp_crit_c` | `55` / `70` | temperature thresholds (both give `warning`) |
 | `monitor.spare_warn_pct` / `spare_crit_pct` | `20` / `10` | NVMe available spare: `warning` / `failing` |
 | `monitor.wear_warn_pct` / `wear_crit_pct` | `80` / `95` | wear (NVMe percentage used): `warning` / `failing` |
+| `monitor.wear_out_warn_days` | `180` | a warning event once the projected days to wear-out drop under this (#23) |
 | `monitor.hysteresis` | `3` | consecutive samples before a worse verdict sticks |
 | `monitor.max_concurrent` | `8` | health reads in flight |
 | `monitor.sample_timeout_secs` | `10` | a slower read is a failed sample |
@@ -707,6 +708,7 @@ one fits. Every drive series carries `device`, `serial`, `model`,
 | `stormdrive_drive_unsafe_shutdowns_total` | NVMe |
 | `stormdrive_drive_last_poll_timestamp_seconds` | last health poll the drive answered |
 | `stormdrive_drive_used_bytes`, `_free_bytes` | from stormblock's slabs (#12) |
+| `stormdrive_drive_wear_out_days`, `_wear_rate_pct_per_day` | a line through the wear trend (#23); absent until there is a week of it with the wear moving |
 | `stormdrive_drive_volumes`, `_volumes_degraded` | volumes with legs on the drive, and those whose slabs here are draining/quarantined/failed/missing (#26); absent until the engine reports placement |
 | `stormdrive_enclosure_info`, `_ok`, `_last_scan_timestamp_seconds` | per shelf |
 | `stormdrive_enclosure_element_ok`, `_temperature_celsius`, `_fan_rpm`, `_volts`, `_amps` `{type,index}` | per installed SES element |
@@ -782,8 +784,7 @@ These are documented as design only; the code does not do them:
 - `DriveOperation`s and `DrivePolicy`s run only once stormcos installs the
   CRDs and gives stormdrive a credential (stormcos#302); the requester stamp
   (rustkube#210) has shipped
-- SCSI log sense / ATA SMART for SAS and SATA health (#22); wear-out
-  projection (#23)
+- SCSI log sense / ATA SMART for SAS and SATA health (#22)
 - a node-wide sequencer for every disruptive operation (the firmware
   redundancy gate itself is #24, built)
 - in the drive worker: ATA SECURITY ERASE for SATA drives without ATA

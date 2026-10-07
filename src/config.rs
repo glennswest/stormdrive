@@ -123,6 +123,9 @@ pub struct MonitorConfig {
     pub spare_crit_pct: u8,
     pub wear_warn_pct: u8,
     pub wear_crit_pct: u8,
+    /// A warning event, and the feed's `wear-out` metric in warn, once the
+    /// projected days to wear-out drop under this (#23).
+    pub wear_out_warn_days: u64,
     /// Consecutive samples required before a *worsening* transition sticks.
     pub hysteresis: u32,
     /// Health reads in flight at once (#15): no thread per drive.
@@ -142,6 +145,7 @@ impl Default for MonitorConfig {
             spare_crit_pct: 10,
             wear_warn_pct: 80,
             wear_crit_pct: 95,
+            wear_out_warn_days: crate::wear::WARN_DAYS,
             hysteresis: 3,
             max_concurrent: 8,
             sample_timeout_secs: 10,
