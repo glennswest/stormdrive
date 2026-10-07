@@ -437,6 +437,25 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #42: offer blank drives; enrol by policy on a node with a data slab (2026-10-07) — IN PROGRESS
+
+From stormcos#48. Auto-enrol is DrivePolicy (#50): stormcos
+`docs/STORAGE-TIERS.md` names it "the answer proposed in stormdrive#45 and
+#42", so there is no separate `worker.auto_enroll`. What #42 adds:
+- **Offer** (default on, `worker.offer`): `Drive.enrolable` — out of fleet,
+  idle, designation none, health known and not failing, usable sectors,
+  ≥ `worker.offer_min_bytes` (default 1 GiB), nothing on it: no `in_use_by`
+  and no `contents` (new: discovery's cached probe also runs
+  `contents::holds`, filesystems/slabs/RAID on the disk or any GPT
+  partition). Set each monitor tick; an `offer` event once when it turns
+  true. On /api/v1/drives, kube Drive status, feed metric
+- **DrivePolicy `requireDataSlab`**: act only on a node that already has a
+  stormblock data slab (#42's "on a node with a data slab")
+Steps:
+- [ ] contents in probe/Observed/Drive · [ ] enrolable (pure) + tick + event
+- [ ] API/kube/feed · [ ] policy requireDataSlab · [ ] tests, docs, changelog
+- [ ] sc-build (blocked: stormcentral#521)
+
 ### #36: ATA SECURITY ERASE for SATA drives without SANITIZE (2026-10-07) — IN PROGRESS
 
 Older SATA drives have the Security feature set and not Sanitize, so the
