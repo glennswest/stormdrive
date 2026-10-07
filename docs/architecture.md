@@ -305,6 +305,10 @@ path failover is actually needed.
 ### Cost per poll cycle (#15)
 
 `GET /api/v1/monitor` reports it live:
+- **Stopping** (#21): SIGINT or SIGTERM ends the server gracefully. A
+  `stopping` event is pushed, then `persist()` writes the event log and the
+  inventory, so whatever changed since the last tick survives a stop by
+  stormd or systemd (`KillSignal=SIGTERM`).
 - `samples`, `timeouts`, and `last`/`avg`/`max_sample_ms`
 - `busy_ms_per_interval` (avg × drives)
 - `load_pct` (busy / (interval × max_concurrent))

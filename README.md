@@ -407,8 +407,9 @@ stormdrive [--config PATH] [--listen ADDR] [--data-dir DIR]
 | `--listen` | from config | overrides `listen_addr` |
 | `--data-dir` | from config | overrides `data_dir` |
 
-`RUST_LOG` sets the log filter (default `info`). SIGINT persists the inventory
-and exits. SIGTERM is not caught, so it skips that final write (#21). The
+`RUST_LOG` sets the log filter (default `info`). SIGINT or SIGTERM (what
+stormd and systemd send) stops it gracefully: a `stopping` event, then the
+event log and the inventory are written, and it exits 0 (#21). The
 inventory is also written every tick. The drive work needs root, or at least `CAP_SYS_ADMIN` +
 `CAP_SYS_RAWIO` for SG_IO and the NVMe admin ioctl, and write access to sysfs
 for locate LEDs and rescans.

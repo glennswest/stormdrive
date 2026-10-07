@@ -144,10 +144,38 @@ async fn main() -> anyhow::Result<()> {
     );
     axum::serve(listener, app.into_make_service_with_connect_info::<stormdrive::tls::Peer>())
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            tracing::info!("shutting down");
+            let sig = shutdown_signal().await;
+            tracing::info!(signal = sig, "shutting down");
         })
         .await?;
+    // The last word goes into the log, and the log and the inventory to
+    // disk: whatever changed since the last tick survives the stop (#21).
+    state.events.write().await.push(None, stormdrive::events::Severity::Info, "restart", format!("stormdrive {} stopping", env!("CARGO_PKG_VERSION")));
     state.persist().await;
     Ok(())
+}
+
+/// SIGINT or SIGTERM — what stormd and systemd send (`KillSignal=SIGTERM`)
+/// — ends the server gracefully (#21). The signal's name.
+async fn shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => "SIGINT",
+                _ = term.recv() => "SIGTERM",
+            },
+            Err(e) => {
+                tracing::warn!("cannot listen for SIGTERM ({e}); only SIGINT stops gracefully");
+                let _ = tokio::signal::ctrl_c().await;
+                "SIGINT"
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "SIGINT"
+    }
 }

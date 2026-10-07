@@ -149,3 +149,54 @@ async fn a_restart_leaves_no_drive_stuck_busy() {
     }
     assert!(kinds.contains(&(SAS_FMT.to_string(), "format".to_string())), "{kinds:?}");
 }
+
+/// #21: SIGTERM (what stormd and systemd send) stops the daemon gracefully:
+/// it exits by itself and writes its last events and the inventory.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn sigterm_stops_gracefully_and_persists() {
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let dir = std::env::temp_dir().join(format!("stormdrive-sigterm-{}-{port}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("stormdrive.toml");
+    std::fs::write(&cfg, "node_name = \"harness-node\"\n[discovery]\ninterval_secs = 3600\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nallow_anonymous = true\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_stormdrive"))
+        .args(["--config", cfg.to_str().unwrap(), "--listen", &format!("127.0.0.1:{port}")])
+        .args(["--data-dir", dir.to_str().unwrap()])
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("start stormdrive");
+    let base = format!("http://127.0.0.1:{port}");
+    let mut up = false;
+    for _ in 0..100 {
+        if reqwest::get(format!("{base}/api/v1/health")).await.is_ok_and(|r| r.status().is_success()) {
+            up = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(up, "stormdrive did not answer");
+
+    // SAFETY: a plain kill(2) on our own child's pid.
+    assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) }, 0);
+    let mut exited = None;
+    for _ in 0..100 {
+        if let Some(st) = child.try_wait().unwrap() {
+            exited = Some(st);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let Some(status) = exited else {
+        let _ = child.kill();
+        panic!("SIGTERM did not stop stormdrive within 10 s");
+    };
+    assert!(status.success(), "a graceful stop exits 0: {status:?}");
+    let events: Value = serde_json::from_slice(&std::fs::read(dir.join("events.json")).expect("events.json written")).unwrap();
+    let last = events["events"].as_array().unwrap().last().cloned().unwrap_or(Value::Null);
+    assert!(last["message"].as_str().unwrap_or("").contains("stopping"), "the stop's own event was persisted: {last}");
+    assert!(dir.join("inventory.json").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
