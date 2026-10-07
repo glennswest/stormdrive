@@ -3,6 +3,10 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-07
+- **test:** a simulated 160-bay NVMe chassis (#31: the owner chose simulation; no real chassis is coming). `tests/chassis160.rs` builds the sysfs tree: 120 drives behind a PCIe switch, 40 behind VMD, 8 under native multipath, 150 attention indicators and 10 NPEM LEDs. Discovery, topology and locate run over it unchanged: 160 drives, bay = slot, the right LED, a pull gone, a push `replaces` the pulled drive
+- **refactor:** `discovery::scan_in`, `topology::locate_in` / `set_locate_in`: the sysfs (and /dev) root as a parameter; `scan`/`locate`/`set_locate` call them with /sys and /dev (#31)
+
 ## [v0.22.0] — 2026-10-07
 
 ### Added

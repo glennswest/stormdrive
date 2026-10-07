@@ -184,8 +184,8 @@ mod linux {
     /// Find the enclosure component (slot) directory holding this block
     /// device, if any: /sys/class/enclosure/<enc>/<component>/device is a
     /// symlink to the SCSI device, whose block/<name> subdir names the disk.
-    fn find_enclosure_slot(name: &str) -> Option<(String, PathBuf)> {
-        for enc in std::fs::read_dir("/sys/class/enclosure").ok()?.flatten() {
+    fn find_enclosure_slot(sys: &Path, name: &str) -> Option<(String, PathBuf)> {
+        for enc in std::fs::read_dir(sys.join("class/enclosure")).ok()?.flatten() {
             let enc_id = enc.file_name().to_string_lossy().to_string();
             let Ok(components) = std::fs::read_dir(enc.path()) else {
                 continue;
@@ -206,8 +206,8 @@ mod linux {
     /// Identity of the shelf behind an enclosure id: the SES processor's
     /// SCSI device at /sys/class/enclosure/<id>/device, enriched with the
     /// logical id from the SES scan when that ESP is in it.
-    fn shelf_identity(enc_id: &str, shelves: &Shelves) -> Shelf {
-        let dev = PathBuf::from(format!("/sys/class/enclosure/{enc_id}/device"));
+    fn shelf_identity(sys: &Path, enc_id: &str, shelves: &Shelves) -> Shelf {
+        let dev = sys.join("class/enclosure").join(enc_id).join("device");
         let serial = std::fs::read(dev.join("vpd_pg80"))
             .ok()
             .and_then(|raw| parse_vpd80(&raw));
@@ -229,12 +229,12 @@ mod linux {
     /// the ses module: /sys/class/sas_device/end_device-H:P:N/
     /// {enclosure_identifier, bay_identifier}. Returns (logical id hex,
     /// bay).
-    fn sas_device_enclosure(real: &Path) -> Option<(String, Option<u32>)> {
+    fn sas_device_enclosure(sys: &Path, real: &Path) -> Option<(String, Option<u32>)> {
         let end_dev = real
             .components()
             .map(|c| c.as_os_str().to_string_lossy().to_string())
             .find(|c| c.starts_with("end_device-"))?;
-        let base = PathBuf::from(format!("/sys/class/sas_device/{end_dev}"));
+        let base = sys.join("class/sas_device").join(&end_dev);
         let enc = read_trim(&base.join("enclosure_identifier"))
             .map(|s| crate::ses::normalize_sas(&s))
             .filter(|s| !s.is_empty() && s.chars().any(|c| c != '0'))?;
@@ -242,7 +242,7 @@ mod linux {
         Some((enc, bay))
     }
 
-    fn controller_of(real: &Path) -> Option<Controller> {
+    fn controller_of(sys: &Path, real: &Path) -> Option<Controller> {
         let mut pcie_addr = None;
         let mut scsi_host = None;
         for comp in real.components() {
@@ -258,7 +258,7 @@ mod linux {
             return None;
         }
         let driver = pcie_addr.as_ref().and_then(|bdf| {
-            std::fs::read_link(format!("/sys/bus/pci/devices/{bdf}/driver"))
+            std::fs::read_link(sys.join("bus/pci/devices").join(bdf).join("driver"))
                 .ok()
                 .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
         });
@@ -270,18 +270,23 @@ mod linux {
     }
 
     pub fn locate(name: &str, shelves: &Shelves) -> Location {
+        locate_in(Path::new("/sys"), name, shelves)
+    }
+
+    /// [`locate`] in a sysfs tree at `sys` (#31: the simulated chassis).
+    pub fn locate_in(sys: &Path, name: &str, shelves: &Shelves) -> Location {
         let mut loc = Location::default();
-        let base = PathBuf::from(format!("/sys/block/{name}"));
+        let base = sys.join("block").join(name);
         let real = std::fs::canonicalize(&base).ok();
         if let Some(r) = &real {
-            loc.controller = controller_of(r);
+            loc.controller = controller_of(sys, r);
             (loc.sas_phy, loc.expander) = sas_attachment(r);
         }
         loc.sas_address = read_trim(&base.join("device/sas_address"));
-        if let Some((enc, slot_dir)) = find_enclosure_slot(name) {
+        if let Some((enc, slot_dir)) = find_enclosure_slot(sys, name) {
             loc.bay = read_trim(&slot_dir.join("slot")).and_then(|s| s.parse().ok());
-            loc.shelf = Some(shelf_identity(&enc, shelves));
-        } else if let Some((enc_id, bay)) = real.as_deref().and_then(sas_device_enclosure) {
+            loc.shelf = Some(shelf_identity(sys, &enc, shelves));
+        } else if let Some((enc_id, bay)) = real.as_deref().and_then(|r| sas_device_enclosure(sys, r)) {
             let rep = shelves.get(&enc_id);
             loc.shelf = Some(match rep {
                 Some(r) => r.shelf.clone(),
@@ -296,11 +301,10 @@ mod linux {
             });
         }
         if name.starts_with("nvme") {
-            let sys = Path::new("/sys");
             if let Some(dev) = super::nvme::device_path(sys, name) {
                 // A multipath head's own path has no PCIe; its controller's does.
                 if loc.controller.as_ref().map_or(true, |c| c.pcie_addr.is_none()) {
-                    loc.controller = controller_of(&dev);
+                    loc.controller = controller_of(sys, &dev);
                 }
                 loc.pcie_slot = super::nvme::slot(sys, &dev);
                 if loc.bay.is_none() {
@@ -313,12 +317,16 @@ mod linux {
     }
 
     pub fn set_locate(name: &str, loc: &Location, shelves: &Shelves, on: bool) -> std::io::Result<()> {
-        if let Some((_, slot_dir)) = find_enclosure_slot(name) {
+        set_locate_in(Path::new("/sys"), name, loc, shelves, on)
+    }
+
+    /// [`set_locate`] in a sysfs tree at `sys` (#31).
+    pub fn set_locate_in(sys: &Path, name: &str, loc: &Location, shelves: &Shelves, on: bool) -> std::io::Result<()> {
+        if let Some((_, slot_dir)) = find_enclosure_slot(sys, name) {
             return std::fs::write(slot_dir.join("locate"), if on { "1" } else { "0" });
         }
         // NVMe: the slot's attention indicator or an NPEM LED.
         if name.starts_with("nvme") {
-            let sys = Path::new("/sys");
             if let Some(led) = super::nvme::device_path(sys, name)
                 .and_then(|dev| super::nvme::locate_led(sys, &dev, loc.pcie_slot.as_deref()))
             {
@@ -352,6 +360,11 @@ pub fn locate(name: &str, shelves: &Shelves) -> Location {
         Location::default()
     }
 }
+
+/// [`locate`] and [`set_locate`] over a sysfs tree at a given root (#31:
+/// the simulated 160-bay chassis). Linux only.
+#[cfg(target_os = "linux")]
+pub use linux::{locate_in, set_locate_in};
 
 /// Turn the enclosure locate LED for this drive on or off: sysfs slot
 /// when the ses module is bound, SES control page otherwise.

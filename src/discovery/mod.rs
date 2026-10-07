@@ -219,11 +219,18 @@ mod linux {
     }
 
     pub fn scan(cfg: &DiscoveryConfig) -> Vec<Observed> {
+        let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        scan_in(Path::new("/sys"), Path::new("/dev"), &mounts, cfg)
+    }
+
+    /// [`scan`] of a sysfs tree at `sys`, opening devices under `dev` (#31:
+    /// a simulated chassis is a tree in a directory).
+    pub fn scan_in(sys: &Path, dev_root: &Path, mounts: &str, cfg: &DiscoveryConfig) -> Vec<Observed> {
         let mut out = Vec::new();
-        let Ok(entries) = std::fs::read_dir("/sys/block") else {
+        let Ok(entries) = std::fs::read_dir(sys.join("block")) else {
             return out;
         };
-        let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        let node = |name: &str| dev_root.join(name).to_string_lossy().to_string();
         let mut cache = probe_cache().lock().unwrap_or_else(|e| e.into_inner());
         let now = std::time::Instant::now();
         let mut seen = std::collections::HashSet::new();
@@ -236,7 +243,7 @@ mod linux {
             if read_trim(&e.path().join("hidden")).as_deref() == Some("1") {
                 continue;
             }
-            if !cfg.manage_mounted && super::mounted_in(&mounts, &name) {
+            if !cfg.manage_mounted && super::mounted_in(mounts, &name) {
                 tracing::debug!(%name, "skipping drive with mounted partitions");
                 continue;
             }
@@ -302,8 +309,8 @@ mod linux {
             // the truth; it fails (NOT READY) mid-format, and then sysfs
             // stands in.
             let asked = if name.starts_with("sd") {
-                crate::scsi::sg_path_for_block(&name)
-                    .or_else(|| Some(format!("/dev/{name}")))
+                crate::scsi::sg_path_in(&sys.join("block").join(&name).join("device/scsi_generic").to_string_lossy())
+                    .or_else(|| Some(node(&name)))
                     .and_then(|p| crate::scsi::Device::open(&p).ok())
                     .and_then(|d| d.read_capacity16().ok())
             } else {
@@ -325,12 +332,12 @@ mod linux {
                 ),
             };
             let in_use_by = if sectors > 0 {
-                crate::contents::probe(&format!("/dev/{name}"))
+                crate::contents::probe(&node(&name))
             } else {
                 None
             };
             let contents = if sectors > 0 {
-                crate::contents::holds(&format!("/dev/{name}"))
+                crate::contents::holds(&node(&name))
             } else {
                 None
             };
@@ -360,6 +367,11 @@ mod linux {
         out
     }
 }
+
+/// [`scan`] over a sysfs tree at `sys` with device nodes under `dev` (#31,
+/// the simulated 160-bay chassis). Linux only.
+#[cfg(target_os = "linux")]
+pub use linux::scan_in;
 
 /// Scan the node for physical drives. Empty on non-Linux (build-on-dev rule:
 /// the real path only exists there).

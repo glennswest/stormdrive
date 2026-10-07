@@ -805,7 +805,8 @@ Built but never exercised on real hardware:
   synthetic data. The GPT layout is also checked by `sfdisk --verify` on a
   file. On real drives: #30.
 - **The NetApp shelf path:** SES, the 520 → 4096 format, phy/expander (#30).
-- **160-bay NVMe:** #31.
+- **160-bay NVMe:** verified by simulation only (#31, `tests/chassis160.rs`);
+  no real chassis is planned.
 - **The test containers on a test machine:** #28.
 - **Overcommit enforcement:** it waits on stormblock#152, so today the
   setting is stored and pushed, not enforced.

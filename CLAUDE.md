@@ -456,7 +456,7 @@ slots/VMD/locate/hotplug: the simulation is stormdrive's own.
 - already covered: poller phasing at 160 (poller test), page at 160 NVMe
   rows (page test). Real hardware parts → the NetApp shelf (#30)
 Steps:
-- [ ] sys-root refactor · [ ] chassis160 test · [ ] docs, changelog · [ ] VM sc-build, golden
+- [x] sys-root refactor · [x] chassis160 test · [x] docs, changelog · [ ] VM sc-build, golden
 
 ### #24: firmware redundancy gate before a data-serving drive resets (2026-10-07) — DONE (v0.22.0)
 

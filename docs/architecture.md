@@ -338,6 +338,25 @@ half that.
   event naming both serials. A missing drive still in the fleet is called
   out. If several drives went missing from that bay, the most recently
   seen one is used, and each drive is replaced at most once.
+- **Verified by simulation** (#31, the owner's call: no real chassis is
+  coming). `tests/chassis160.rs` writes a 160-bay chassis as a sysfs tree:
+  - 120 drives behind a PCIe switch and 40 behind VMD;
+  - 8 under native multipath, with their hidden path nodes;
+  - slots 1–160, with `attention` on 150 and NPEM LEDs on 10.
+
+  Then the real code runs over it. `discovery::scan_in` and
+  `topology::locate_in`/`set_locate_in` are `scan`/`locate`/`set_locate`
+  with the sysfs root as a parameter. The checks:
+  - exactly 160 drives;
+  - each drive's slot and bay equal the chassis number, and its PCIe
+    address is the endpoint (under multipath and VMD too);
+  - locate lights that one LED;
+  - a pull disappears on the next pass;
+  - a drive pushed into the same slot `replaces` the missing one.
+
+  Poller phasing at 160 drives and the page at 160 rows have their own
+  tests. Real LEDs, hotplug interrupts and NVMe admin commands wait for
+  real hardware: the NetApp shelf (#30).
   `DELETE /api/v1/drives/{id}` forgets a missing, out-of-fleet drive's
   record and trend, so years of swaps in 160 bays do not pile up. The feed
   and UI offer it as Forget.
