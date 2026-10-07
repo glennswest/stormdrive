@@ -437,6 +437,26 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #22: SAS/SATA health — LOG SENSE and ATA SMART (2026-10-07) — IN PROGRESS
+
+SAS/SATA health was sysfs only, so such a drive never reached `failing` on
+its own. Design (the issue's, no open decision):
+- `smart/scsi.rs` (parsers portable, tested): LOG SENSE 0x2F (IE ASC/ASCQ →
+  predicted failure, temperature), 0x0D (temperature, when 0x2F gave none),
+  0x11 (SSD Percentage Used → wear_pct); vendor `ATA`: SMART READ DATA (0xD0)
+  + READ THRESHOLDS (0xD1) via ATA PASS-THROUGH(16) → reallocated (5),
+  pending (197), offline uncorrectable (198), temperature (194), power-on
+  hours (9), SSD wear (177/231/233: 100 − normalized), predicted failure =
+  a pre-fail attribute at/below its threshold (no CK_COND needed)
+- `Sample.smart` / `HealthReport.smart` (`SmartCounters`); evaluate:
+  predicted failure → Failing, pending / offline uncorrectable > 0 → Warning
+- metrics: `stormdrive_drive_predicted_failure`, `_reallocated_sectors`,
+  `_pending_sectors`, `_offline_uncorrectable_sectors`; cost: ≤ 3 commands
+  a sample (SAS), 2 (SATA), under the sampler timeout
+Steps:
+- [ ] parsers + tests · [ ] Linux collect · [ ] evaluate, report, metrics
+- [ ] docs, changelog · [ ] build VM, release, golden; live: the R230's WD
+
 ### #23: wear-out projection from the trend (2026-10-07) — DONE (v0.23.0)
 
 The trend (`inventory.trends`: wear_pct on change or daily, 512 samples) is
@@ -1134,7 +1154,7 @@ with stable id. Found:
 ### Phase 2: Monitoring (health, wear, thermal) — mostly DONE
 - [x] NVMe: Get Log Page 0x02 via NVME_IOCTL_ADMIN_CMD
 - [x] SCSI/SATA: sysfs (state, ioerr_cnt, hwmon)
-- [ ] SCSI/SATA: SG_IO log pages (0x2F, 0x0D, 0x11) + ATA SMART — #22
+- [ ] SCSI/SATA: SG_IO log pages (0x2F, 0x0D, 0x11) + ATA SMART — #22 (in progress)
 - [x] Threshold engine → health state machine, hysteresis
 - [x] Wear trending: persisted samples (on change or daily)
 - [x] Wear-out projection — #23
