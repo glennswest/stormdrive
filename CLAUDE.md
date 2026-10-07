@@ -437,23 +437,29 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #46: slab format + drive close need the admin token or a storage-admin bearer (stormblock#274, 2026-10-06) — IN PROGRESS
+### #46: slab format + drive close need the admin token or a storage-admin bearer (stormblock#274, 2026-10-06) — DONE (v0.21.1)
 
 stormblock#274: `POST /api/v1/slabs` and `DELETE /api/v1/drives/{id}` are
 destructive on the engine; the node token gets 401 under `admin_gate =
 enforce`. `DELETE …/drain` stays ordinary (we sent it as admin).
-- [ ] engine client: destructive calls try, in order, the engine admin token
+- [x] engine client: destructive calls try, in order, the engine admin token
       (`stormblock.admin_token` / `$STORMBLOCK_ADMIN_TOKEN`, then the file
       `stormblock.admin_token_file` / `$STORMBLOCK_ADMIN_TOKEN_FILE` /
       `/run/stormblock-admin/admin_token`, re-read each call), then
       stormdrive's own Kubernetes credential (`[kubernetes]` token file /
       service account), then the node token (an `audit` engine); next on
       401/403; a final refusal logs what is needed
-- [ ] format_slab destructive; cancel_drain ordinary
-- [ ] deploy/rbac.yaml: `slabs` create for stormdrive's SA (drives delete is
+- [x] format_slab destructive; cancel_drain ordinary
+- [x] deploy/rbac.yaml: `slabs` create for stormdrive's SA (drives delete is
       already in stormdrive-controller)
-- [ ] tests (stand-in engine: admin token / SA bearer / node token order,
+- [x] tests (stand-in engine: admin token / SA bearer / node token order,
       drain cancel on the node token), docs, changelog, v0.21.1, golden
+- [x] sc-build on 696ad82 (v0.21.1): 179 unit (stormblock
+      `destructive_verbs_present_the_admin_token_then_the_kube_bearer_then_the_node_token`)
+      + harness + kube + restart + tls + 9, clippy -D warnings clean; web
+      untouched; golden `golden-stormdrive-b773481077ba`, release request
+      stormcos#313; stormcos#302 told (rbac.yaml's stormdrive-engine, or mount
+      /run/stormblock-admin). Not run against a live enforcing engine
 
 ### #19: :9092 is TLS and nothing answers anonymously but health (P2, stormcos#81, 2026-10-06) — DONE (v0.21.0)
 
