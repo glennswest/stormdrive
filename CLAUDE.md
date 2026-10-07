@@ -459,8 +459,12 @@ Design (the issue's, no open decision):
   IDENTIFY and erases with the recorded password
 - CRD enum, page Prepare option (rides #26's dist rebuild), docs
 Steps:
-- [ ] erase.rs ATA + tests · [ ] worker step, guard, record, recover
-- [ ] CRD, page form, docs, changelog · [ ] sc-build (blocked: stormcentral#521)
+- [x] erase.rs ATA + tests · [x] worker step, guard, record, recover
+- [x] CRD, page form (+ JS test), docs, changelog (b7c567a)
+- [ ] **next:** sc-build (never run: dev.g8.lo gone, stormcentral#521), web
+      dist with #26's, v0.22.0, golden. Live: a spare SATA drive with the
+      Security feature set and no Sanitize (the issue: "test on a spare
+      SATA drive first") — none here yet
 
 ### #50: DrivePolicy — per-node tier, reformat + enrol by policy (stormcos#251, 2026-10-07) — IN PROGRESS
 
