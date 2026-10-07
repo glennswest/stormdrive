@@ -437,6 +437,27 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #26: the volumes on each drive, from the engine's placement (stormconsole#29, 2026-10-06) — IN PROGRESS
+
+The console reads every node's stormdrive but only its own node's engine;
+stormdrive already reads its engine with the node token. stormblock v17.1
+`GET /api/v1/volumes?placement=true` → `{items:[{id, name, kind, consumer?,
+placement:{drives:[{drive, node, slabs, legs, bytes}], slabs:[{id, drive,
+state, legs, shared_legs, bytes, drain?}], legs:{policy, health, …},
+rebuild}}]}` (stormblock `src/mgmt/api/placement.rs`). Reduction mirrors
+stormconsole `crates/plugins/stormblock/src/placement.rs`.
+- [ ] `usage.volumes: [{id, name, kind, consumer?, bytes, legs, shared_legs,
+      state (worst slab state here), rebuild, policy, health}]`, largest
+      first; joined like slabs (WWN → serial → path), fabric drives
+      (`scheme://`) skipped; **absent** when no volume carries placement
+      (engine before v17.1), `[]` when the engine has no volumes
+- [ ] fetched on the slab-listing tick (own 30 s timeout: it walks every
+      extent map); a failed read keeps the last answer and its time
+      (`volumes_collected_at`)
+- [ ] feed metric `volumes`; page: the drive pane lists them
+- [ ] tests (reduction, absent vs empty, worst state, carry-over), docs
+      (README, architecture "Per-drive usage"), changelog, v0.22.0, golden
+
 ### #46: slab format + drive close need the admin token or a storage-admin bearer (stormblock#274, 2026-10-06) — DONE (v0.21.1)
 
 stormblock#274: `POST /api/v1/slabs` and `DELETE /api/v1/drives/{id}` are
