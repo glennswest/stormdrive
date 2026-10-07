@@ -464,9 +464,14 @@ the issue + #45/#42, no open decision; rustkube#210 stamp is shipped):
 - deploy/crds.yaml + rbac (drivepolicies get/list/watch, status patch;
   nodes get for nodeSelector)
 Steps:
-- [ ] policy.rs + tests · [ ] worker `policy` tag, active set · [ ] controller
-- [ ] CRD + rbac + example · [ ] kube harness (Refused unstamped / bob, other
-      node untouched, no CRD = quiet) · [ ] docs, changelog, v0.22.0, golden
+- [x] policy.rs + tests · [x] worker `policy` tag, active set · [x] controller
+- [x] CRD + rbac + example · [x] kube harness (Refused unstamped / bob,
+      Invalid, other node + unmatched labels untouched, alice Active)
+- [x] docs, changelog (ab35310, 21a0e13)
+- [ ] **next:** sc-build has never run on it — dev.g8.lo is gone
+      (stormcentral#521). When it works: `cargo test --workspace` + clippy,
+      fix what fails, then v0.22.0 (with #26's web/dist), golden, close #50.
+      Not on a real shelf: the format/partition/enroll steps wait on #30
 
 ### #26: the volumes on each drive, from the engine's placement (stormconsole#29, 2026-10-06) — IN PROGRESS
 
