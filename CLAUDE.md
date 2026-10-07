@@ -437,7 +437,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #23: wear-out projection from the trend (2026-10-07) — IN PROGRESS
+### #23: wear-out projection from the trend (2026-10-07) — DONE (v0.23.0)
 
 The trend (`inventory.trends`: wear_pct on change or daily, 512 samples) is
 recorded and never projected. Design (the issue's, no open decision):
@@ -452,7 +452,10 @@ recorded and never projected. Design (the issue's, no open decision):
   180 d), Prometheus `stormdrive_drive_wear_out_days`, the drive pane
 Steps:
 - [x] wear.rs + tests · [x] monitor + outputs · [x] page, docs, changelog
-- [ ] build VM, release, golden
+- [x] build VM on c1c5347 and 1fcb1ea (v0.23.0): 214 unit (4 wear) + harnesses,
+      clippy clean, `web/rebuild.sh --check` 13 JS + 3 page, dist identical;
+      golden `golden-stormdrive-16acd87b7979`, stormcos#313. Not on a real
+      wearing SSD yet (the R230 has an HDD; a week of trend is needed)
 
 ### #31: 160-bay NVMe support verified by simulation (owner, 2026-10-07) — DONE (v0.22.1)
 
