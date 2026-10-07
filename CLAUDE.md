@@ -437,7 +437,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #24: firmware redundancy gate before a data-serving drive resets (2026-10-07) — IN PROGRESS
+### #24: firmware redundancy gate before a data-serving drive resets (2026-10-07) — DONE (v0.22.0)
 
 Today a fleet (or `in_use_by`) drive updates firmware one at a time behind a
 node-wide lock, and nothing checks its volumes first. The engine already
@@ -456,9 +456,18 @@ stormblock issue needed.
   (a warning event if they are not)
 - `force` skips the gate; out-of-fleet drives without data have no gate
 Steps:
-- [ ] gate + tests · [ ] config, docs, changelog · [ ] build-VM sc-build
+- [x] gate + tests · [x] config, docs, changelog
+- [x] **v0.22.0 (ec1a977), verified for all of #24 #44 #25 #40 #35 #42 #36 #50
+      #26** on a build VM (`SC_BUILD_VM=1 sc-build`; plain sc-build still
+      targets the retired dev, stormcentral#521): e743cbf — 210 unit + kube
+      (incl. DrivePolicy Refused/Invalid/Active/untouched) + restart (incl.
+      events across a second start) + tls + suites + 9, clippy -D warnings
+      clean (after #51: two test-code lints), `web/rebuild.sh --check` 12 JS +
+      3 page tests (volumes pane), dist identical. Not on real hardware:
+      shelf/IOM/fault LED (#30), SATA security erase (spare drive), 160-bay
+      (#31)
 
-### #44: shelf RAID sets — bay labels and the failed member's fault LED (stormblock#252, 2026-10-07) — IN PROGRESS
+### #44: shelf RAID sets — bay labels and the failed member's fault LED (stormblock#252, 2026-10-07) — DONE (v0.22.0)
 
 stormblock#252 lays a shelf out as drive-level RAID sets with spares and fails
 a member when stormdrive reports its drive `failed`/`missing`.
@@ -479,7 +488,7 @@ Steps:
 - [ ] **next:** sc-build (never run: stormcentral#521); live: a NetApp shelf
       laid out as sets on stormblock1 (#30)
 
-### #40: a test step in the drive worker (2026-10-07) — IN PROGRESS
+### #40: a test step in the drive worker (2026-10-07) — DONE (v0.22.0)
 
 Bulk tests ran in the browser, one request per drive, 8 at a time; closing
 the tab stopped the rest. Design (the issue's, no open decision):
@@ -499,7 +508,7 @@ Steps:
 - [x] docs, changelog
 - [ ] **next:** sc-build (never run: stormcentral#521) + web dist with #26's
 
-### #35: shelf (IOM) firmware via SES Download Microcode (2026-10-07) — IN PROGRESS
+### #35: shelf (IOM) firmware via SES Download Microcode (2026-10-07) — DONE (v0.22.0)
 
 Never automatic; same image store as drive firmware. Design (the issue's;
 no open decision — the image source is #29, the live shelf #30):
@@ -525,7 +534,7 @@ Steps:
       (#30) and a NetApp IOM12 image (#29). Not in the page or the feed
       (an action needs an image name)
 
-### #42: offer blank drives; enrol by policy on a node with a data slab (2026-10-07) — IN PROGRESS
+### #42: offer blank drives; enrol by policy on a node with a data slab (2026-10-07) — DONE (v0.22.0)
 
 From stormcos#48. Auto-enrol is DrivePolicy (#50): stormcos
 `docs/STORAGE-TIERS.md` names it "the answer proposed in stormdrive#45 and
@@ -547,7 +556,7 @@ Steps:
 - [ ] **next:** sc-build (never run: stormcentral#521), then the release with
       #26/#50/#36. The page does not show `enrolable` yet (the feed does)
 
-### #36: ATA SECURITY ERASE for SATA drives without SANITIZE (2026-10-07) — IN PROGRESS
+### #36: ATA SECURITY ERASE for SATA drives without SANITIZE (2026-10-07) — DONE (v0.22.0)
 
 Older SATA drives have the Security feature set and not Sanitize, so the
 worker's `sanitize` (SCSI SANITIZE → SAT → ATA SANITIZE) fails on them.
@@ -576,7 +585,7 @@ Steps:
       Security feature set and no Sanitize (the issue: "test on a spare
       SATA drive first") — none here yet
 
-### #50: DrivePolicy — per-node tier, reformat + enrol by policy (stormcos#251, 2026-10-07) — IN PROGRESS
+### #50: DrivePolicy — per-node tier, reformat + enrol by policy (stormcos#251, 2026-10-07) — DONE (v0.22.0)
 
 stormblock1 (R230 + 2.5" NetApp shelf) → tier `warm`; stormblock2 (3.5"
 Dell) → `cool` (stormcos `docs/STORAGE-TIERS.md`). `tier_map` is per kind
@@ -612,7 +621,7 @@ Steps:
       fix what fails, then v0.22.0 (with #26's web/dist), golden, close #50.
       Not on a real shelf: the format/partition/enroll steps wait on #30
 
-### #26: the volumes on each drive, from the engine's placement (stormconsole#29, 2026-10-06) — IN PROGRESS
+### #26: the volumes on each drive, from the engine's placement (stormconsole#29, 2026-10-06) — DONE (v0.22.0)
 
 The console reads every node's stormdrive but only its own node's engine;
 stormdrive already reads its engine with the node token. stormblock v17.1
