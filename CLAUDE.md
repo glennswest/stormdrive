@@ -437,6 +437,31 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #36: ATA SECURITY ERASE for SATA drives without SANITIZE (2026-10-07) — IN PROGRESS
+
+Older SATA drives have the Security feature set and not Sanitize, so the
+worker's `sanitize` (SCSI SANITIZE → SAT → ATA SANITIZE) fails on them.
+Design (the issue's, no open decision):
+- step `security_erase {enhanced?}` (None = enhanced when supported), rank 0
+  (low-level, destroys), SATA kinds only (guard)
+- `erase.rs` (pure, tested): ATA PASS-THROUGH(16) CDBs (IDENTIFY 0xEC, SET
+  PASSWORD 0xF1, ERASE PREPARE 0xF3, ERASE UNIT 0xF4, DISABLE PASSWORD 0xF6),
+  IDENTIFY word 128 (supported/enabled/locked/frozen/expired/enhanced) +
+  words 89/90 (erase time), the 512-byte password block, timeout from the
+  drive's estimate
+- worker: IDENTIFY → refuse not supported / frozen ("hotplug or suspend
+  unfreezes it", no retry) / count expired / a password not ours; a
+  one-time printable password goes into the job record (`ata_password`,
+  jobs.json saved) and a warning event **before** SET PASSWORD; then
+  PREPARE + ERASE UNIT; IDENTIFY after: security off → password cleared.
+  Failure before ERASE UNIT → DISABLE PASSWORD. Restart mid-erase →
+  interrupted with the password in the reason; resume re-checks with
+  IDENTIFY and erases with the recorded password
+- CRD enum, page Prepare option (rides #26's dist rebuild), docs
+Steps:
+- [ ] erase.rs ATA + tests · [ ] worker step, guard, record, recover
+- [ ] CRD, page form, docs, changelog · [ ] sc-build (blocked: stormcentral#521)
+
 ### #50: DrivePolicy — per-node tier, reformat + enrol by policy (stormcos#251, 2026-10-07) — IN PROGRESS
 
 stormblock1 (R230 + 2.5" NetApp shelf) → tier `warm`; stormblock2 (3.5"
