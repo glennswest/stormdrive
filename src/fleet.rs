@@ -63,6 +63,7 @@ pub async fn tick(state: &Arc<AppState>, fs: &mut FleetState) {
     }
     poll_drains(state).await;
     retry_pending_drains(state).await;
+    sync_fault_leds(state).await;
     if state.config.stormblock.auto_add {
         auto_add(state, fs).await;
     }
@@ -136,10 +137,16 @@ async fn push_health(state: &Arc<AppState>) {
         let inv = state.inventory.read().await;
         inv.drives
             .values()
-            .filter(|d| d.membership == Membership::Fleet && d.activity != Activity::Missing)
-            .filter(|d| d.health.status() != HealthStatus::Unknown)
+            .filter(|d| d.membership == Membership::Fleet)
+            .filter(|d| d.activity == Activity::Missing || d.health.status() != HealthStatus::Unknown)
             .map(|d| {
-                // An operator's Failed designation counts as failed too.
+                // A pulled drive is `missing` (#44: the engine fails its RAID
+                // member and takes a spare), named by its uuid — its /dev
+                // path is gone. An operator's Failed designation counts as
+                // failed too.
+                if d.activity == Activity::Missing {
+                    return (d.id, d.name.clone(), d.id.0.to_string(), "missing", "the node no longer sees the drive".to_string());
+                }
                 let word = if d.designation == Designation::Failed { "failed" } else { d.stormblock_health() };
                 (d.id, d.name.clone(), d.stormblock_path(), word, d.health.messages.join("; "))
             })
@@ -158,7 +165,7 @@ async fn push_health(state: &Arc<AppState>) {
         // engine's, or waits as `pending` while a rebuild runs (#43).
         let reason = if why.is_empty() { None } else { Some(why.as_str()) };
         match state.stormblock.report_health(&path, word, reason, false).await {
-            Ok(_) => {
+            Ok(answer) => {
                 {
                     let mut inv = state.inventory.write().await;
                     if let Some(d) = inv.drives.get_mut(&id) {
@@ -166,14 +173,18 @@ async fn push_health(state: &Arc<AppState>) {
                     }
                 }
                 let sev = match word {
-                    "failed" | "failing" => Severity::Warning,
+                    "failed" | "failing" | "missing" => Severity::Warning,
                     _ => Severity::Info,
                 };
                 state.events.write().await.push(
                     Some(id),
                     sev,
                     "stormblock",
-                    format!("{name}: reported {word} to stormblock{}", if word == "healthy" { " — quarantine lifted" } else { " — slabs quarantined, legs distrusted" }),
+                    format!(
+                        "{name}: reported {word} to stormblock{}{}",
+                        if word == "healthy" { " — quarantine lifted" } else { " — slabs quarantined, legs distrusted" },
+                        raid_member_note(&answer)
+                    ),
                 );
             }
             Err(e) => {
@@ -189,6 +200,111 @@ async fn push_health(state: &Arc<AppState>) {
         } else if word == "healthy" {
             drop_pending_drain(state, id, &name).await;
         }
+    }
+}
+
+/// The bays (`<shelf key>/<bay>`) holding a failed member of an engine RAID
+/// set (stormblock#252), each with why, for the fault LED (#44). A member
+/// is found by its registration uuid (our drive id), else its WWN or
+/// serial, else its `shelf=…/bay=…` labels.
+pub fn failed_member_bays(arrays: &[serde_json::Value], drives: &std::collections::HashMap<DriveId, Drive>) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for a in arrays {
+        let name = a["name"].as_str().filter(|s| !s.is_empty()).or_else(|| a["id"].as_str()).unwrap_or("?");
+        for m in a["members"].as_array().into_iter().flatten() {
+            if m["state"].as_str() != Some("failed") {
+                continue;
+            }
+            let drv = &m["drive"];
+            let ours = drv["uuid"]
+                .as_str()
+                .and_then(|u| uuid::Uuid::parse_str(u).ok())
+                .and_then(|u| drives.get(&DriveId(u)))
+                .or_else(|| {
+                    let wwn = drv["wwn"].as_str().filter(|s| !s.is_empty());
+                    let serial = drv["serial"].as_str().filter(|s| !s.is_empty());
+                    drives.values().find(|d| {
+                        wwn.is_some_and(|w| d.wwid.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(w))) || serial.is_some_and(|s| s == d.serial)
+                    })
+                });
+            let place = ours
+                .and_then(|d| Some((d.location.shelf.as_ref()?.key()?, d.location.bay?)))
+                .or_else(|| {
+                    let labels = m["labels"].as_str()?;
+                    let get = |k: &str| labels.split('/').find_map(|kv| kv.strip_prefix(&format!("{k}=")).map(str::to_string));
+                    Some((get("shelf")?, get("bay")?.parse().ok()?))
+                });
+            if let Some((shelf, bay)) = place {
+                let slot = m["index"].as_u64().map(|i| i.to_string()).unwrap_or_else(|| "?".into());
+                let who = ours.map(|d| format!("{} ({})", d.name, d.serial)).or_else(|| drv["serial"].as_str().map(str::to_string)).unwrap_or_default();
+                out.insert(format!("{shelf}/{bay}"), format!("RAID set {name} slot {slot} failed {who}").trim().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Light the fault LED of every bay with a failed RAID set member, and put
+/// out the ones we lit whose bay has none any more (replaced, rebuilt) (#44).
+async fn sync_fault_leds(state: &Arc<AppState>) {
+    let arrays = match state.stormblock.list_arrays().await {
+        Ok(Some(a)) => a,
+        Ok(None) => return,
+        Err(e) => return tracing::debug!("stormblock arrays: {e:#}"),
+    };
+    let (wanted, lit) = {
+        let inv = state.inventory.read().await;
+        (failed_member_bays(&arrays, &inv.drives), inv.fault_bays.clone())
+    };
+    let changes: Vec<(String, bool, String)> = wanted
+        .iter()
+        .filter(|(k, _)| !lit.contains(*k))
+        .map(|(k, why)| (k.clone(), true, why.clone()))
+        .chain(lit.iter().filter(|k| !wanted.contains_key(*k)).map(|k| (k.clone(), false, "no failed member there any more".to_string())))
+        .collect();
+    for (key, on, why) in changes {
+        let Some((shelf, bay)) = key.rsplit_once('/').and_then(|(s, b)| Some((s.to_string(), b.parse::<u32>().ok()?))) else { continue };
+        let Some(rep) = state.shelves.read().await.get(&shelf).cloned() else {
+            tracing::debug!(%shelf, "fault LED: shelf not visible over SES");
+            continue;
+        };
+        let r = tokio::task::spawn_blocking(move || crate::ses::set_fault(&rep, bay, on)).await;
+        match r {
+            Ok(Ok(())) => {
+                {
+                    let mut inv = state.inventory.write().await;
+                    if on {
+                        inv.fault_bays.insert(key.clone());
+                    } else {
+                        inv.fault_bays.remove(&key);
+                    }
+                }
+                state.events.write().await.push(
+                    None,
+                    if on { Severity::Warning } else { Severity::Info },
+                    "shelf",
+                    format!("shelf {shelf} bay {bay}: fault LED {} — {why}", if on { "on" } else { "off" }),
+                );
+            }
+            Ok(Err(e)) => tracing::warn!(%shelf, bay, "fault LED not set: {e}"),
+            Err(e) => tracing::warn!("fault LED task: {e}"),
+        }
+    }
+}
+
+/// What a health report's answer says about a RAID set member (stormblock
+/// #252: `raid_member: {array, slot, failed}`), for the event.
+pub fn raid_member_note(answer: &serde_json::Value) -> String {
+    let m = &answer["raid_member"];
+    if !m.is_object() {
+        return String::new();
+    }
+    let array = m["array"].as_str().unwrap_or("?");
+    let slot = m["slot"].as_u64().map(|s| s.to_string()).unwrap_or_else(|| "?".into());
+    if m["failed"].as_bool() == Some(true) {
+        format!("; RAID set {array} slot {slot} failed — the engine takes a spare and rebuilds")
+    } else {
+        format!("; RAID set {array} slot {slot}")
     }
 }
 
@@ -636,5 +752,43 @@ mod tests {
             d.drain = Some(DrainRecord { state: PENDING.into(), ..Default::default() });
         });
         assert!(!drain_due(&gone));
+    }
+
+    fn on_bay(name: &str, serial: &str, bay: u32) -> Drive {
+        let mut d = Drive::test_fixture(name);
+        d.serial = serial.into();
+        d.location.shelf = Some(crate::drive::Shelf { logical_id: Some("5000a098aaaa0001".into()), ..Default::default() });
+        d.location.bay = Some(bay);
+        d
+    }
+
+    #[test]
+    fn a_failed_raid_member_lights_its_bay() {
+        let sda = on_bay("sda", "S-A", 3);
+        let sdb = on_bay("sdb", "S-B", 4);
+        let drives: std::collections::HashMap<DriveId, Drive> = [(sda.id, sda.clone()), (sdb.id, sdb.clone())].into();
+        let arrays = vec![serde_json::json!({
+            "id": "a1", "name": "ds1-a", "status": "degraded",
+            "members": [
+                { "index": 0, "state": "active", "drive": { "uuid": sdb.id.0.to_string(), "serial": "S-B" }, "labels": "shelf=5000a098aaaa0001/bay=4" },
+                { "index": 1, "state": "failed", "drive": { "uuid": sda.id.0.to_string(), "serial": "S-A" } },
+                // A pulled drive the engine names only by its labels.
+                { "index": 2, "state": "failed", "labels": "shelf=5000a098aaaa0001/bay=9" },
+                // Found by serial when the uuid is not ours.
+                { "index": 3, "state": "failed", "drive": { "uuid": uuid::Uuid::nil().to_string(), "serial": "S-B" } },
+                { "index": 4, "state": "rebuilding", "labels": "shelf=5000a098aaaa0001/bay=7" },
+            ],
+        })];
+        let bays = failed_member_bays(&arrays, &drives);
+        assert_eq!(bays.keys().cloned().collect::<Vec<_>>(), ["5000a098aaaa0001/3", "5000a098aaaa0001/4", "5000a098aaaa0001/9"]);
+        assert!(bays["5000a098aaaa0001/3"].contains("ds1-a slot 1 failed sda (S-A)"), "{bays:?}");
+        assert!(failed_member_bays(&[], &drives).is_empty());
+    }
+
+    #[test]
+    fn the_health_answer_names_the_raid_member() {
+        let a = serde_json::json!({ "raid_member": { "array": "a1", "slot": 2, "failed": true } });
+        assert!(raid_member_note(&a).contains("RAID set a1 slot 2 failed"));
+        assert_eq!(raid_member_note(&serde_json::json!({ "raid_member": null })), "");
     }
 }

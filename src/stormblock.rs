@@ -396,6 +396,18 @@ impl StormBlockClient {
         Ok(items(v, "slabs"))
     }
 
+    /// GET /api/v1/arrays — the engine's RAID sets with their members'
+    /// state, drive and labels (stormblock#252). None: an engine without
+    /// arrays (404).
+    pub async fn list_arrays(&self) -> anyhow::Result<Option<Vec<Value>>> {
+        let resp = self.send(self.http.get(self.url("/api/v1/arrays"))).await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let v: Value = resp.error_for_status()?.json().await?;
+        Ok(Some(items(v, "arrays")))
+    }
+
     /// GET /api/v1/volumes?placement=true — every volume with the slabs and
     /// drives holding it (stormblock v17.1, #136) and its consumer (v18.1).
     /// The engine walks every volume's extent map for it, so it gets longer

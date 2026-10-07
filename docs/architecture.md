@@ -996,8 +996,12 @@ monitor tick runs after every discovery/health round:
   `POST …/health {state, drain: false}`: Failing/Failed → stormblock
   quarantines the drive's slabs and every redundant volume stops reading
   that leg *before* an I/O fails; Good/Warning → `healthy`, which lifts the
-  quarantine (`Drive.pushed_health`; `stormblock.push_health`). What the
-  engine does on its own with the report (stormblock `mgmt/api/drives.rs`,
+  quarantine (`Drive.pushed_health`; `stormblock.push_health`). A fleet
+  drive that went missing is reported `missing`, named by its uuid because
+  its `/dev` path is gone (#44). Before #44 missing drives were never
+  reported, so a pulled RAID member was only noticed by its I/O errors. The
+  answer's `raid_member {array, slot, failed}` goes into the event. What
+  the engine does on its own with the report (stormblock `mgmt/api/drives.rs`,
   checked 2026-10-06, #43):
   - `failed` (and `missing`) **drains the drive whatever `drain` says** —
     `drain` only adds a drain to `failing`/`degraded`. A drive whose slab
@@ -1006,6 +1010,20 @@ monitor tick runs after every discovery/health round:
     volumes from their surviving members when the engine's `[rebuild]
     automatic` is on (its default). While that rebuild runs, the engine
     holds the drain until it finishes, and a `POST …/drain` answers 409.
+- **Fault LED for RAID sets (#44, stormblock#252).** Each tick,
+  `GET /api/v1/arrays` (404 = an engine without arrays: nothing). Then
+  `failed_member_bays` (pure, tested) works out `<shelf key>/<bay>` for
+  every `failed` member:
+  - the member's `drive.uuid` is the uuid we registered it with, so our
+    record gives the bay even after the drive is pulled;
+  - else its WWN or serial;
+  - else its `shelf=…/bay=…` labels.
+
+  `ses::set_fault` sends a page-0x02 control element with RQST FAULT
+  (byte 3 bit 5) and IDENT kept as the status page shows it. LEDs we lit
+  are kept in `Inventory.fault_bays` and put out when their bay has no
+  failed member left (a replace and rebuild). Events go out on both. A
+  shelf not visible over SES is retried next tick.
 - **Drain → retire.** A fleet drive that goes Failing/Failed, or is
   designated Failed by an operator, or is asked to `leave` with `"drain":
   true`, gets `POST …/drain`; the tick polls `GET …/drain` and records it on

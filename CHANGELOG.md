@@ -4,6 +4,9 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-07
+- **fix:** a pulled fleet drive is reported `missing` to stormblock (by uuid), so the engine fails its RAID set member and takes a spare. Missing drives were never reported before; the answer's `raid_member` goes into the event (#44)
+- **feat:** fault LEDs for shelf RAID sets (stormblock#252). Each fleet tick reads `GET /api/v1/arrays` and lights the SES fault LED (RQST FAULT) of the bay holding a `failed` member: found by registration uuid, else WWN/serial, else its `shelf=…/bay=…` labels. The LED is cleared once the bay has no failed member; lit bays persist in the inventory; events on both (#44)
+- **docs:** name a stormblock shelf layout after stormdrive's shelf key so the spare pool and the `shelf=` rung agree (#44)
 - **fix:** the event log survives a restart (#25). The newest 512 events and the next seq are kept in `<data_dir>/events.json`, written with the inventory when the seq moved. On start they are restored, the sequence continues (a `since=N` poller never sees it go backwards), and a `restart` event says how many were kept. `/api/v1/events` adds `started` and `persisted`
 - **feat:** drive worker `test {kind: smoke|read_scan|destructive_sample}` step: the drive test runs on the server with its verdict in the job, and a failed test stops the drive's later steps (a qualify gate before enroll). Only destructive_sample destroys. A job of only read-only tests may read fleet, reserved and mounted drives, like the single-drive route. The CRD accepts `test` + `kind` (#40)
 - **feat(web):** the bulk smoke test / read scan is one worker job instead of per-drive calls from the browser; Prepare offers a Test step (#40)

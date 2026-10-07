@@ -13,6 +13,10 @@ pub struct Inventory {
     /// Wear-trend samples per drive: (unix_secs, wear_pct, media_errors).
     #[serde(default)]
     pub trends: HashMap<DriveId, Vec<TrendSample>>,
+    /// Bays whose fault LED stormdrive lit for a failed RAID set member
+    /// (#44), `<shelf key>/<bay>`: kept so a restart can still clear them.
+    #[serde(default)]
+    pub fault_bays: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

@@ -453,8 +453,10 @@ a member when stormdrive reports its drive `failed`/`missing`.
   has no failed member; lit bays persisted (`Inventory.fault_bays`) so a
   restart can still clear them; events on/off
 Steps:
-- [ ] report missing · [ ] arrays client + pure wanted-bays · [ ] SES fault
-      control + tick · [ ] tests, docs, changelog · [ ] sc-build (#521)
+- [x] report missing · [x] arrays client + pure wanted-bays · [x] SES fault
+      control + tick · [x] tests, docs, changelog
+- [ ] **next:** sc-build (never run: stormcentral#521); live: a NetApp shelf
+      laid out as sets on stormblock1 (#30)
 
 ### #40: a test step in the drive worker (2026-10-07) — IN PROGRESS
 

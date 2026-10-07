@@ -106,12 +106,23 @@ are listed under [Not yet](#not-yet).
   1. Pushes location labels (`shelf`, `bay`, `hba`, `pcie_slot`) when they
      change.
   2. Pushes the health verdict when it changes (Failing/Failed quarantine
-     the drive's slabs).
+     the drive's slabs). A pulled fleet drive is reported `missing`, by
+     its uuid (#44); the engine fails its RAID set member and takes a spare.
   3. Pushes each drive's overcommit setting.
   4. Drains a failing or failed fleet drive. When stormblock reports it
      empty, the drive leaves the fleet, its locate LED comes on, and an
      event says it is safe to pull.
   5. With `stormblock.auto_add`, registers every qualified drive.
+  6. Shelf RAID sets (stormblock#252, #44). It reads `GET /api/v1/arrays`
+     and lights the SES fault LED (RQST FAULT) of every bay holding a
+     `failed` member. A member is found by its registration uuid (our drive
+     id), else WWN or serial, else its `shelf=…/bay=…` labels. The LED goes
+     out once the bay has no failed member any more (replaced, rebuilt).
+     Lit bays are kept in the inventory, so a restart can still clear them.
+     Drives are registered with `shelf=<shelf key>` and `bay=<n>`. Name a
+     stormblock shelf layout (`POST /api/v1/shelves {name}`) after the shelf
+     key (`GET /api/v1/shelves` on :9092), so the set's spare pool and its
+     `shelf=` rung agree.
 - **Offer** (#42, `worker.offer`, on by default). A drive is marked
   `enrolable`, with one `offer` event when it turns so, when it is:
   - out of the fleet and idle, with no designation;

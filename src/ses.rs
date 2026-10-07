@@ -539,6 +539,21 @@ pub fn build_ident_control(status_raw: &[u8], element_offset: usize, element_typ
     Some(page)
 }
 
+/// Like [`build_ident_control`], for a slot's FAULT indicator (#44): RQST
+/// FAULT (byte 3 bit 5) set or cleared, its IDENT kept as the status page
+/// shows it. None for anything but a (array) device slot.
+pub fn build_fault_control(status_raw: &[u8], element_offset: usize, element_type: u8, on: bool) -> Option<Vec<u8>> {
+    if !matches!(element_type, ET_DEVICE_SLOT | ET_ARRAY_DEVICE_SLOT) {
+        return None;
+    }
+    let mut page = build_ident_control(status_raw, element_offset, element_type, false)?;
+    let st = &status_raw[element_offset..element_offset + 4];
+    let ctl = &mut page[element_offset..element_offset + 4];
+    ctl[2] = st[2] & 0x02;
+    ctl[3] = if on { 0x20 } else { 0 };
+    Some(page)
+}
+
 /// Byte offset of the n-th element (page order, overall elements
 /// included) inside a page 0x02 buffer.
 pub fn element_offset(n: usize) -> usize {
@@ -863,6 +878,29 @@ mod linux {
         out
     }
 
+    /// Set or clear a bay's FAULT indicator through the shelf's first
+    /// reachable ESP (#44).
+    pub fn set_fault(rep: &ShelfReport, bay: u32, on: bool) -> std::io::Result<()> {
+        let err = std::io::Error::other;
+        let pos = find_slot_element(&rep.elements, bay).ok_or_else(|| err(format!("shelf {}: no slot element for bay {bay}", rep.key)))?;
+        let et = rep.elements[pos].element_type;
+        let mut last = None;
+        for esp in &rep.esps {
+            let Some(sg) = &esp.sg_path else { continue };
+            let r = Device::open(sg).and_then(|dev| {
+                let status = dev.receive_diagnostic(PAGE_STATUS)?;
+                let page = build_fault_control(&status, element_offset(pos), et, on)
+                    .ok_or(crate::scsi::Error::Unsupported("status page too short"))?;
+                dev.send_diagnostic(&page)
+            });
+            match r {
+                Ok(()) => return Ok(()),
+                Err(e) => last = Some(e.to_string()),
+            }
+        }
+        Err(err(format!("shelf {}: fault LED not set: {}", rep.key, last.unwrap_or_else(|| "no ESP path".into()))))
+    }
+
     /// Set IDENT on a bay (or the enclosure itself when `bay` is None)
     /// through the shelf's first reachable ESP.
     pub fn set_ident(rep: &ShelfReport, bay: Option<u32>, on: bool) -> std::io::Result<()> {
@@ -927,6 +965,19 @@ pub fn scan() -> BTreeMap<String, ShelfReport> {
     #[cfg(not(target_os = "linux"))]
     {
         BTreeMap::new()
+    }
+}
+
+/// A bay's fault LED via SES (#44).
+pub fn set_fault(rep: &ShelfReport, bay: u32, on: bool) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::set_fault(rep, bay, on)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (rep, bay, on);
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "SES control requires Linux"))
     }
 }
 
@@ -1127,6 +1178,22 @@ mod tests {
         assert_eq!(page[32], 0x80);
         assert_eq!(page[33], 0);
         assert!(build_ident_control(&st, 400, ET_ENCLOSURE, true).is_none());
+    }
+
+    #[test]
+    fn fault_control_sets_rqst_fault_and_keeps_ident() {
+        let mut st = status_page();
+        // slot 1 shows IDENT on (byte 2 bit 1) in the status page.
+        st[element_offset(2) + 2] |= 0x02;
+        let page = build_fault_control(&st, element_offset(2), ET_ARRAY_DEVICE_SLOT, true).unwrap();
+        assert_eq!(&page[4..8], &st[4..8], "generation preserved");
+        assert_eq!(page[16], 0x80, "slot 1 selected");
+        assert_eq!(page[18], 0x02, "its IDENT kept");
+        assert_eq!(page[19], 0x20, "RQST FAULT");
+        assert_eq!(page[12], 0, "slot 0 untouched");
+        let off = build_fault_control(&st, element_offset(2), ET_ARRAY_DEVICE_SLOT, false).unwrap();
+        assert_eq!(off[19], 0, "fault cleared");
+        assert!(build_fault_control(&st, element_offset(6), ET_ENCLOSURE, true).is_none(), "only a slot has a fault LED here");
     }
 
     #[test]
