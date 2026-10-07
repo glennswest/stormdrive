@@ -437,6 +437,29 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #35: shelf (IOM) firmware via SES Download Microcode (2026-10-07) — IN PROGRESS
+
+Never automatic; same image store as drive firmware. Design (the issue's;
+no open decision — the image source is #29, the live shelf #30):
+- `src/iomfw.rs` (pure, tested): Download Microcode Control page 0x0E
+  (subenclosure, expected generation, mode 0x07 = offsets + save +
+  activate, buffer offset, image length, chunk, 4-byte padded); Download
+  Microcode Status page 0x0E (per subenclosure: status, additional, max
+  size, expected offset); status → awaiting / updating / done (now, after
+  reset, after power cycle) / failed; chunk = min(config, max size), 4-byte
+- Linux: per ESP (one IOM): status idle → chunks by SEND DIAGNOSTIC →
+  poll status (the IOM may reset and drop off: wait up to 10 min for it to
+  answer again) → revision from sysfs `rev` (found again by SAS address)
+- orchestration: one IOM at a time, the next only after the first is back
+  and answering; refused when a drive on the shelf serves data (fleet or
+  `in_use_by`) and has no second path (single-pathed shelf, or a drive
+  with one path) unless `allow_path_loss`; one run per shelf
+- `EspPath.revision` (sysfs `rev`), `POST/GET /api/v1/shelves/{key}/firmware`
+  (gate: a drive operation), events, docs
+Steps:
+- [ ] iomfw.rs pure + tests · [ ] Linux run · [ ] orchestration + API + gate
+- [ ] docs, changelog · [ ] sc-build (blocked: stormcentral#521); live: #30 + #29
+
 ### #42: offer blank drives; enrol by policy on a node with a data slab (2026-10-07) — IN PROGRESS
 
 From stormcos#48. Auto-enrol is DrivePolicy (#50): stormcos
@@ -1031,7 +1054,7 @@ with stable id. Found:
 - [x] Fleet drives one at a time, health-gated
 - [ ] Redundancy check via stormblock before a fleet drive resets (no
       rebuild in flight, volume not already degraded) — #24
-- [ ] Shelf (IOM) firmware via SES download microcode page 0x0E — #35
+- [ ] Shelf (IOM) firmware via SES download microcode page 0x0E — #35 (written, unbuilt)
 
 ### Phase 6: Thermal management
 - [x] Per-drive + per-enclosure thermal view (health temps, SES shelf panel)
