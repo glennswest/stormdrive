@@ -128,6 +128,8 @@ pub fn drive_object(d: &Drive, node: &str) -> Value {
             "usable": d.usable,
             "needsReformat": d.needs_reformat(),
             "owner": d.owner(),
+            "contents": d.contents,
+            "enrolable": d.enrolable,
             "enclosure": d.location.shelf.as_ref().and_then(|s| s.key()),
             "bay": d.location.bay,
             "sasAddress": d.location.sas_address,
@@ -523,6 +525,8 @@ mod tests {
             physical_block_size: 512,
             usable: true,
             in_use_by: None,
+            contents: None,
+            enrolable: false,
             format: None,
             firmware_update: None,
             location: Location {

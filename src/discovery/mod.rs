@@ -28,6 +28,10 @@ pub struct Observed {
     /// Whose data is on it (a stormblock slab), read off the drive —
     /// see `contents`.
     pub in_use_by: Option<String>,
+    /// Anything a destructive step would destroy (`contents::holds`: a
+    /// filesystem, a slab, a RAID member, on the disk or in a partition) —
+    /// None = blank, or not readable (#42).
+    pub contents: Option<String>,
 }
 
 /// Is a sector size one the kernel will drive?
@@ -139,6 +143,7 @@ pub struct Probed {
     pub physical_block_size: u32,
     pub capacity_bytes: u64,
     pub in_use_by: Option<String>,
+    pub contents: Option<String>,
     pub at: std::time::Instant,
 }
 
@@ -286,6 +291,7 @@ mod linux {
                     physical_block_size: p.physical_block_size,
                     usable: sectors > 0,
                     in_use_by: p.in_use_by.clone(),
+                    contents: p.contents.clone(),
                     name,
                 });
                 continue;
@@ -323,10 +329,15 @@ mod linux {
             } else {
                 None
             };
+            let contents = if sectors > 0 {
+                crate::contents::holds(&format!("/dev/{name}"))
+            } else {
+                None
+            };
             if answered {
                 cache.put(
                     key,
-                    Probed { block_size, physical_block_size, capacity_bytes, in_use_by: in_use_by.clone(), at: now },
+                    Probed { block_size, physical_block_size, capacity_bytes, in_use_by: in_use_by.clone(), contents: contents.clone(), at: now },
                 );
             }
             out.push(Observed {
@@ -341,6 +352,7 @@ mod linux {
                 physical_block_size,
                 usable: sectors > 0,
                 in_use_by,
+                contents,
                 name,
             });
         }
@@ -416,7 +428,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         let key = ProbeKey { name: "sdc".into(), dev: "8:32".into(), sectors: 1000, wwid: Some("naa.1".into()) };
         let mut c = ProbeCache::default();
-        c.put(key.clone(), Probed { block_size: 4096, physical_block_size: 4096, capacity_bytes: 1, in_use_by: None, at: t0 });
+        c.put(key.clone(), Probed { block_size: 4096, physical_block_size: 4096, capacity_bytes: 1, in_use_by: None, contents: None, at: t0 });
         assert!(c.get(&key, t0 + std::time::Duration::from_secs(30)).is_some());
         assert!(c.get(&key, t0 + PROBE_REFRESH).is_none(), "refreshed every ten minutes");
         let swapped = ProbeKey { wwid: Some("naa.2".into()), ..key.clone() };

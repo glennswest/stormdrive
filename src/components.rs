@@ -212,6 +212,10 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     if d.needs_reformat() {
         metrics.push(Metric::new("sector", d.block_size.to_string()).unit("B").tone("warn"));
     }
+    // Blank, healthy, out of the fleet (#42): one action away from a slab.
+    if d.enrolable {
+        metrics.push(Metric::new("offer", "enrolable").tone("accent"));
+    }
     // Age, in the unit a drive's own SMART counter uses. A spinning disk
     // with 60 000 hours on it is not failing and is worth knowing about
     // before it is the one you are replacing at 3 a.m.
@@ -279,6 +283,10 @@ fn drive_component(d: &Drive) -> ComponentSummary {
             idle && present && d.destructive_test_blocker().is_none(),
             true,
         ));
+    }
+    // #42: an offered drive becomes a data slab (its kind's tier) in one go.
+    if d.membership == Membership::Out {
+        actions.push(act("enroll", "Enrol (data slab)", "POST", format!("{base}/enroll"), d.enrolable && present, true));
     }
     actions.push(act(
         "format-4k",
@@ -609,6 +617,8 @@ mod tests {
             physical_block_size: 512,
             usable: true,
             in_use_by: None,
+            contents: None,
+            enrolable: false,
             format: None,
             firmware_update: None,
             location: Location::default(),
@@ -645,6 +655,18 @@ mod tests {
         let destr = c.actions.iter().find(|a| a.id == "test-destructive").unwrap();
         assert!(destr.danger);
         assert!(destr.enabled, "out-of-fleet idle drive may run destructive");
+        let enroll = c.actions.iter().find(|a| a.id == "enroll").unwrap();
+        assert!(!enroll.enabled, "not offered until the monitor says so");
+    }
+
+    #[test]
+    fn an_offered_drive_reads_enrolable_and_enrols_in_one_action() {
+        let mut d = drive();
+        d.enrolable = true;
+        let c = drive_component(&d);
+        assert!(c.metrics.iter().any(|m| m.label == "offer"));
+        let enroll = c.actions.iter().find(|a| a.id == "enroll").unwrap();
+        assert!(enroll.enabled && enroll.danger && enroll.path.ends_with("/enroll"));
     }
 
     #[test]

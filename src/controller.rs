@@ -579,7 +579,13 @@ impl Controller {
         }
 
         // What to do with each drive it selects.
-        let drives: Vec<crate::drive::Drive> = self.state.inventory.read().await.drives.values().filter(|d| spec.selects_drive(d)).cloned().collect();
+        let (drives, has_data_slab) = {
+            let inv = self.state.inventory.read().await;
+            let all: Vec<crate::drive::Drive> = inv.drives.values().cloned().collect();
+            let has = crate::policy::node_has_data_slab(&all);
+            (all.into_iter().filter(|d| spec.selects_drive(d)).collect::<Vec<_>>(), has)
+        };
+        let waiting = spec.require_data_slab && !has_data_slab;
         let selected: HashSet<String> = drives.iter().map(|d| d.id.0.to_string()).collect();
         // A skip is only worth keeping while the drive is still selected.
         let gone: Vec<String> = records.iter().filter(|(id, r)| !selected.contains(*id) && !r["job"].is_string()).map(|(id, _)| id.clone()).collect();
@@ -617,13 +623,16 @@ impl Controller {
 
         let phase = if spec.suspend {
             "Suspended"
+        } else if waiting {
+            "Waiting"
         } else if spec.dry_run {
             "Planned"
         } else {
             "Active"
         };
-        if spec.suspend {
-            // Nothing new starts; what runs finishes.
+        if spec.suspend || waiting {
+            // Nothing new starts; what runs finishes. Waiting: requireDataSlab
+            // and the engine lists no data slab on this node yet.
         } else if spec.dry_run {
             for (d, steps) in &run {
                 let plan = steps.iter().map(|s| s.describe()).collect::<Vec<_>>();
@@ -670,9 +679,14 @@ impl Controller {
                 }
             }
         }
+        let message = if waiting {
+            format!("requireDataSlab: no stormblock data slab on this node yet; {}", policy_summary(&records))
+        } else {
+            policy_summary(&records)
+        };
         let st = json!({
             "phase": phase,
-            "message": policy_summary(&records),
+            "message": message,
             "requester": who.who,
             "observedGeneration": generation,
             "drives": records,

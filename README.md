@@ -112,6 +112,20 @@ are listed under [Not yet](#not-yet).
      empty, the drive leaves the fleet, its locate LED comes on, and an
      event says it is safe to pull.
   5. With `stormblock.auto_add`, registers every qualified drive.
+- **Offer** (#42, `worker.offer`, on by default). A drive is marked
+  `enrolable`, with one `offer` event when it turns so, when it is:
+  - out of the fleet and idle, with no designation;
+  - not failing, with a health verdict known;
+  - on sectors the kernel uses, at least `worker.offer_min_bytes` (1 GiB);
+  - **blank**: discovery's cached probe (`contents`) found no filesystem,
+    slab or RAID member on the disk or in any GPT partition.
+
+  The flag is on `/api/v1/drives`, the kube Drive status (`enrolable`,
+  `contents`) and the feed: an `offer` metric and an **Enrol (data slab)**
+  action. That action is `POST /api/v1/drives/{id}/enroll[?tier=]`, a
+  worker job (partition + enroll data) that is refused unless the drive is
+  offered. Enrolling on its own is a `DrivePolicy`'s job (#50; with
+  `requireDataSlab`, only on a node that already has a data slab).
 - **Usage** (`src/usage.rs`). Every drive carries `usage`: capacity, its
   stormblock slabs, used, free, and what lies outside the slabs. It is joined
   from stormblock's `/api/v1/slabs` by WWN, else serial, else path.
@@ -403,6 +417,8 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `firmware.max_image_mib` | `256` | largest image upload (also the request body limit) |
 | `worker.max_per_hba` | `8` | drive-worker low-level steps at once behind one HBA |
 | `worker.enroll_per_domain` | `1` | drive-worker enrolls at once per failure domain (shelf, else HBA) |
+| `worker.offer` | `true` | mark blank, healthy, out-of-fleet drives `enrolable`, with an event (#42) |
+| `worker.offer_min_bytes` | `1073741824` | …at least this big |
 
 Qualified for `auto_add`: out of the fleet, designation `none`, idle, a
 health verdict that is known and not Failing/Failed, not `in_use_by`, and
@@ -544,6 +560,8 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
     use, such as a 520-byte NetApp drive.
   - **`enroll`:** `role` (default `data`) and `tier` (`hot`, `warm`, `cool`
     or `cold`).
+  - **`requireDataSlab`** (#42): act only on a node that already has a
+    stormblock data slab (phase Waiting until it does).
   - **`suspend`** and **`dryRun`**.
 
   Each pass (every `kubernetes.interval_secs`), every node the policy
@@ -605,6 +623,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `POST /api/v1/drives/{id}/designation` | `{"designation":"none\|reserved\|spare\|failed"}` |
 | `GET·PUT·POST /api/v1/drives/{id}/overcommit` | `{"enabled":bool,"ratio"?}`; GET adds promisable/committed/headroom |
 | `GET·POST /api/v1/drives/{id}/test`, `POST …/test/cancel` | `{"kind":"smoke\|read_scan\|destructive_sample"}` |
+| `POST /api/v1/drives/{id}/enroll[?tier=]` | an offered (`enrolable`) drive → partition + enroll as a data slab (worker job; 409 otherwise) (#42) |
 | `GET·POST /api/v1/drives/{id}/format` | `{"block_size":512\|4096}` (default 4096) |
 | `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size"}` |
 | `GET·POST /api/v1/worker/jobs` | drive worker jobs · `{"select":{…},"steps":[…],"destroy"?,"dry_run"?}` |

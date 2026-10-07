@@ -63,6 +63,8 @@ max_image_mib = 256         # largest image PUT /api/v1/firmware/images accepts
 [worker]                    # the drive worker (POST /api/v1/worker/jobs)
 max_per_hba = 8             # low-level steps at once behind one HBA
 enroll_per_domain = 1       # enrolls at once per failure domain (shelf, else HBA)
+offer = true                # mark blank, healthy, out-of-fleet drives `enrolable` (+ an event) (#42)
+offer_min_bytes = 1073741824 # …when at least this big (1 GiB)
 
 [kubernetes]                # the apiserver (#45): reviews bearers, holds Drive + DriveOperation objects
 api_url = ""                # https://<apiserver>:6443; empty = $STORMDRIVE_KUBE_API, then in-cluster; none = writes need admin_token

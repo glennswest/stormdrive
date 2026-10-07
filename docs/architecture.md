@@ -192,6 +192,18 @@ path failover is actually needed.
   Join, format and the destructive test refuse an `in_use_by` drive (and
   re-read the disk just before starting); firmware updates are allowed but
   serialised like a fleet drive's.
+- **What else is on it** (#42): the same cached probe runs
+  `contents::holds`, the drive worker's destroy guard: any filesystem
+  signature, slab or RAID member on the disk or at a GPT partition start.
+  The answer goes into `Drive.contents`; None means blank (or not readable
+  yet: a 520-byte drive). From that and the record, each monitor tick
+  sets `enrolable` (`Drive::offer_blocker`: out of the fleet, idle, no
+  designation, a known health verdict that is not failing, usable sectors,
+  ≥ `worker.offer_min_bytes`, blank), with an `offer` event on the
+  transition. It is only an offer: `POST /api/v1/drives/{id}/enroll` (the
+  feed's Enrol action) or a DrivePolicy does the enrolling. The worker's
+  guard re-reads the disk before every destructive step, so a stale
+  cached probe (up to `PROBE_REFRESH`, 10 min) never decides one.
 - Per device: size (`size` × 512), `queue/logical_block_size`,
   `queue/rotational`, `device/model`, `device/serial`,
   `device/firmware_rev` (or NVMe equivalents), `wwid`, transport
@@ -612,6 +624,9 @@ The route table, request bodies and handle resolution are in the
     names no node, has an unknown tier, or asks for a reformat other than
     512/4096. `selects_node` matches by name and/or the Node's labels.
     `selects_drive` ANDs kind, size, sector size, model, shelf and bays.
+    `requireDataSlab` (#42) holds a node at phase Waiting until the
+    engine's slab listing shows a data slab on one of its drives
+    (`node_has_data_slab`).
     `verdict` per drive is one of:
     - **Pass:** in the fleet, missing, or already in a job.
     - **Skip, with why:** designated reserved/spare/failed, `in_use_by`,

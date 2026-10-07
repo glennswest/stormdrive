@@ -235,6 +235,9 @@ spec:
                   properties:
                     role: { type: string, enum: [data, system], description: "The slab's role (default data)." }
                     tier: { type: string, enum: [hot, warm, cool, cold], description: "The slab's tier: what stormstorage pools select by." }
+                requireDataSlab:
+                  type: boolean
+                  description: Act only on a node that already has a stormblock data slab (phase Waiting until it does) — grow a storage node, never make one.
                 suspend:
                   type: boolean
                   description: Start nothing new (what runs finishes).
@@ -247,5 +250,5 @@ spec:
               properties:
                 nodes:
                   type: object
-                  description: "Per node: phase (Active, Planned, Suspended, Refused, Pending, Invalid), message, requester, observedGeneration, and drives by stable id: state (skipped, planned, queued, running, enrolled, failed, refused, cancelled, interrupted), reason, job, steps, generation."
+                  description: "Per node: phase (Active, Planned, Waiting, Suspended, Refused, Pending, Invalid), message, requester, observedGeneration, and drives by stable id: state (skipped, planned, queued, running, enrolled, failed, refused, cancelled, interrupted), reason, job, steps, generation."
                   x-kubernetes-preserve-unknown-fields: true

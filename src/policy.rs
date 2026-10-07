@@ -83,6 +83,10 @@ pub struct PolicySpec {
     #[serde(default)]
     pub reformat: Option<u32>,
     pub enroll: Enroll,
+    /// Act only on a node that already has a stormblock data slab (#42:
+    /// "on a node with a data slab") — grow a storage node, never make one.
+    #[serde(default)]
+    pub require_data_slab: bool,
     #[serde(default)]
     pub suspend: bool,
     #[serde(default)]
@@ -183,6 +187,12 @@ impl PolicySpec {
         steps.push(Step::Enroll { tier: Some(self.enroll.tier.clone()), role: self.enroll.role });
         steps
     }
+}
+
+/// Does this node already hold a stormblock data slab (on any drive, as the
+/// engine's slab listing says)?
+pub fn node_has_data_slab(drives: &[Drive]) -> bool {
+    drives.iter().any(|d| d.usage.as_ref().is_some_and(|u| u.slabs.iter().any(|s| s.role == "data")))
 }
 
 /// What the policy does with one drive it selects.
@@ -409,6 +419,25 @@ mod tests {
         assert!(bad(json!({ "nodes": ["n"], "drives": { "bays": "0-3" }, "enroll": { "tier": "warm" } })).contains("needs drives.shelf"));
         assert!(bad(json!({ "nodes": ["n"], "drives": { "kinds": ["floppy"] }, "enroll": { "tier": "warm" } })).contains("spec:"));
         assert!(bad(json!({ "nodes": ["n"], "drives": { "minBytes": 2, "maxBytes": 1 }, "enroll": { "tier": "warm" } })).contains("minBytes"));
+    }
+
+    #[test]
+    fn require_data_slab_reads_the_engines_slabs() {
+        let p = spec(json!({ "nodes": ["n"], "requireDataSlab": true, "enroll": { "tier": "cool" } }));
+        assert!(p.require_data_slab);
+        let mut d = Drive::test_fixture("sda");
+        assert!(!node_has_data_slab(std::slice::from_ref(&d)), "no usage yet");
+        let slab = |role: &str| crate::usage::SlabUsage {
+            id: "s".into(), role: role.into(), tier: "cool".into(), slot_size: 1, total_bytes: 1,
+            allocated_bytes: 0, free_bytes: 1, committed_bytes: None,
+        };
+        let mut u = crate::usage::compute(&d, &[], std::time::SystemTime::UNIX_EPOCH);
+        u.slabs = vec![slab("system")];
+        d.usage = Some(u.clone());
+        assert!(!node_has_data_slab(std::slice::from_ref(&d)), "a system slab does not count");
+        u.slabs.push(slab("data"));
+        d.usage = Some(u);
+        assert!(node_has_data_slab(&[Drive::test_fixture("sdb"), d]));
     }
 
     #[test]

@@ -200,6 +200,8 @@ async fn tick(
         state.poller.record_discovery(started.elapsed().as_millis() as u64, seen, cached);
     }
 
+    refresh_offers(state).await;
+
     if !collect {
         state.persist().await;
         return Ok(());
@@ -500,6 +502,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                     d.physical_block_size = primary.physical_block_size;
                     d.usable = primary.usable;
                     d.in_use_by = primary.in_use_by.clone();
+                    d.contents = primary.contents.clone();
                 }
                 d.last_seen = now;
                 if d.activity == Activity::Missing {
@@ -568,6 +571,8 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         physical_block_size: primary.physical_block_size,
                         usable: primary.usable,
                         in_use_by: primary.in_use_by.clone(),
+                        contents: primary.contents.clone(),
+                        enrolable: false,
                         format: None,
                         firmware_update: None,
                         location,
@@ -622,6 +627,34 @@ pub fn replaced_in_bay(
         .filter(|d| d.location.bay_key().as_deref() == Some(key.as_str()))
         .max_by_key(|d| d.last_seen)
         .map(|d| d.id)
+}
+
+/// Offer blank drives for enrolment (#42): `enrolable` follows
+/// [`crate::drive::Drive::offer_blocker`], with an event when a drive turns
+/// enrolable. Off (`worker.offer = false`): nothing is offered.
+async fn refresh_offers(state: &Arc<AppState>) {
+    let cfg = &state.config.worker;
+    let mut offered = vec![];
+    {
+        let mut inv = state.inventory.write().await;
+        for d in inv.drives.values_mut() {
+            let now = cfg.offer && d.offer_blocker(cfg.offer_min_bytes).is_none();
+            if now && !d.enrolable {
+                offered.push((d.id, format!(
+                    "{} ({}, {} GB, {}): blank and healthy — enrolable (a worker job or a DrivePolicy can enrol it)",
+                    d.name,
+                    d.serial,
+                    d.capacity_bytes / 1_000_000_000,
+                    d.model
+                )));
+            }
+            d.enrolable = now;
+        }
+    }
+    let mut log = state.events.write().await;
+    for (id, msg) in offered {
+        log.push(Some(id), Severity::Info, "offer", msg);
+    }
 }
 
 /// Each drive's usage (#12) from stormblock's slab listing, and the volumes
@@ -815,6 +848,7 @@ mod tests {
             physical_block_size: 512,
             usable: true,
             in_use_by: None,
+            contents: None,
         };
         // sdq and sda are the same physical drive through two IOMs.
         let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);

@@ -4,6 +4,9 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-07
+- **feat:** offer blank drives (#42). Discovery's cached probe also records `contents` (any filesystem, slab or RAID member, as the worker's destroy guard reads it). Each monitor tick then sets `enrolable` on a drive that is out of the fleet, idle, undesignated, not failing (verdict known), on usable sectors, at least `worker.offer_min_bytes` (1 GiB) and blank, with an `offer` event when it turns so. The flag is on /api/v1/drives, the kube Drive status and the feed (metric + an Enrol action); `worker.offer` turns it off
+- **feat:** `POST /api/v1/drives/{id}/enroll[?tier=]`: an offered drive → partition + enroll as a data slab, through the worker (storage-admin; 409 unless offered) (#42)
+- **feat:** DrivePolicy `requireDataSlab`: act only on a node that already has a stormblock data slab (phase Waiting) (#42)
 - **feat:** drive worker step `security_erase {enhanced?}`: ATA SECURITY ERASE UNIT through ATA PASS-THROUGH(16), for SATA drives with the Security feature set and no Sanitize. It checks IDENTIFY first, and refuses a drive with no security feature set, a frozen drive (never retried), an expired attempt counter, or a password this job did not set. It works under a one-time password that is saved in the job record and a warning event before the drive sees it, and cleared once IDENTIFY reads security off. A failure before ERASE UNIT takes the password off again. A restart interrupts the step and names the password, and a resume checks the drive before erasing again (#36)
 - **feat(web):** Prepare offers ATA security erase (normal / enhanced) (#36)
 - **feat:** `deploy/crds.yaml`: DriveOperation steps accept `security_erase` and `enhanced` (#36)

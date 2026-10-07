@@ -68,11 +68,17 @@ pub struct WorkerConfig {
     /// `enroll` steps running at once per failure domain (shelf, else HBA):
     /// what changes stormblock's pool goes one at a time per domain.
     pub enroll_per_domain: usize,
+    /// Offer blank drives for enrolment (#42): `enrolable` on a drive that is
+    /// out of the fleet, idle, undesignated, healthy, blank and at least
+    /// `offer_min_bytes`, with an event when it turns so. Only a report:
+    /// enrolling is a person's job or a DrivePolicy's.
+    pub offer: bool,
+    pub offer_min_bytes: u64,
 }
 
 impl Default for WorkerConfig {
     fn default() -> Self {
-        Self { max_per_hba: 8, enroll_per_domain: 1 }
+        Self { max_per_hba: 8, enroll_per_domain: 1, offer: true, offer_min_bytes: 1 << 30 }
     }
 }
 

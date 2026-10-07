@@ -184,6 +184,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}/test/{kind}", post(test_by_path))
         // Sector-size reformat (FORMAT UNIT): one drive, many drives, or a
         // whole shelf's worth of 520-byte drives.
+        .route("/api/v1/drives/{id}/enroll", post(enroll_drive))
         .route("/api/v1/drives/{id}/format", get(get_format).post(format_drive))
         .route("/api/v1/drives/{id}/format/{block_size}", post(format_drive_by_path))
         .route("/api/v1/format", get(list_formats).post(format_many))
@@ -530,6 +531,46 @@ async fn create_job(
         Err(e) if e.starts_with("nothing to run") => Err(ApiError::conflict(e)),
         Err(e) if e.contains("not found") => Err(ApiError::not_found(e)),
         Err(e) => Err(ApiError::bad_request(if dry { format!("dry run: {e}") } else { e })),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct EnrollQuery {
+    tier: Option<String>,
+}
+
+/// One action for an offered drive (#42): a worker job that partitions it
+/// and enrolls it as a data slab, of `?tier=` or the tier its kind gets.
+/// Refused unless the drive is offered (blank, healthy, out of the fleet,
+/// undesignated, usable sectors); the worker's guards and the requester's
+/// re-check apply as to any job.
+async fn enroll_drive(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<EnrollQuery>,
+    who: Option<axum::Extension<crate::kubeauth::Requester>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let d = s.inventory.read().await.resolve(&id).cloned().ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
+    if let Some(why) = d.offer_blocker(0) {
+        return Err(ApiError::conflict(format!("{}: not enrolable — {why}", d.name)));
+    }
+    let tier = q.tier.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    if let Some(t) = &tier {
+        if !crate::policy::TIERS.contains(&t.as_str()) {
+            return Err(ApiError::bad_request(format!("tier {t:?}: one of {}", crate::policy::TIERS.join(", "))));
+        }
+    }
+    let role = crate::worker::Role::Data;
+    let req = crate::worker::Request {
+        select: crate::worker::Select { drives: vec![d.id.0.to_string()], ..Default::default() },
+        steps: vec![crate::worker::Step::Partition { role }, crate::worker::Step::Enroll { tier, role }],
+        destroy: vec![],
+        dry_run: false,
+    };
+    match crate::worker::submit(&s, req, who.map(|w| w.0)).await {
+        Ok(v) => Ok(Json(v)),
+        Err(e) if e.starts_with("nothing to run") => Err(ApiError::conflict(e)),
+        Err(e) => Err(ApiError::bad_request(e)),
     }
 }
 

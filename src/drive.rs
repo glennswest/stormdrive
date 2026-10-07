@@ -402,6 +402,17 @@ pub struct Drive {
     /// destructive test refuse such a drive whatever its membership says.
     #[serde(default)]
     pub in_use_by: Option<String>,
+    /// Anything on the drive a destructive step would destroy, as
+    /// `contents::holds` read it in discovery (#42): a filesystem, a slab or
+    /// a RAID member, on the disk or in a GPT partition. None = blank (or
+    /// not readable yet: a 520-byte drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contents: Option<String>,
+    /// Offered for enrolment (#42): blank, healthy, out of the fleet, no
+    /// designation, big enough. Set each monitor tick ([`Drive::offer`]);
+    /// a console enrols it with one action, a DrivePolicy on its own.
+    #[serde(default)]
+    pub enrolable: bool,
     /// The last sector-size reformat of this drive, persisted.
     #[serde(default)]
     pub format: Option<FormatRecord>,
@@ -589,6 +600,41 @@ impl Drive {
         None
     }
 
+    /// Why this drive is not offered for enrolment (#42), or None when it
+    /// is: out of the fleet, idle, no designation, a health verdict that is
+    /// not failing, sectors the kernel uses, at least `min_bytes`, and
+    /// nothing on it (no slab, RAID member or filesystem, whole disk or any
+    /// partition).
+    pub fn offer_blocker(&self, min_bytes: u64) -> Option<String> {
+        if self.membership == Membership::Fleet {
+            return Some("in the fleet".into());
+        }
+        if self.activity != Activity::Idle {
+            return Some(format!("activity is {:?}", self.activity));
+        }
+        if self.designation != Designation::None {
+            return Some(format!("designated {:?}", self.designation));
+        }
+        match self.health.status() {
+            HealthStatus::Unknown => return Some("no health verdict yet".into()),
+            s if s >= HealthStatus::Failing => return Some(format!("health is {s:?}")),
+            _ => {}
+        }
+        if self.needs_reformat() {
+            return Some(format!("{}-byte sectors: reformat first", self.block_size));
+        }
+        if self.capacity_bytes < min_bytes {
+            return Some(format!("smaller than {min_bytes} bytes"));
+        }
+        if let Some(who) = &self.in_use_by {
+            return Some(format!("holds data for {who}"));
+        }
+        if let Some(what) = &self.contents {
+            return Some(format!("holds {what}"));
+        }
+        None
+    }
+
     /// The kernel refuses this sector size; a reformat to 512/4096 is the
     /// only way in.
     pub fn needs_reformat(&self) -> bool {
@@ -727,6 +773,8 @@ mod tests {
             physical_block_size: 512,
             usable: true,
             in_use_by: None,
+            contents: None,
+            enrolable: false,
             format: None,
             firmware_update: None,
             location: Location::default(),
@@ -745,6 +793,35 @@ mod tests {
             usage: None,
             fleet_partition: None,
         }
+    }
+
+    #[test]
+    fn a_blank_healthy_out_of_fleet_drive_is_offered() {
+        let mut d = base_drive();
+        d.health.status = Some(HealthStatus::Good);
+        assert_eq!(d.offer_blocker(1 << 30), None, "1 GiB, blank, good");
+        assert!(d.offer_blocker(2 << 30).unwrap().contains("smaller"));
+        let blocked = |f: &dyn Fn(&mut Drive)| {
+            let mut x = d.clone();
+            f(&mut x);
+            x.offer_blocker(0).unwrap()
+        };
+        assert!(blocked(&|x| x.contents = Some("xfs (whole drive)".into())).contains("holds xfs"));
+        assert!(blocked(&|x| x.in_use_by = Some("stormblock (partition 2)".into())).contains("holds data"));
+        assert_eq!(blocked(&|x| x.membership = Membership::Fleet), "in the fleet");
+        assert!(blocked(&|x| x.designation = Designation::Spare).contains("Spare"));
+        assert!(blocked(&|x| x.designation = Designation::Reserved).contains("Reserved"));
+        assert!(blocked(&|x| x.activity = Activity::Testing).contains("Testing"));
+        assert!(blocked(&|x| x.health.status = None).contains("no health verdict"));
+        assert!(blocked(&|x| x.health.status = Some(HealthStatus::Failing)).contains("Failing"));
+        assert!(blocked(&|x| {
+            x.block_size = 520;
+            x.usable = false;
+        })
+        .contains("520-byte"));
+        let mut warn = d.clone();
+        warn.health.status = Some(HealthStatus::Warning);
+        assert_eq!(warn.offer_blocker(0), None, "a warning (a warm drive) is still offered");
     }
 
     #[test]
