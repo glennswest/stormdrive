@@ -437,6 +437,27 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #24: firmware redundancy gate before a data-serving drive resets (2026-10-07) — IN PROGRESS
+
+Today a fleet (or `in_use_by`) drive updates firmware one at a time behind a
+node-wide lock, and nothing checks its volumes first. The engine already
+answers the question: `GET /api/v1/volumes?placement=true` (#26,
+`usage::volumes_on`) gives, per volume with legs on the drive, its
+redundancy `health`, `rebuild` and the worst slab `state` there. No
+stormblock issue needed.
+- pure `firmware::redundancy_blocker(vols)`: a volume not `healthy`, a
+  rebuild not `none`, a slab here not `ok` → the reason; no placement
+  reported → "cannot check" (refused unless `force`)
+- in `firmware::start`, under the fleet lock, before the download (mode
+  0x07 activates on the last chunk): wait while blocked (phase `waiting:
+  …`, every 30 s, up to `firmware.redundancy_wait_mins`, default 30) → fail
+  with the reason; after a successful update, wait the same way for the
+  volumes to be redundant again before the lock goes to the next drive
+  (a warning event if they are not)
+- `force` skips the gate; out-of-fleet drives without data have no gate
+Steps:
+- [ ] gate + tests · [ ] config, docs, changelog · [ ] build-VM sc-build
+
 ### #44: shelf RAID sets — bay labels and the failed member's fault LED (stormblock#252, 2026-10-07) — IN PROGRESS
 
 stormblock#252 lays a shelf out as drive-level RAID sets with spares and fails
