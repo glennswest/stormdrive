@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-07
+- **feat:** `DrivePolicy` (`storage.storm.io/v1`, storage-admin only): which drives of which nodes become stormblock slabs of which tier. A drive the kernel cannot use (520-byte NetApp) is reformatted first, with no hand-run step. The spec has nodes / nodeSelector, a drive selector (kinds, size, sector size, model, shelf, bays), `reformat` (512/4096), `enroll {role, tier}`, `suspend` and `dryRun`. Each node runs it through the drive worker under the stamped requester (re-checked). It never takes a drive in the fleet, holding data, designated reserved/spare/failed, failing or busy. A failed drive waits for a new generation. Status is per node, with Events on the policy; deleting the policy cancels the queued steps (#50, stormcos#251)
+- **feat:** `deploy/crds.yaml` `DrivePolicy`; `deploy/rbac.yaml`: drivepolicies get/list/watch + status, nodes get; `deploy/drivepolicy.example.yaml` (stormblock1 `warm`, stormblock2 `cool`) (#50)
+- **docs:** README "As Kubernetes objects", architecture "Drives enrolled by policy" (#50)
+
 ### 2026-10-06
 - **feat:** `usage.volumes` on every drive: the volumes with legs on it, from the engine's `GET /api/v1/volumes?placement=true` (stormblock v17.1+). Each entry has id, name, kind, consumer, bytes, legs, shared legs, the worst slab state here, rebuild, policy and health, largest first. It is absent while the engine reports no placement, and a failed read keeps the last answer with `volumes_collected_at`. This lets a console show them for every node (#26, stormconsole#29)
 - **feat:** feed metric `volumes`; Prometheus `stormdrive_drive_volumes`, `stormdrive_drive_volumes_degraded` (#26)

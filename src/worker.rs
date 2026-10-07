@@ -385,6 +385,9 @@ pub struct Job {
     /// The DriveOperation object this job runs, when it came from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>,
+    /// The DrivePolicy that submitted this job (#50), when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
 }
 
 impl Job {
@@ -566,6 +569,21 @@ impl Worker {
         self.jobs.lock().unwrap().values().filter(|j| !j.finished()).filter_map(|j| j.operation.clone().map(|o| (j.id.clone(), o))).collect()
     }
 
+    /// Jobs a DrivePolicy submitted that are not finished: (job, policy).
+    pub fn policy_jobs(&self) -> Vec<(String, String)> {
+        self.jobs.lock().unwrap().values().filter(|j| !j.finished()).filter_map(|j| j.policy.clone().map(|p| (j.id.clone(), p))).collect()
+    }
+
+    /// Drives some job has queued or running: not to be handed out again.
+    pub fn active_drives(&self) -> std::collections::HashSet<DriveId> {
+        let jobs = self.jobs.lock().unwrap();
+        jobs.values()
+            .flat_map(|j| j.drives.iter())
+            .filter(|d| matches!(d.state, DjState::Queued | DjState::Running))
+            .map(|d| d.drive)
+            .collect()
+    }
+
     /// The running step's progress for a drive, if a job has one.
     pub fn progress_of(&self, id: DriveId) -> Option<(String, Option<u8>)> {
         let jobs = self.jobs.lock().unwrap();
@@ -633,7 +651,9 @@ pub struct Request {
     pub dry_run: bool,
 }
 
-async fn context(state: &Arc<AppState>, d: &Drive) -> Context {
+/// What [`guard`] needs beyond the record: the drive's contents (a slab or a
+/// filesystem), mounts, NVMe namespaces sharing the controller.
+pub async fn context(state: &Arc<AppState>, d: &Drive) -> Context {
     let path = d.path.clone();
     let holds = tokio::task::spawn_blocking(move || crate::contents::holds(&path)).await.ok().flatten();
     let siblings = if d.kind == DriveKind::NvmeSsd {
@@ -704,6 +724,17 @@ pub async fn submit_for(
     requester: Option<crate::kubeauth::Requester>,
     operation: Option<String>,
 ) -> Result<Value, String> {
+    submit_tagged(state, req, requester, operation, None).await
+}
+
+/// [`submit`], tagged with the DriveOperation or DrivePolicy (#50) it is for.
+pub async fn submit_tagged(
+    state: &Arc<AppState>,
+    req: Request,
+    requester: Option<crate::kubeauth::Requester>,
+    operation: Option<String>,
+    policy: Option<String>,
+) -> Result<Value, String> {
     validate_steps(&req.steps)?;
     let drives = select(state, &req.select).await?;
     if drives.is_empty() {
@@ -758,6 +789,7 @@ pub async fn submit_for(
         cancel: false,
         requester,
         operation: operation.clone(),
+        policy: policy.clone(),
     };
     let destructive = req.steps.iter().any(Step::destroys);
     state.events.write().await.push(
@@ -766,7 +798,11 @@ pub async fn submit_for(
         "worker",
         format!(
             "job {id}{}: {} on {runnable} drive(s) for {who}{}",
-            operation.as_deref().map(|o| format!(" (DriveOperation {o})")).unwrap_or_default(),
+            operation
+                .as_deref()
+                .map(|o| format!(" (DriveOperation {o})"))
+                .or_else(|| policy.as_deref().map(|p| format!(" (DrivePolicy {p})")))
+                .unwrap_or_default(),
             req.steps.iter().map(Step::describe).collect::<Vec<_>>().join(" → "),
             if destructive { " (their data is destroyed)" } else { "" }
         ),

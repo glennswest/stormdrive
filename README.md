@@ -385,7 +385,7 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `kubernetes.ca_file` | `""` | its CA; empty = `$STORMDRIVE_KUBE_CA`, then the service account's |
 | `kubernetes.token_file` | `""` | stormdrive's own credential (re-read every call); empty = `$STORMDRIVE_KUBE_TOKEN_FILE`, then the service account's |
 | `kubernetes.insecure` | `false` | skip TLS verification (lab only) |
-| `kubernetes.controller` | `true` | keep `Drive` objects, run this node's `DriveOperation`s |
+| `kubernetes.controller` | `true` | keep `Drive` objects, run this node's `DriveOperation`s and the `DrivePolicy`s that select it |
 | `kubernetes.interval_secs` | `5` | between controller passes |
 | `firmware.chunk_kib` | `32` | download chunk; raised to the drive's offset boundary |
 | `firmware.max_image_mib` | `256` | largest image upload (also the request body limit) |
@@ -500,7 +500,7 @@ stable id, WWN or serial.
 
 ### As Kubernetes objects
 
-With `[kubernetes]` set, each node's stormdrive keeps two cluster-scoped kinds
+With `[kubernetes]` set, each node's stormdrive keeps three cluster-scoped kinds
 in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
 `deploy/rbac.yaml`, stormcos#302):
 
@@ -520,11 +520,48 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   decision. **No stamp → Refused**: the object alone is never trusted.
   Deleting it cancels the steps not yet started; raising `spec.resume`
   resumes interrupted drives.
+- **`DrivePolicy`** (#50, stormcos#251) says which drives of which nodes
+  become stormblock slabs, and of which tier, without anyone submitting a
+  job. See `deploy/drivepolicy.example.yaml`: stormblock1's NetApp shelf
+  becomes `warm`, stormblock2's SAS HDDs `cool`. The spec has:
+  - **nodes:** `nodes` and/or `nodeSelector.matchLabels`; one of them is
+    required.
+  - **drives:** `kinds`, `minBytes`, `maxBytes`, `blockSizes`, `model`,
+    `shelf`, `bays`.
+  - **`reformat`** (512 or 4096): applied only to a drive the kernel cannot
+    use, such as a 520-byte NetApp drive.
+  - **`enroll`:** `role` (default `data`) and `tier` (`hot`, `warm`, `cool`
+    or `cold`).
+  - **`suspend`** and **`dryRun`**.
+
+  Each pass (every `kubernetes.interval_secs`), every node the policy
+  selects:
+  - takes the stamped requester and re-checks that they may `create
+    driveoperations` (no stamp: Refused);
+  - looks at each drive the selector picks;
+  - hands the ones it may take to the drive worker as a job tagged with the
+    policy: `format` if needed, then `partition` and `enroll`. The worker's
+    guards and lanes apply, the enroll runs one per failure domain, and the
+    requester is re-checked before every step.
+
+  It never takes a drive that is in the fleet, holds data (`in_use_by`, or
+  a slab, RAID set or filesystem found on the disk), is designated
+  reserved, spare or failed, is failing, or is busy. A drive whose job
+  failed is not tried again until the policy is edited (a new
+  generation). Interrupted jobs resume once the requester re-checks.
+  Deleting the policy cancels the steps not yet started.
+
+  Status is per node, in `status.nodes.<node>`: phase (Active, Planned,
+  Suspended, Refused, Pending, Invalid), requester, and per drive: state
+  (skipped and why, planned, queued, running, enrolled, failed), job and
+  steps. Each decision is also a Kubernetes Event on the policy.
 
 ```bash
 kubectl get drives -l storm.io/node=c2nr0q2 -o wide
 kubectl apply -f deploy/driveoperation.example.yaml   # dryRun: true first
 kubectl get driveoperations
+kubectl apply -f deploy/drivepolicy.example.yaml      # dryRun: true first
+kubectl get drivepolicy stormblock1-warm -o jsonpath='{.status.nodes}'
 ```
 
 ## API
@@ -673,9 +710,9 @@ for installs outside stormcos.
 
 These are documented as design only; the code does not do them:
 
-- `DriveOperation`s run only once the apiserver stamps their requester
-  (rustkube#210) and stormcos installs the CRDs and gives stormdrive a
-  credential (stormcos#302)
+- `DriveOperation`s and `DrivePolicy`s run only once stormcos installs the
+  CRDs and gives stormdrive a credential (stormcos#302); the requester stamp
+  (rustkube#210) has shipped
 - SCSI log sense / ATA SMART for SAS and SATA health (#22); wear-out
   projection (#23); persisted events (#25)
 - a node-wide sequencer with a stormblock redundancy check before a fleet

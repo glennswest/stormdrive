@@ -1,0 +1,43 @@
+# stormcos#251's two storage tiers (stormcos docs/STORAGE-TIERS.md): every
+# drive on stormblock1's 2.5-inch NetApp shelf becomes a `warm` data slab,
+# every SAS HDD on stormblock2 a `cool` one. A fresh NetApp drive (520-byte
+# sectors) is reformatted to 4096 first. Needs storage-admin (#50).
+#
+# Never touched: a drive in the fleet, holding data (a slab, a RAID set, a
+# filesystem), designated reserved/spare/failed, or failing. A drive whose
+# job fails is not tried again until the policy is edited.
+#
+# Try dryRun: true first; status.nodes.<node>.drives says, per drive, what
+# would run or why it is skipped.
+#
+#   kubectl apply -f drivepolicy.example.yaml
+#   kubectl get drivepolicies
+#   kubectl get drivepolicy stormblock1-warm -o jsonpath='{.status.nodes}'
+apiVersion: storage.storm.io/v1
+kind: DrivePolicy
+metadata:
+  name: stormblock1-warm
+spec:
+  nodes: [stormblock1]
+  drives:
+    kinds: [sas_hdd, sas_ssd]
+    shelf: "500a098000000000"   # the shelf's logical id (kubectl get drives -o wide)
+  reformat: 4096
+  enroll:
+    role: data
+    tier: warm
+  dryRun: true
+---
+apiVersion: storage.storm.io/v1
+kind: DrivePolicy
+metadata:
+  name: stormblock2-cool
+spec:
+  nodes: [stormblock2]
+  drives:
+    kinds: [sas_hdd]
+  reformat: 4096
+  enroll:
+    role: data
+    tier: cool
+  dryRun: true

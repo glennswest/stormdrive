@@ -28,6 +28,7 @@ pub mod kubeauth;
 pub mod metrics;
 pub mod monitor;
 pub mod placement;
+pub mod policy;
 pub mod poller;
 pub mod scsi;
 pub mod ses;

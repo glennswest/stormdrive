@@ -6,7 +6,8 @@
 # Bind both roles to the identity in stormdrive's [kubernetes] token_file (or
 # its ServiceAccount):
 #   - stormdrive-controller: keep this node's Drive objects, read
-#     DriveOperations and keep their status, post Events on them;
+#     DriveOperations and DrivePolicies and keep their status, read this
+#     node's labels (a policy's nodeSelector), post Events on them;
 #   - system:auth-delegator (built in): TokenReview + SubjectAccessReview, to
 #     ask who a bearer is and whether that user may change drives.
 #   - stormdrive-engine (#46, stormblock#274): the engine's destructive verbs
@@ -23,11 +24,15 @@ rules:
     resources: ["drives"]
     verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: ["storage.storm.io"]
-    resources: ["drives/status", "driveoperations/status"]
+    resources: ["drives/status", "driveoperations/status", "drivepolicies/status"]
     verbs: ["get", "patch", "update"]
   - apiGroups: ["storage.storm.io"]
-    resources: ["driveoperations"]
+    resources: ["driveoperations", "drivepolicies"]
     verbs: ["get", "list", "watch"]
+  # A DrivePolicy's nodeSelector is matched against this node's labels (#50).
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create"]

@@ -11,6 +11,10 @@
 #   stormdrive re-checks the requester the apiserver stamped on it
 #   (storage.storm.io/requester) with a SubjectAccessReview before it starts
 #   and before every step.
+# - DrivePolicy (#50): which drives of the nodes it selects become stormblock
+#   slabs of which tier, reformatted first when they need it — the node's
+#   stormdrive does it without anyone running an operation. Only
+#   storage-admin can create one; its requester is re-checked the same way.
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -158,3 +162,89 @@ spec:
                   items:
                     type: object
                     x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: drivepolicies.storage.storm.io
+spec:
+  group: storage.storm.io
+  scope: Cluster
+  names:
+    kind: DrivePolicy
+    plural: drivepolicies
+    singular: drivepolicy
+    shortNames: [dpol]
+    categories: [storage]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Nodes, type: string, jsonPath: .spec.nodes }
+        - { name: Tier, type: string, jsonPath: .spec.enroll.tier }
+        - { name: Reformat, type: integer, jsonPath: .spec.reformat }
+        - { name: Suspend, type: boolean, jsonPath: .spec.suspend, priority: 1 }
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: Which drives of the selected nodes become stormblock slabs of which tier, reformatted first when the kernel cannot use them. Each node's stormdrive applies it to its own drives through the drive worker, never to a drive in the fleet, holding data (a slab, a RAID set, a filesystem), designated reserved, spare or failed, or failing.
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [enroll]
+              properties:
+                nodes:
+                  type: array
+                  items: { type: string }
+                  description: Node names. At least one of nodes, nodeSelector.matchLabels; both given = both must match.
+                nodeSelector:
+                  type: object
+                  properties:
+                    matchLabels:
+                      type: object
+                      additionalProperties: { type: string }
+                      description: Labels the Node object must carry.
+                drives:
+                  type: object
+                  description: Which drives on those nodes. Every field given must match; none = every drive.
+                  properties:
+                    kinds:
+                      type: array
+                      items: { type: string, enum: [nvme_ssd, sas_ssd, sas_hdd, sata_ssd, sata_hdd, unknown] }
+                    minBytes: { type: integer }
+                    maxBytes: { type: integer }
+                    blockSizes:
+                      type: array
+                      items: { type: integer }
+                      description: Logical sector sizes as the drive reports them, e.g. [520, 512].
+                    model: { type: string }
+                    shelf: { type: string, description: "The enclosure: logical id, serial or sysfs id." }
+                    bays: { type: string, description: "Bays on that shelf, e.g. 0-11,14 (needs shelf)." }
+                reformat:
+                  type: integer
+                  enum: [512, 4096]
+                  description: Reformat a drive the kernel cannot use (520/528-byte sectors) to this size first. A drive at 512 or 4096 keeps its size.
+                enroll:
+                  type: object
+                  required: [tier]
+                  properties:
+                    role: { type: string, enum: [data, system], description: "The slab's role (default data)." }
+                    tier: { type: string, enum: [hot, warm, cool, cold], description: "The slab's tier: what stormstorage pools select by." }
+                suspend:
+                  type: boolean
+                  description: Start nothing new (what runs finishes).
+                dryRun:
+                  type: boolean
+                  description: Report per drive what would run (status.nodes.<node>.drives) and do nothing.
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                nodes:
+                  type: object
+                  description: "Per node: phase (Active, Planned, Suspended, Refused, Pending, Invalid), message, requester, observedGeneration, and drives by stable id: state (skipped, planned, queued, running, enrolled, failed, refused, cancelled, interrupted), reason, job, steps, generation."
+                  x-kubernetes-preserve-unknown-fields: true

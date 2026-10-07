@@ -582,6 +582,46 @@ The route table, request bodies and handle resolution are in the
   name), status from the job, a Kubernetes Event per transition. Plain
   reqwest (`kubeapi.rs`), no kube-rs. The CRDs and the controller's role are
   `deploy/crds.yaml` and `deploy/rbac.yaml`.
+- **Drives enrolled by policy (#50, `policy.rs`, stormcos#251).** stormcos's
+  two storage nodes have SAS HDDs on both, but need different tiers
+  (stormblock1 `warm`, stormblock2 `cool`, stormcos `docs/STORAGE-TIERS.md`).
+  `tier_map` is per drive kind, in a config every node shares, and
+  `auto_add` skips a 520-byte drive. So a `DrivePolicy` object decides
+  instead:
+  - **Pure decision (`policy.rs`).** The spec is parsed and refused when it
+    names no node, has an unknown tier, or asks for a reformat other than
+    512/4096. `selects_node` matches by name and/or the Node's labels.
+    `selects_drive` ANDs kind, size, sector size, model, shelf and bays.
+    `verdict` per drive is one of:
+    - **Pass:** in the fleet, missing, or already in a job.
+    - **Skip, with why:** designated reserved/spare/failed, `in_use_by`,
+      busy, failing, a 520-byte drive with no `reformat` in the policy, or
+      a usable drive with no health verdict yet.
+    - **Run, with steps:** `format` (only when `needs_reformat()`), then
+      `partition` and `enroll {role, tier}`.
+
+    `retry_blocked` keeps a drive whose job failed, was refused or was
+    cancelled waiting until the policy's generation changes.
+  - **Controller pass, after the operations.** A 404 on the list means the
+    CRD is not installed: quiet. A policy whose spec cannot be parsed is
+    reported Invalid only by the nodes its `spec.nodes` names. The stamped
+    requester is re-checked for `create driveoperations`, what the worker
+    re-checks per step.
+  - **Contents guard.** Before a drive is handed out,
+    `worker::context` + `guard` read the disk: a slab, RAID set or
+    filesystem on it is a skip. A skipped drive is probed again after
+    5 min.
+  - **Jobs.** One worker job is submitted per distinct step list, tagged
+    `policy`. Records follow the worker's per-drive state; Events go out on
+    Accepted, Enrolled and Failed. A job a restart or an unreachable
+    apiserver interrupted is resumed under the requester. A deleted policy
+    cancels its jobs' queued steps.
+  - **Status.** Each node writes only `status.nodes.<node>` (a merge patch
+    on its own key), and only when that part changes.
+  - **Scheduling.** The low-level steps are bounded per HBA
+    (`worker.max_per_hba`) and the enroll runs one per failure domain, as
+    for any job. Whether low-level steps should also run one per domain is
+    #37.
 - **`/metrics`** (#18, `metrics.rs`): Prometheus text, a read like any
   other (#19), from cached state. `smartctl_exporter` names (`smartctl_device_temperature`,
   `_power_on_seconds`, `_percentage_used`, `_media_errors`, …) where one

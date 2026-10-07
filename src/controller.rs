@@ -1,6 +1,6 @@
 //! Drives and drive operations as Kubernetes objects (#45).
 //!
-//! Two kinds in `storage.storm.io/v1` (deploy/crds.yaml), both cluster-scoped:
+//! Three kinds in `storage.storm.io/v1` (deploy/crds.yaml), all cluster-scoped:
 //!
 //! - **`Drive`** — one per physical drive, written by the stormdrive of the
 //!   node that has it (`metadata.name` = the stable drive id, label
@@ -23,6 +23,15 @@
 //!
 //! Deleting an operation cancels its job's queued steps (running ones
 //! finish). Raising `spec.resume` resumes its interrupted drives.
+//!
+//! - **`DrivePolicy`** (#50, stormcos#251) — which drives of the nodes it
+//!   selects become slabs of which tier, reformatted first when they need
+//!   it: the decision is `policy.rs`. Each pass this controller runs every
+//!   policy that selects this node, under its stamped requester (re-checked
+//!   like an operation's), hands the drives it picks to the worker as jobs
+//!   tagged with the policy, and keeps `status.nodes.<node>` (phase, and
+//!   per drive: skipped and why, queued, running, enrolled, failed).
+//!   Deleting a policy cancels its jobs' queued steps.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -34,6 +43,7 @@ use crate::api::kube::{drive_object, GROUP, VERSION};
 use crate::api::AppState;
 use crate::kubeapi::{KubeApi, KubeUser};
 use crate::kubeauth::{Access, Requester};
+use crate::policy::{PolicySpec, Verdict};
 use crate::worker::{DjState, Job};
 
 /// The annotation the apiserver stamps with the creating user.
@@ -44,6 +54,10 @@ pub const REQUESTER_GROUPS: &str = "storage.storm.io/requester-groups";
 /// A Drive object is rewritten at least this often even when nothing else
 /// changed (so `lastSeen` and the temperatures do not go stale for good).
 const REFRESH: Duration = Duration::from_secs(300);
+
+/// A drive a policy skipped for what is on it (the contents probe reads the
+/// disk) is looked at again after this long.
+const RECHECK_SKIPPED: Duration = Duration::from_secs(300);
 
 fn path(resource: &str, name: Option<&str>) -> String {
     match name {
@@ -148,6 +162,10 @@ pub struct Controller {
     written: HashMap<String, (String, Instant)>,
     /// Operation status last written, so an unchanged one is not rewritten.
     op_status: HashMap<String, String>,
+    /// This node's part of each policy's status, last written.
+    policy_status: HashMap<String, String>,
+    /// When a policy last probed a drive's contents and skipped it.
+    probed: HashMap<(String, crate::drive::DriveId), Instant>,
 }
 
 /// Run the controller until the process ends. One pass every
@@ -155,12 +173,13 @@ pub struct Controller {
 pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
     tracing::info!(apiserver = kube.base(), node = %state.node_name, "kubernetes: keeping Drive objects and running DriveOperations");
     let every = Duration::from_secs(state.config.kubernetes.interval_secs);
-    let mut c = Controller { state, kube, written: HashMap::new(), op_status: HashMap::new() };
+    let mut c = Controller { state, kube, written: HashMap::new(), op_status: HashMap::new(), policy_status: HashMap::new(), probed: HashMap::new() };
     let mut last_err = String::new();
     loop {
         let r = async {
             c.drives().await?;
-            c.operations().await
+            c.operations().await?;
+            c.policies().await
         }
         .await;
         match r {
@@ -377,12 +396,16 @@ impl Controller {
     /// A Kubernetes Event on the operation (best effort: the audit line and
     /// the event ring have it too).
     async fn event(&self, op: &Value, kind: &str, reason: &str, message: &str) {
+        self.event_on("DriveOperation", op, kind, reason, message).await
+    }
+
+    async fn event_on(&self, object_kind: &str, op: &Value, kind: &str, reason: &str, message: &str) {
         let name = op["metadata"]["name"].as_str().unwrap_or("");
         let now = chrono_now();
         let ev = json!({
             "apiVersion": "v1", "kind": "Event",
             "metadata": { "generateName": format!("{name}."), "namespace": "default" },
-            "involvedObject": { "apiVersion": format!("{GROUP}/{VERSION}"), "kind": "DriveOperation", "name": name, "uid": op["metadata"]["uid"] },
+            "involvedObject": { "apiVersion": format!("{GROUP}/{VERSION}"), "kind": object_kind, "name": name, "uid": op["metadata"]["uid"] },
             "reason": reason, "message": message, "type": kind,
             "source": { "component": "stormdrive", "host": self.state.node_name },
             "firstTimestamp": now, "lastTimestamp": now, "count": 1,
@@ -399,6 +422,297 @@ impl Controller {
         self.state.gate.audit(&line);
         let sev = if decision == "succeeded" || decision == "accepted" { crate::events::Severity::Info } else { crate::events::Severity::Warning };
         self.state.events.write().await.push(None, sev, "operation", format!("DriveOperation {op}: {decision} — {message}"));
+    }
+}
+
+/// The worker's word for a drive job's state, as a policy reports it.
+fn dj_word(s: DjState) -> &'static str {
+    match s {
+        DjState::Queued => "queued",
+        DjState::Running => "running",
+        DjState::Done => "enrolled",
+        DjState::Failed => "failed",
+        DjState::Refused => "refused",
+        DjState::Interrupted => "interrupted",
+        DjState::Cancelled => "cancelled",
+    }
+}
+
+/// A policy's one-line summary of its drives here.
+pub fn policy_summary(drives: &serde_json::Map<String, Value>) -> String {
+    let mut n: BTreeMap<&str, usize> = BTreeMap::new();
+    for r in drives.values() {
+        *n.entry(r["state"].as_str().unwrap_or("?")).or_default() += 1;
+    }
+    if n.is_empty() {
+        return "no drive selected here".into();
+    }
+    n.iter().map(|(k, v)| format!("{v} {k}")).collect::<Vec<_>>().join(", ")
+}
+
+impl Controller {
+    /// Run the DrivePolicies that select this node (#50).
+    async fn policies(&mut self) -> Result<(), String> {
+        let list = match self.kube.get(&path("drivepolicies", None)).await {
+            Ok(l) => l,
+            // The CRD is not installed: no policy, today's default.
+            Err(e) if e.code() == Some(404) => return Ok(()),
+            Err(e) => return Err(format!("listing DrivePolicies: {e}")),
+        };
+        let node = self.state.node_name.clone();
+        let mut labels: Option<Option<BTreeMap<String, String>>> = None;
+        let mut present: HashSet<String> = HashSet::new();
+        for pol in list["items"].as_array().into_iter().flatten() {
+            let Some(name) = pol["metadata"]["name"].as_str().map(str::to_string) else { continue };
+            present.insert(name.clone());
+            if pol["metadata"]["deletionTimestamp"].is_string() {
+                continue;
+            }
+            let spec = match PolicySpec::parse(&pol["spec"]) {
+                Ok(s) => s,
+                Err(why) => {
+                    // Said only by the nodes it names: whom a broken
+                    // selector meant is not known.
+                    let names_me = pol["spec"]["nodes"].as_array().into_iter().flatten().any(|n| n.as_str().is_some_and(|n| same_node(n, &node)));
+                    if names_me {
+                        let st = json!({ "phase": "Invalid", "message": why, "observedGeneration": pol["metadata"]["generation"] });
+                        if self.policy_status.get(&name) != Some(&st.to_string()) {
+                            self.event_on("DrivePolicy", pol, "Warning", "Invalid", &why).await;
+                        }
+                        self.put_policy_status(&name, &node, st).await?;
+                    }
+                    continue;
+                }
+            };
+            if spec.node_selector.as_ref().is_some_and(|s| !s.match_labels.is_empty()) && labels.is_none() {
+                labels = Some(self.node_labels(&node).await);
+            }
+            if !spec.selects_node(&node, labels.as_ref().and_then(|l| l.as_ref())) {
+                continue;
+            }
+            if let Err(e) = self.policy(&name, pol, &spec).await {
+                tracing::warn!("kubernetes: DrivePolicy {name}: {e}");
+            }
+        }
+        // A deleted policy stops: its jobs' queued steps are cancelled.
+        for (job, pol) in self.state.worker.policy_jobs() {
+            if !present.contains(&pol) && crate::worker::cancel(&self.state, &job).await.is_ok() {
+                self.policy_audit(&pol, "cancelled", &format!("DrivePolicy deleted: job {job}'s queued steps cancelled")).await;
+                self.policy_status.remove(&pol);
+            }
+        }
+        Ok(())
+    }
+
+    /// This node's labels, for a policy's nodeSelector; None when the Node
+    /// cannot be read (then no selector matches).
+    async fn node_labels(&self, node: &str) -> Option<BTreeMap<String, String>> {
+        match self.kube.get(&format!("/api/v1/nodes/{}", urlencode(node))).await {
+            Ok(n) => Some(
+                n["metadata"]["labels"]
+                    .as_object()
+                    .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+                    .unwrap_or_default(),
+            ),
+            Err(e) => {
+                tracing::debug!("kubernetes: Node {node}: {e}");
+                None
+            }
+        }
+    }
+
+    async fn policy(&mut self, name: &str, pol: &Value, spec: &PolicySpec) -> Result<(), String> {
+        let node = self.state.node_name.clone();
+        let generation = pol["metadata"]["generation"].as_i64();
+        let prev = pol["status"]["nodes"][node.as_str()].clone();
+        let mut records = prev["drives"].as_object().cloned().unwrap_or_default();
+
+        // Who it acts for: the requester the apiserver stamped, re-checked
+        // for what the worker re-checks before every step.
+        let who = match self.policy_requester(pol).await {
+            Ok(w) => w,
+            Err((phase, why)) => {
+                if prev["phase"].as_str() != Some(phase) || prev["message"].as_str() != Some(why.as_str()) {
+                    self.event_on("DrivePolicy", pol, "Warning", phase, &why).await;
+                    self.policy_audit(name, &phase.to_lowercase(), &why).await;
+                }
+                let st = json!({ "phase": phase, "message": why, "observedGeneration": generation, "drives": records });
+                return self.put_policy_status(name, &node, st).await;
+            }
+        };
+
+        // Its jobs: each drive's record follows the worker; resume what an
+        // unreachable apiserver or a restart interrupted.
+        let mut resumed = HashSet::new();
+        for (id, r) in records.iter_mut() {
+            let Some(job_id) = r["job"].as_str().map(str::to_string) else { continue };
+            let Some(job) = self.state.worker.job(&job_id) else { continue };
+            if job.drives.iter().any(|d| d.state == DjState::Interrupted) && !spec.suspend && resumed.insert(job_id.clone()) {
+                match crate::worker::resume(&self.state, &job_id, Some(who.clone())).await {
+                    Ok(_) => self.event_on("DrivePolicy", pol, "Normal", "Resumed", &format!("job {job_id} resumed for {}", who.who)).await,
+                    Err(e) => tracing::debug!("kubernetes: DrivePolicy {name}: resume {job_id}: {e}"),
+                }
+            }
+            let job = self.state.worker.job(&job_id).unwrap_or(job);
+            let Some(dj) = job.drives.iter().find(|d| d.drive.0.to_string() == *id) else { continue };
+            let was = r["state"].as_str().unwrap_or("").to_string();
+            let now = dj_word(dj.state);
+            r["state"] = json!(now);
+            r["phase"] = json!(dj.phase);
+            r["progressPct"] = json!(dj.progress_pct);
+            r["reason"] = json!(dj.error);
+            if was != now {
+                match now {
+                    "enrolled" => {
+                        let msg = format!("{} ({}): {} slab, tier {}", dj.name, dj.serial, spec.enroll.role.word(), spec.enroll.tier);
+                        self.event_on("DrivePolicy", pol, "Normal", "Enrolled", &msg).await;
+                        self.policy_audit(name, "enrolled", &msg).await;
+                    }
+                    "failed" | "refused" | "cancelled" => {
+                        let msg = format!("{} ({}): {now} — {}", dj.name, dj.serial, dj.error.clone().unwrap_or_default());
+                        self.event_on("DrivePolicy", pol, "Warning", "Failed", &msg).await;
+                        self.policy_audit(name, now, &msg).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // What to do with each drive it selects.
+        let drives: Vec<crate::drive::Drive> = self.state.inventory.read().await.drives.values().filter(|d| spec.selects_drive(d)).cloned().collect();
+        let selected: HashSet<String> = drives.iter().map(|d| d.id.0.to_string()).collect();
+        // A skip is only worth keeping while the drive is still selected.
+        records.retain(|id, r| selected.contains(id) || r["job"].is_string());
+        let active = self.state.worker.active_drives();
+        let mut run: Vec<(crate::drive::Drive, Vec<crate::worker::Step>)> = vec![];
+        for d in &drives {
+            let id = d.id.0.to_string();
+            let steps = match crate::policy::verdict(spec, d, active.contains(&d.id)) {
+                Verdict::Pass => continue,
+                Verdict::Skip(why) => {
+                    records.insert(id, json!({ "name": d.name, "serial": d.serial, "state": "skipped", "reason": why, "generation": generation }));
+                    continue;
+                }
+                Verdict::Run(steps) => steps,
+            };
+            if crate::policy::retry_blocked(records.get(&id), generation).is_some() {
+                continue;
+            }
+            let key = (name.to_string(), d.id);
+            if records.get(&id).is_some_and(|r| r["state"] == "skipped") && self.probed.get(&key).is_some_and(|t| t.elapsed() < RECHECK_SKIPPED) {
+                continue;
+            }
+            let cx = crate::worker::context(&self.state, d).await;
+            if let Err(why) = crate::worker::guard(d, &steps, false, &cx) {
+                self.probed.insert(key, Instant::now());
+                records.insert(id, json!({ "name": d.name, "serial": d.serial, "state": "skipped", "reason": why, "generation": generation }));
+                continue;
+            }
+            self.probed.remove(&key);
+            run.push((d.clone(), steps));
+        }
+
+        let phase = if spec.suspend {
+            "Suspended"
+        } else if spec.dry_run {
+            "Planned"
+        } else {
+            "Active"
+        };
+        if spec.suspend {
+            // Nothing new starts; what runs finishes.
+        } else if spec.dry_run {
+            for (d, steps) in &run {
+                let plan = steps.iter().map(|s| s.describe()).collect::<Vec<_>>();
+                records.insert(d.id.0.to_string(), json!({ "name": d.name, "serial": d.serial, "state": "planned", "steps": plan, "generation": generation }));
+            }
+        } else {
+            // One job per distinct list of steps (a 520-byte drive gets a
+            // format first; one already at 4096 does not).
+            let mut groups: BTreeMap<String, (Vec<crate::worker::Step>, Vec<crate::drive::Drive>)> = BTreeMap::new();
+            for (d, steps) in run {
+                let k = serde_json::to_string(&steps).unwrap_or_default();
+                groups.entry(k).or_insert_with(|| (steps, vec![])).1.push(d);
+            }
+            for (_, (steps, ds)) in groups {
+                let req = crate::worker::Request {
+                    select: crate::worker::Select { drives: ds.iter().map(|d| d.id.0.to_string()).collect(), ..Default::default() },
+                    steps: steps.clone(),
+                    destroy: vec![],
+                    dry_run: false,
+                };
+                let plan = steps.iter().map(|s| s.describe()).collect::<Vec<_>>();
+                match crate::worker::submit_tagged(&self.state, req, Some(who.clone()), None, Some(name.to_string())).await {
+                    Ok(v) => {
+                        let job_id = v["id"].as_str().unwrap_or("").to_string();
+                        let job = self.state.worker.job(&job_id);
+                        for d in &ds {
+                            let dj = job.as_ref().and_then(|j| j.drives.iter().find(|x| x.drive == d.id));
+                            records.insert(d.id.0.to_string(), json!({
+                                "name": d.name, "serial": d.serial, "job": job_id, "steps": plan, "generation": generation,
+                                "state": dj.map(|x| dj_word(x.state)).unwrap_or("queued"), "reason": dj.and_then(|x| x.error.clone()),
+                            }));
+                        }
+                        let msg = format!("job {job_id} for {}: {} on {}", who.who, plan.join(" → "), ds.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", "));
+                        self.event_on("DrivePolicy", pol, "Normal", "Accepted", &msg).await;
+                        self.policy_audit(name, "accepted", &msg).await;
+                    }
+                    Err(e) => {
+                        for d in &ds {
+                            records.insert(d.id.0.to_string(), json!({ "name": d.name, "serial": d.serial, "state": "refused", "reason": e, "steps": plan, "generation": generation }));
+                        }
+                        self.event_on("DrivePolicy", pol, "Warning", "Refused", &e).await;
+                        self.policy_audit(name, "refused", &e).await;
+                    }
+                }
+            }
+        }
+        let st = json!({
+            "phase": phase,
+            "message": policy_summary(&records),
+            "requester": who.who,
+            "observedGeneration": generation,
+            "drives": records,
+        });
+        self.put_policy_status(name, &node, st).await
+    }
+
+    /// The requester stamped on a policy, re-checked: may they still have
+    /// drives formatted and enrolled (`create driveoperations`, what the
+    /// worker re-checks before each step)?
+    async fn policy_requester(&self, pol: &Value) -> Result<Requester, (&'static str, String)> {
+        let Some(user) = stamped_requester(pol) else {
+            return Err(("Refused", format!("no requester stamped by the apiserver ({REQUESTER}, rustkube#210): the object alone is not trusted")));
+        };
+        let who = Requester::kube(user);
+        let access = Access { resource: "driveoperations", verb: "create", name: None };
+        match self.state.gate.recheck(&who, &access).await {
+            Ok(()) => Ok(who),
+            Err(crate::kubeauth::RecheckError::Denied(why)) => Err(("Refused", why)),
+            Err(crate::kubeauth::RecheckError::Unavailable(why)) => Err(("Pending", format!("cannot re-check {}: {why}", who.who))),
+        }
+    }
+
+    /// Write this node's part of the policy's status, when it changed.
+    async fn put_policy_status(&mut self, name: &str, node: &str, st: Value) -> Result<(), String> {
+        let s = st.to_string();
+        if self.policy_status.get(name) == Some(&s) {
+            return Ok(());
+        }
+        self.kube
+            .merge_patch(&format!("{}/status", path("drivepolicies", Some(name))), &json!({ "status": { "nodes": { node: st } } }))
+            .await
+            .map_err(|e| format!("status: {e}"))?;
+        self.policy_status.insert(name.to_string(), s);
+        Ok(())
+    }
+
+    async fn policy_audit(&self, pol: &str, decision: &str, message: &str) {
+        let access = Access { resource: "drivepolicies", verb: "update", name: Some(pol.to_string()) };
+        let line = crate::kubeauth::audit_line("OBJECT", &path("drivepolicies", Some(pol)), &access, "controller", decision, message, None);
+        self.state.gate.audit(&line);
+        let sev = if matches!(decision, "accepted" | "enrolled") { crate::events::Severity::Info } else { crate::events::Severity::Warning };
+        self.state.events.write().await.push(None, sev, "policy", format!("DrivePolicy {pol}: {decision} — {message}"));
     }
 }
 
@@ -489,6 +803,7 @@ mod tests {
             cancel: false,
             requester: Some(Requester::kube(KubeUser { username: "alice".into(), groups: vec![], uid: None })),
             operation: Some("op1".into()),
+            policy: None,
         }
     }
 

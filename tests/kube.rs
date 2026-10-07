@@ -7,6 +7,9 @@
 //! - Three DriveOperations name this node: one with no requester stamp, one
 //!   stamped bob, one stamped alice (selecting a model no drive has); a
 //!   fourth names another node and must be left alone.
+//! - DrivePolicies (#50) the same way, plus one with a spec that could hurt
+//!   (Invalid), one for another node and one whose nodeSelector this node's
+//!   labels do not match (both untouched).
 
 use std::collections::HashMap;
 use std::net::TcpListener;
@@ -23,6 +26,8 @@ use serde_json::{json, Value};
 #[derive(Default)]
 struct Seen {
     status: HashMap<String, Value>,
+    /// This node's part of each DrivePolicy's status.
+    policies: HashMap<String, Value>,
     events: Vec<Value>,
     reviews: Vec<Value>,
 }
@@ -73,6 +78,34 @@ async fn operations() -> Json<Value> {
     ] }))
 }
 
+fn policy(name: &str, spec: Value, requester: Option<(&str, &str)>) -> Value {
+    let mut meta = json!({ "name": name, "uid": format!("uid-{name}"), "generation": 2 });
+    if let Some((u, g)) = requester {
+        meta["annotations"] = json!({ "storage.storm.io/requester": u, "storage.storm.io/requester-groups": g });
+    }
+    json!({ "apiVersion": "storage.storm.io/v1", "kind": "DrivePolicy", "metadata": meta, "spec": spec })
+}
+
+async fn policies() -> Json<Value> {
+    let alice = Some(("alice", "storage-admins,system:authenticated"));
+    let warm = |nodes: Value| json!({ "nodes": nodes, "drives": { "kinds": ["sas_hdd"] }, "reformat": 4096, "enroll": { "tier": "warm" } });
+    Json(json!({ "kind": "DrivePolicyList", "items": [
+        policy("pol-unstamped", warm(json!(["harness-node"])), None),
+        policy("pol-bob", warm(json!(["harness-node"])), Some(("bob", "system:authenticated"))),
+        policy("pol-alice", warm(json!(["HARNESS-NODE"])), alice),
+        policy("pol-invalid", json!({ "nodes": ["harness-node"], "enroll": { "tier": "lukewarm" } }), alice),
+        policy("pol-elsewhere", warm(json!(["other-node"])), alice),
+        policy("pol-labels", json!({ "nodeSelector": { "matchLabels": { "storm.io/storage-tier": "warm" } }, "enroll": { "tier": "warm" } }), alice),
+    ] }))
+}
+
+async fn policy_status(State(s): State<S>, Path(name): Path<String>, Json(b): Json<Value>) -> Json<Value> {
+    if let Some(mine) = b["status"]["nodes"].get("harness-node") {
+        s.lock().unwrap().policies.insert(name, mine.clone());
+    }
+    Json(json!({}))
+}
+
 async fn op_status(State(s): State<S>, Path(name): Path<String>, Json(b): Json<Value>) -> Json<Value> {
     s.lock().unwrap().status.insert(name, b["status"].clone());
     Json(json!({}))
@@ -91,6 +124,9 @@ async fn stub() -> (String, S) {
         .route("/apis/storage.storm.io/v1/drives", get(|| async { Json(json!({ "items": [] })) }))
         .route("/apis/storage.storm.io/v1/driveoperations", get(operations))
         .route("/apis/storage.storm.io/v1/driveoperations/{name}/status", patch(op_status))
+        .route("/apis/storage.storm.io/v1/drivepolicies", get(policies))
+        .route("/apis/storage.storm.io/v1/drivepolicies/{name}/status", patch(policy_status))
+        .route("/api/v1/nodes/harness-node", get(|| async { Json(json!({ "metadata": { "name": "harness-node", "labels": { "storm.io/storage-tier": "cool" } } })) }))
         .route("/api/v1/namespaces/default/events", post(event))
         .with_state(seen.clone());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -211,8 +247,39 @@ async fn writes_and_operations_are_decided_by_the_apiserver() {
 
     let s = seen.lock().unwrap();
     assert!(s.events.iter().any(|e| e["involvedObject"]["name"] == "by-bob" && e["reason"] == "Refused" && e["type"] == "Warning"));
-    assert!(s.events.iter().all(|e| e["involvedObject"]["kind"] == "DriveOperation"));
+    assert!(s.events.iter().filter(|e| e["involvedObject"]["name"].as_str().is_some_and(|n| n.starts_with("by-") || n == "unstamped")).all(|e| e["involvedObject"]["kind"] == "DriveOperation"));
     drop(s);
+
+    // The policies (#50).
+    let mut pols = HashMap::new();
+    for _ in 0..100 {
+        pols = seen.lock().unwrap().policies.clone();
+        if pols.len() >= 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let pp = |n: &str| (pols[n]["phase"].as_str().unwrap_or("").to_string(), pols[n]["message"].as_str().unwrap_or("").to_string());
+    let (p, m) = pp("pol-unstamped");
+    assert_eq!(p, "Refused");
+    assert!(m.contains("no requester stamped"), "{m}");
+    let (p, m) = pp("pol-bob");
+    assert_eq!(p, "Refused");
+    assert!(m.contains("bob may no longer create driveoperations"), "{m}");
+    let (p, m) = pp("pol-alice");
+    assert_eq!((p.as_str(), m.as_str()), ("Active", "no drive selected here"), "alice's runs; the harness has no drives");
+    assert_eq!(pols["pol-alice"]["requester"], "kubernetes:alice");
+    assert_eq!(pols["pol-alice"]["observedGeneration"], 2);
+    let (p, m) = pp("pol-invalid");
+    assert_eq!(p, "Invalid");
+    assert!(m.contains("one of hot, warm, cool, cold"), "{m}");
+    assert!(!pols.contains_key("pol-elsewhere"), "another node's policy is not ours");
+    assert!(!pols.contains_key("pol-labels"), "this node's labels say cool, the selector wants warm");
+    {
+        let s = seen.lock().unwrap();
+        assert!(s.events.iter().any(|e| e["involvedObject"]["kind"] == "DrivePolicy" && e["involvedObject"]["name"] == "pol-bob" && e["reason"] == "Refused"));
+        assert!(s.events.iter().any(|e| e["involvedObject"]["name"] == "pol-invalid" && e["reason"] == "Invalid"));
+    }
 
     let audit = std::fs::read_to_string(d.dir.join("audit.log")).unwrap();
     assert!(audit.lines().any(|l| l.contains("\"who\":\"kubernetes:bob\"") && l.contains("\"decision\":\"refused\"")), "{audit}");
