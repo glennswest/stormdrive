@@ -501,9 +501,8 @@ kept.
     `restart` warning event names the drive. `draining` (the fleet loop
     resumes it) and `missing` are left alone. `main` awaits all of this
     before the monitor and the API start.
-- **Not built:** ATA SECURITY ERASE (#36). The page submits and follows
-  jobs (Prepare, Jobs, #38); stormconsole sees the `prep` metric in the
-  feed.
+- The page submits and follows jobs (Prepare, Jobs, #38); stormconsole
+  sees the `prep` metric in the feed.
 
 ### Sequencing — Design, not built
 
@@ -512,7 +511,19 @@ There is no `sequence.rs`. What exists today is narrower:
 - one test, one format and one firmware update per drive (the activity
   guard);
 - fleet drives, and a drive `in_use_by` stormblock, update firmware one at a
-  time behind a node-wide lock (`fleet_firmware_lock`).
+  time behind a node-wide lock (`fleet_firmware_lock`);
+- **the redundancy gate (#24).** Under that lock, before the download (mode
+  0x07 activates on the last chunk), `firmware::wait_redundant` asks the
+  engine for the drive's volumes (`GET /api/v1/volumes?placement=true`,
+  `usage::volumes_on`). `redundancy_blocker` refuses while any of them has
+  redundancy other than `healthy`, a rebuild owed or running, or its slab
+  on this drive not `ok`. An engine that reports no placement cannot be
+  checked, so that is a refusal too. It re-checks every 30 s for up to
+  `firmware.redundancy_wait_mins` (30), with the reason in the run's
+  phase, then fails the update "not started — …". After a successful
+  update it waits the same way for the volumes to be redundant again
+  before the lock passes to the next drive, with a warning event if they
+  are not. `force` skips it.
 
 Drains run in stormblock, one per drive, as many as are asked for.
 

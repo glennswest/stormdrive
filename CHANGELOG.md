@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-07
+- **feat:** firmware redundancy gate (#24). A drive that serves data resets only while every volume with legs on it is fully redundant, per the engine's placement (`/api/v1/volumes?placement=true`: redundancy `healthy`, no rebuild, its slab there `ok`). It waits up to `firmware.redundancy_wait_mins` (30) before the download, then again after the update before the lock passes to the next drive. An engine without placement cannot be checked, so that is refused; `force` skips the gate
 - **fix:** a pulled fleet drive is reported `missing` to stormblock (by uuid), so the engine fails its RAID set member and takes a spare. Missing drives were never reported before; the answer's `raid_member` goes into the event (#44)
 - **feat:** fault LEDs for shelf RAID sets (stormblock#252). Each fleet tick reads `GET /api/v1/arrays` and lights the SES fault LED (RQST FAULT) of the bay holding a `failed` member: found by registration uuid, else WWN/serial, else its `shelf=…/bay=…` labels. The LED is cleared once the bay has no failed member; lit bays persist in the inventory; events on both (#44)
 - **docs:** name a stormblock shelf layout after stormdrive's shelf key so the spare pool and the `shelf=` rung agree (#44)

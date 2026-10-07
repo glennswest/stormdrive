@@ -333,7 +333,62 @@ fn run_blocking(drive: &Drive, image: &[u8], chunk_kib: u32, handle: &FwHandle) 
 /// Start an update. Caller has validated the drive (`firmware_blocker`)
 /// and read the image. Fleet drives wait for the node-wide lock so only
 /// one of them is mid-update at a time.
-pub async fn start(state: Arc<AppState>, drive: Drive, image_name: String, image: Arc<Vec<u8>>) -> Arc<FwHandle> {
+/// Why a data-serving drive must not reset now (#24): one of the volumes
+/// with legs on it is not fully redundant — its redundancy is not
+/// `healthy`, a rebuild is owed or running, or its slab on this drive is not
+/// `ok` — so the drive going away for the reset would leave that volume
+/// with one copy fewer than it is meant to have. `None` (no placement from
+/// the engine) cannot be checked.
+pub fn redundancy_blocker(vols: Option<&[crate::usage::DriveVolume]>) -> Option<String> {
+    let Some(vols) = vols else {
+        return Some("the engine reports no volume placement, so the volumes on this drive cannot be checked (force to go ahead)".into());
+    };
+    let bad: Vec<String> = vols
+        .iter()
+        .filter_map(|v| {
+            let mut why = vec![];
+            if let Some(h) = v.health.as_deref().filter(|h| *h != "healthy") {
+                why.push(format!("redundancy {h}"));
+            }
+            if v.rebuild != "none" {
+                why.push(format!("rebuild {}", v.rebuild));
+            }
+            if v.state != "ok" {
+                why.push(format!("its slab here is {}", v.state));
+            }
+            (!why.is_empty()).then(|| format!("{} ({})", v.name, why.join(", ")))
+        })
+        .collect();
+    if bad.is_empty() {
+        return None;
+    }
+    Some(format!("{} volume(s) on it are not fully redundant: {}", bad.len(), bad.join("; ")))
+}
+
+/// The drive's volumes, asked of the engine now (#26's placement listing).
+async fn volumes_now(state: &AppState, drive: &Drive) -> Option<Vec<crate::usage::DriveVolume>> {
+    let all = state.stormblock.list_volumes_placed().await.ok()?;
+    crate::usage::volumes_on(drive, &all)
+}
+
+/// Wait, up to `firmware.redundancy_wait_mins`, until the drive's volumes
+/// are fully redundant. `Err` with the last reason when they are not.
+async fn wait_redundant(state: &AppState, drive: &Drive, handle: &FwHandle, phase: &str) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(state.config.firmware.redundancy_wait_mins * 60);
+    loop {
+        let why = match redundancy_blocker(volumes_now(state, drive).await.as_deref()) {
+            None => return Ok(()),
+            Some(w) => w,
+        };
+        if std::time::Instant::now() >= deadline {
+            return Err(why);
+        }
+        handle.phase(&format!("{phase}: {why}"));
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+
+pub async fn start(state: Arc<AppState>, drive: Drive, image_name: String, image: Arc<Vec<u8>>, force: bool) -> Arc<FwHandle> {
     let handle = Arc::new(FwHandle {
         run: Mutex::new(FwRun {
             drive: drive.id,
@@ -388,18 +443,40 @@ pub async fn start(state: Arc<AppState>, drive: Drive, image_name: String, image
         } else {
             None
         };
+        // The redundancy gate (#24): a drive that serves data resets only
+        // while every volume on it is fully redundant. Checked before the
+        // download, because mode 0x07 activates on the last chunk.
+        let gated = drive.serves_data() && st2.stormblock.enabled() && !force;
+        let pre = if gated { wait_redundant(&st2, &drive, &h2, "waiting").await } else { Ok(()) };
         {
             let mut run = h2.run.lock().unwrap();
             run.state = FwState::Running;
             run.phase = "download".into();
             run.started = SystemTime::now();
         }
-        let h3 = h2.clone();
-        let d2 = drive.clone();
-        let img = image.clone();
-        let result = tokio::task::spawn_blocking(move || run_blocking(&d2, &img, chunk_kib, &h3))
-            .await
-            .unwrap_or_else(|e| Err(format!("firmware task panicked: {e}")));
+        let result = match pre {
+            Err(why) => Err(format!("not started — {why}")),
+            Ok(()) => {
+                let h3 = h2.clone();
+                let d2 = drive.clone();
+                let img = image.clone();
+                tokio::task::spawn_blocking(move || run_blocking(&d2, &img, chunk_kib, &h3))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("firmware task panicked: {e}")))
+            }
+        };
+        // …and the next drive waits until this one's volumes are redundant
+        // again (the drive's legs catch up after its reset).
+        if gated && result.is_ok() {
+            if let Err(why) = wait_redundant(&st2, &drive, &h2, "re-checking").await {
+                st2.events.write().await.push(
+                    Some(drive.id),
+                    Severity::Warning,
+                    "firmware",
+                    format!("{}: updated, but its volumes are still not fully redundant after {} min: {why}", drive.name, st2.config.firmware.redundancy_wait_mins),
+                );
+            }
+        }
         let (word, err, to, reset) = match &result {
             Ok((v, r)) => (FwState::Done, None, Some(v.clone()), *r),
             Err(e) => (FwState::Failed, Some(e.clone()), None, false),
@@ -451,6 +528,40 @@ pub async fn start(state: Arc<AppState>, drive: Drive, image_name: String, image
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vol(name: &str, health: Option<&str>, rebuild: &str, state: &str) -> crate::usage::DriveVolume {
+        crate::usage::DriveVolume {
+            id: name.into(),
+            name: name.into(),
+            kind: "volume".into(),
+            consumer: None,
+            bytes: 1,
+            legs: 1,
+            shared_legs: 0,
+            state: state.into(),
+            rebuild: rebuild.into(),
+            policy: Some("mirror2".into()),
+            health: health.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_drive_resets_only_while_its_volumes_are_fully_redundant() {
+        assert_eq!(redundancy_blocker(Some(&[])), None, "nothing on it");
+        assert_eq!(redundancy_blocker(Some(&[vol("db", Some("healthy"), "none", "ok")])), None);
+        assert_eq!(redundancy_blocker(Some(&[vol("scratch", None, "none", "ok")])), None, "no health said: not a refusal");
+        let why = redundancy_blocker(Some(&[
+            vol("db", Some("healthy"), "none", "ok"),
+            vol("web", Some("degraded"), "running", "ok"),
+            vol("logs", Some("healthy"), "none", "draining"),
+        ]))
+        .unwrap();
+        assert!(why.starts_with("2 volume(s)"), "{why}");
+        assert!(why.contains("web (redundancy degraded, rebuild running)"), "{why}");
+        assert!(why.contains("logs (its slab here is draining)"), "{why}");
+        assert!(!why.contains("db"), "{why}");
+        assert!(redundancy_blocker(None).unwrap().contains("cannot be checked"));
+    }
 
     #[test]
     fn sha256_known_vectors() {

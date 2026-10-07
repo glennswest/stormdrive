@@ -59,6 +59,7 @@ allow_anonymous = false     # TRANSITION: plain HTTP + reads with no credential 
 [firmware]
 chunk_kib = 32              # WRITE BUFFER / NVMe download chunk
 max_image_mib = 256         # largest image PUT /api/v1/firmware/images accepts
+redundancy_wait_mins = 30   # a data-serving drive waits this long for its volumes to be redundant (#24)
 
 [worker]                    # the drive worker (POST /api/v1/worker/jobs)
 max_per_hba = 8             # low-level steps at once behind one HBA

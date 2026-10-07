@@ -46,6 +46,10 @@ pub struct FirmwareConfig {
     pub chunk_kib: u32,
     /// Largest image accepted by `PUT /api/v1/firmware/images/{name}`.
     pub max_image_mib: u32,
+    /// How long a data-serving drive's update waits for its volumes to be
+    /// fully redundant, before the reset and again after it, before the
+    /// next drive (#24).
+    pub redundancy_wait_mins: u64,
 }
 
 impl Default for FirmwareConfig {
@@ -53,6 +57,7 @@ impl Default for FirmwareConfig {
         Self {
             chunk_kib: 32,
             max_image_mib: 256,
+            redundancy_wait_mins: 30,
         }
     }
 }

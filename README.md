@@ -238,6 +238,12 @@ are listed under [Not yet](#not-yet).
   - Out-of-fleet drives update in parallel. Fleet drives and the system disk
     update one at a time.
   - Failing/Failed drives are refused unless `force`.
+  - **Redundancy gate** (#24). A drive that serves data (fleet, or holding a
+    slab) resets only while every volume with legs on it is fully
+    redundant, per the engine's placement: redundancy `healthy`, no rebuild
+    owed or running, its slab there `ok`. It waits up to
+    `firmware.redundancy_wait_mins` (30) before the download, then again
+    after the update before the next drive starts. `force` skips it.
   - **Shelf IOMs** (#35, `src/iomfw.rs`): `POST /api/v1/shelves/{key}/firmware
     {image, allow_path_loss?}` sends an image from the same store through
     SES Download Microcode (page 0x0E, SEND DIAGNOSTIC, mode 0x07), one IOM
@@ -445,6 +451,7 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `kubernetes.interval_secs` | `5` | between controller passes |
 | `firmware.chunk_kib` | `32` | download chunk; raised to the drive's offset boundary |
 | `firmware.max_image_mib` | `256` | largest image upload (also the request body limit) |
+| `firmware.redundancy_wait_mins` | `30` | how long a data-serving drive's update waits for its volumes to be redundant, before the reset and after (#24) |
 | `worker.max_per_hba` | `8` | drive-worker low-level steps at once behind one HBA |
 | `worker.enroll_per_domain` | `1` | drive-worker enrolls at once per failure domain (shelf, else HBA) |
 | `worker.offer` | `true` | mark blank, healthy, out-of-fleet drives `enrolable`, with an event (#42) |
@@ -777,8 +784,8 @@ These are documented as design only; the code does not do them:
   (rustkube#210) has shipped
 - SCSI log sense / ATA SMART for SAS and SATA health (#22); wear-out
   projection (#23)
-- a node-wide sequencer with a stormblock redundancy check before a fleet
-  drive's firmware reset (#24)
+- a node-wide sequencer for every disruptive operation (the firmware
+  redundancy gate itself is #24, built)
 - in the drive worker: ATA SECURITY ERASE for SATA drives without ATA
   Sanitize (#36); the scheduling default is
   your decision (#37)

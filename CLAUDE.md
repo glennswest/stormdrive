@@ -1118,7 +1118,7 @@ with stable id. Found:
 - [x] NVMe: Firmware Image Download (0x11) + Commit (0x10)
 - [x] SCSI: WRITE BUFFER mode 0x0E/0x0F, 0x07 fallback
 - [x] Fleet drives one at a time, health-gated
-- [ ] Redundancy check via stormblock before a fleet drive resets (no
+- [x] Redundancy check via stormblock before a fleet drive resets (no
       rebuild in flight, volume not already degraded) — #24
 - [ ] Shelf (IOM) firmware via SES download microcode page 0x0E — #35 (written, unbuilt)
 

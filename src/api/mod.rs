@@ -1726,7 +1726,7 @@ async fn start_firmware(
     }
     let mut started = Vec::new();
     for d in drives {
-        let h = crate::firmware::start(s.clone(), d, image_name.clone(), image.clone()).await;
+        let h = crate::firmware::start(s.clone(), d, image_name.clone(), image.clone(), force).await;
         let run = h.run.lock().unwrap().clone();
         started.push(serde_json::to_value(run).unwrap_or_default());
     }
