@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-07
+- **fix:** the event log survives a restart (#25). The newest 512 events and the next seq are kept in `<data_dir>/events.json`, written with the inventory when the seq moved. On start they are restored, the sequence continues (a `since=N` poller never sees it go backwards), and a `restart` event says how many were kept. `/api/v1/events` adds `started` and `persisted`
 - **feat:** drive worker `test {kind: smoke|read_scan|destructive_sample}` step: the drive test runs on the server with its verdict in the job, and a failed test stops the drive's later steps (a qualify gate before enroll). Only destructive_sample destroys. A job of only read-only tests may read fleet, reserved and mounted drives, like the single-drive route. The CRD accepts `test` + `kind` (#40)
 - **feat(web):** the bulk smoke test / read scan is one worker job instead of per-drive calls from the browser; Prepare offers a Test step (#40)
 - **feat:** shelf (IOM) firmware via SES Download Microcode, page 0x0E (#35). `POST /api/v1/shelves/{key}/firmware {image, allow_path_loss?}` sends an image from the firmware store one IOM at a time, watching the status page while the IOM restarts. The next IOM waits until the drives' paths are back. It is refused when a drive serving data has no second path, unless `allow_path_loss`. `GET` shows each IOM's revision and the run; each ESP path now carries its `revision` (sysfs `rev`). Never automatic; the write gate treats it as a drive operation

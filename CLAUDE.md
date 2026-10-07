@@ -78,7 +78,7 @@ src/
   poller.rs       health scheduler: per-drive phase, bounded, timed out, costed
   monitor.rs      loop: discovery, SES/HBA scans, threshold engine, trends,
                   usage + reconcile, events
-  events.rs       in-memory event ring (4096, not persisted)
+  events.rs       event ring (4096; newest 512 in events.json, #25)
   topology.rs     location: SAS/SES/mpt3sas bays, NVMe PCIe slots, locate LEDs
   hba.rs          PCIe SCSI HBA inventory (firmware, BIOS, NVDATA versions)
   scsi.rs         raw SCSI over SG_IO: INQUIRY/VPD, READ CAPACITY(16), MODE SENSE/
@@ -1043,7 +1043,8 @@ with stable id. Found:
 - [x] Threshold engine → health state machine, hysteresis
 - [x] Wear trending: persisted samples (on change or daily)
 - [ ] Wear-out projection — #23
-- [x] Event ring + `GET /api/v1/events` (in memory; persistence is #25)
+- [x] Event ring + `GET /api/v1/events` (newest 512 persisted, #25 —
+      written, unbuilt)
 - [x] Prometheus `/metrics` (#18, v0.19.0)
 - [x] `GET /api/v1/summary` for the stormd card
 

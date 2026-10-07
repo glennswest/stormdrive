@@ -6,6 +6,9 @@
 //! The drives do not exist on the build box, so the SCSI format re-attach
 //! cannot open its device and ends `failed` (after a restart) — the path
 //! a drive that went away takes.
+//!
+//! Then #25: a second start on the same data_dir keeps the first run's
+//! events and continues their sequence.
 
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
@@ -50,14 +53,17 @@ async fn a_restart_leaves_no_drive_stuck_busy() {
     let inv = json!({"drives": drives.iter().map(|d| (d["id"].as_str().unwrap().to_string(), d.clone())).collect::<serde_json::Map<_, _>>()});
     std::fs::write(dir.join("inventory.json"), serde_json::to_vec(&inv).unwrap()).unwrap();
     let cfg = dir.join("stormdrive.toml");
-    std::fs::write(&cfg, "node_name = \"harness-node\"\n[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nallow_anonymous = true\n").unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_stormdrive"))
-        .args(["--config", cfg.to_str().unwrap(), "--listen", &format!("127.0.0.1:{port}")])
-        .args(["--data-dir", dir.to_str().unwrap()])
-        .env("RUST_LOG", "warn")
-        .stdout(Stdio::null())
-        .spawn()
-        .expect("start stormdrive");
+    std::fs::write(&cfg, "node_name = \"harness-node\"\n[discovery]\ninterval_secs = 1\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nallow_anonymous = true\n").unwrap();
+    let spawn = || {
+        Command::new(env!("CARGO_BIN_EXE_stormdrive"))
+            .args(["--config", cfg.to_str().unwrap(), "--listen", &format!("127.0.0.1:{port}")])
+            .args(["--data-dir", dir.to_str().unwrap()])
+            .env("RUST_LOG", "warn")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("start stormdrive")
+    };
+    let mut child = spawn();
     let base = format!("http://127.0.0.1:{port}");
 
     let get = |p: String| async move { reqwest::get(p).await.ok()?.json::<Value>().await.ok() };
@@ -99,9 +105,43 @@ async fn a_restart_leaves_no_drive_stuck_busy() {
         .iter()
         .map(|e| (e["drive_id"].as_str().unwrap_or("").to_string(), e["kind"].as_str().unwrap_or("").to_string()))
         .collect();
+
+    // #25: the log survives a restart, and seq goes on from where it was.
+    let before = events["latest_seq"].as_u64().unwrap();
+    let saved_seq = || {
+        std::fs::read(dir.join("events.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| v["next_seq"].as_u64())
+            .unwrap_or(0)
+    };
+    for _ in 0..100 {
+        if saved_seq() > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(saved_seq() > before, "events.json never caught up with seq {before}");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut child = spawn();
+    let mut again = Value::Null;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Some(v) = get(format!("{base}/api/v1/events")).await {
+            again = v;
+            break;
+        }
+    }
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
+    let latest = again["latest_seq"].as_u64().unwrap_or(0);
+    assert!(latest > before, "seq went backwards or did not move: {before} → {latest}");
+    let kept = again["events"].as_array().unwrap();
+    assert!(kept.iter().any(|e| e["seq"].as_u64().is_some_and(|s| s <= before) && e["kind"] == "restart"), "the first run's events are gone");
+    assert!(kept.iter().any(|e| e["kind"] == "restart" && e["message"].as_str().unwrap_or("").contains("kept from before the restart")), "{again}");
+    assert_eq!(again["persisted"], true);
 
     assert!(busy.is_empty(), "still busy after the restart: {busy:?}");
     for id in [NVME_FMT, TEST, FW] {

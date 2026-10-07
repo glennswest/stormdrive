@@ -48,6 +48,9 @@ pub struct AppState {
     /// Latest HBA scan: every PCIe SCSI controller, by PCIe address.
     pub hbas: RwLock<crate::hba::Hbas>,
     pub inventory_path: Option<PathBuf>,
+    /// `<data_dir>/events.json` (#25), and the latest seq written there.
+    pub events_path: Option<PathBuf>,
+    pub events_persisted: tokio::sync::Mutex<u64>,
     pub node_name: String,
     /// Health reads: bounded, timed out, costed (#15).
     pub poller: crate::poller::Sampler,
@@ -63,7 +66,28 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Write the event log's tail when anything was added since the last
+    /// write (#25). Runs with every inventory persist.
+    pub async fn persist_events(&self) {
+        let Some(path) = &self.events_path else { return };
+        let mut written = self.events_persisted.lock().await;
+        let (seq, bytes) = {
+            let log = self.events.read().await;
+            if log.latest_seq() == *written {
+                return;
+            }
+            (log.latest_seq(), log.snapshot(crate::events::PERSIST_TAIL))
+        };
+        let path = path.clone();
+        match tokio::task::spawn_blocking(move || crate::inventory::write_atomic(&path, &bytes)).await {
+            Ok(Ok(())) => *written = seq,
+            Ok(Err(e)) => tracing::error!("events persist failed: {e:#}"),
+            Err(e) => tracing::error!("events persist failed: {e}"),
+        }
+    }
+
     pub async fn persist(&self) {
+        self.persist_events().await;
         let Some(path) = &self.inventory_path else {
             return;
         };
@@ -1835,7 +1859,15 @@ async fn list_events(
     Query(q): Query<SinceQuery>,
 ) -> Json<serde_json::Value> {
     let log = s.events.read().await;
-    Json(json!({ "latest_seq": log.latest_seq(), "events": log.since(q.since) }))
+    let started = log.started().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    Json(json!({
+        "latest_seq": log.latest_seq(),
+        // When this process started (#25): the newest events before it
+        // were restored from events.json, so seq continued.
+        "started": started,
+        "persisted": s.events_path.is_some(),
+        "events": log.since(q.since),
+    }))
 }
 
 /// The stormd dashboard card (RemoteSummary shape). Must answer inside

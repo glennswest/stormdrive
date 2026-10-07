@@ -592,8 +592,15 @@ found no precedent in the ecosystem and fan policy is chassis-specific. The
 scope is your decision (#32).
 
 ### Events (`events.rs`)
-In-memory ring of 4096, each entry `{seq, time, drive_id?, severity, kind,
-message}`. It is **not persisted**: a restart starts it empty at seq 1.
+A ring of 4096, each entry `{seq, time, drive_id?, severity, kind,
+message}`. The newest 512 and the next seq are kept in
+`<data_dir>/events.json` (#25). It is written with the inventory
+(`AppState::persist_events`, tmp + rename, only when the seq moved), so it
+is at most a monitor tick behind. On start, `EventLog::restore` reloads
+them and the sequence continues: a poller holding `since=N` never sees it
+go backwards. A `restart` event says how many were kept. An unreadable
+file starts a new log at seq 1. The response carries `started` (when this
+process began) and `persisted`.
 Served at `GET /api/v1/events?since=<seq>`. The UI polls it. The components
 feed has its own WebSocket (`/ws/components`).
 

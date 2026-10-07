@@ -57,6 +57,23 @@ async fn main() -> anyhow::Result<()> {
         "inventory loaded"
     );
 
+    // The event log's tail from before the restart (#25).
+    let events_path = config.data_dir.as_ref().map(|d| PathBuf::from(d).join("events.json"));
+    let mut events = EventLog::restore(4096, events_path.as_ref().and_then(|p| std::fs::read(p).ok()).as_deref());
+    let kept = events.len();
+    let continued = events.latest_seq();
+    events.push(
+        None,
+        stormdrive::events::Severity::Info,
+        "restart",
+        format!(
+            "stormdrive {} started{}",
+            env!("CARGO_PKG_VERSION"),
+            if kept > 0 { format!(": {kept} event(s) kept from before the restart, seq continues after {continued}") } else { String::new() }
+        ),
+    );
+    let events_seq = if events_path.is_some() { continued } else { 0 };
+
     let node_name = config.node_name();
     let data_dir = config.data_dir.clone();
     // #46: destructive engine verbs fall back to stormdrive's own Kubernetes
@@ -80,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         config,
         inventory: RwLock::new(inventory),
-        events: RwLock::new(EventLog::new(4096)),
+        events: RwLock::new(events),
         stormblock,
         tests: RwLock::new(std::collections::HashMap::new()),
         formats: RwLock::new(std::collections::HashMap::new()),
@@ -90,6 +107,8 @@ async fn main() -> anyhow::Result<()> {
         shelves: RwLock::new(std::collections::BTreeMap::new()),
         hbas: RwLock::new(std::collections::BTreeMap::new()),
         inventory_path,
+        events_path,
+        events_persisted: tokio::sync::Mutex::new(events_seq),
         node_name,
         poller,
         persisted: Default::default(),

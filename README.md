@@ -272,8 +272,10 @@ are listed under [Not yet](#not-yet).
     and a 403 reads "needs storage-admin".
   - It polls every 4 s, and rows are keyed, so a refresh updates cells
     instead of rebuilding the table.
-- **Events** (`src/events.rs`). An in-memory ring of the last 4096 events,
-  numbered by `seq`. It is not persisted, so a restart starts it empty.
+- **Events** (`src/events.rs`). A ring of the last 4096 events, numbered by
+  `seq`. The newest 512 are kept in `<data_dir>/events.json` (#25), so a
+  restart keeps them, the sequence continues, and a `restart` event says
+  so.
 - **Inventory** (`src/inventory.rs`). The drive records, including
   designations, overcommit, the last format and firmware results, and the
   trends, are kept in `<data_dir>/inventory.json`. It is compact JSON,
@@ -655,7 +657,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/topology` | controller → shelf → drive tree, with HBA firmware |
 | `GET /api/v1/hbas` | every PCIe SCSI HBA |
 | `GET /api/v1/placement`, `GET …/placement/{id}` | where each drive is; `generation`, ETag, `?since=` / `If-None-Match` → 304 |
-| `GET /api/v1/events?since=<seq>` | `{latest_seq, events}` |
+| `GET /api/v1/events?since=<seq>` | `{latest_seq, started, persisted, events}`; seq continues across restarts (#25) |
 | `GET /api/v1/components`, `GET /ws/components` | stormview feed (drives, shelves, HBAs); the socket pushes on change, checked every 2 s |
 | `GET /apis/storage.storm.io/v1/{drives,enclosures}[/{name}]` | Kubernetes-shaped `Drive`/`Enclosure`; `?watch=1`, `labelSelector`; `PATCH` a Drive's spec (designation, fleet, drain, locate) |
 
@@ -763,7 +765,7 @@ These are documented as design only; the code does not do them:
   CRDs and gives stormdrive a credential (stormcos#302); the requester stamp
   (rustkube#210) has shipped
 - SCSI log sense / ATA SMART for SAS and SATA health (#22); wear-out
-  projection (#23); persisted events (#25)
+  projection (#23)
 - a node-wide sequencer with a stormblock redundancy check before a fleet
   drive's firmware reset (#24)
 - in the drive worker: ATA SECURITY ERASE for SATA drives without ATA

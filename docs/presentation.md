@@ -246,7 +246,7 @@ health (#19).
 | Drive worker: ATA security erase · scheduling default · a test step | #36 · decision #37 · #40 |
 | Shelf (IOM) firmware · a vendor firmware image source | #35 · #29 |
 | SAS/SATA health: SCSI log sense, ATA SMART | #22 |
-| Wear-out projection · persisted events | #23 · #25 |
+| Wear-out projection | #23 |
 | Firmware redundancy gate (sequencer) | #24 |
 | Thermal actuation · drive crypto · burn-in before joining | your decision: #32 · #33 · #34 |
 
