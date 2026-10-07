@@ -437,6 +437,23 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #23: wear-out projection from the trend (2026-10-07) — IN PROGRESS
+
+The trend (`inventory.trends`: wear_pct on change or daily, 512 samples) is
+recorded and never projected. Design (the issue's, no open decision):
+- `src/wear.rs` (pure): least-squares slope of wear_pct over the last year
+  of samples; nothing with < 2 distinct values, < 7 days, or no wear
+  growth; `WearProjection {rate_pct_per_day, days_left, wear_out_unix,
+  samples, span_days}`; days capped at 100 years
+- kept on the drive (`Drive.wear_projection`), recomputed when a trend
+  sample is recorded; a warning event when `days_left` first drops under
+  `monitor.wear_out_warn_days` (180)
+- on /api/v1/drives, kube Drive status, feed metric `wear-out` (warn under
+  180 d), Prometheus `stormdrive_drive_wear_out_days`, the drive pane
+Steps:
+- [ ] wear.rs + tests · [ ] monitor + outputs · [ ] page, docs, changelog
+- [ ] build VM, release, golden
+
 ### #31: 160-bay NVMe support verified by simulation (owner, 2026-10-07) — DONE (v0.22.1)
 
 Owner: "160 bay, we need to simulate … The 160 bay will consume half a mil
@@ -1117,7 +1134,7 @@ with stable id. Found:
 - [ ] SCSI/SATA: SG_IO log pages (0x2F, 0x0D, 0x11) + ATA SMART — #22
 - [x] Threshold engine → health state machine, hysteresis
 - [x] Wear trending: persisted samples (on change or daily)
-- [ ] Wear-out projection — #23
+- [ ] Wear-out projection — #23 (in progress)
 - [x] Event ring + `GET /api/v1/events` (newest 512 persisted, #25 —
       written, unbuilt)
 - [x] Prometheus `/metrics` (#18, v0.19.0)
