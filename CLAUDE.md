@@ -455,8 +455,14 @@ stormconsole `crates/plugins/stormblock/src/placement.rs`.
       extent map); a failed read keeps the last answer and its time
       (`volumes_collected_at`)
 - [x] feed metric `volumes`; page: the drive pane lists them
-- [x] code + tests + docs pushed (c73abfc); web/dist not rebuilt yet —
-      two sc-build attempts (2026-10-06) got no dev slot in an hour (exit 75)
+- [x] code + tests + docs pushed (c73abfc); sc-build on 35983cb
+      (2026-10-07): 184 unit (5 new in usage) + harness + kube + restart +
+      tls + 9, clippy -D warnings clean. The web half of that job died in
+      npm itself ("Exit handler never called!"); then dev.g8.lo went away
+      (retired, stormcentral#517/#521)
+- [ ] **next:** once sc-build works again (stormcentral#521): `web/rebuild.sh`
+      (JS + page tests incl. the new volumes pane), commit web/dist, v0.22.0,
+      golden, close #26
 - [ ] tests (reduction, absent vs empty, worst state, carry-over), docs
       (README, architecture "Per-drive usage"), changelog, v0.22.0, golden
 
