@@ -452,9 +452,12 @@ From stormcos#48. Auto-enrol is DrivePolicy (#50): stormcos
 - **DrivePolicy `requireDataSlab`**: act only on a node that already has a
   stormblock data slab (#42's "on a node with a data slab")
 Steps:
-- [ ] contents in probe/Observed/Drive · [ ] enrolable (pure) + tick + event
-- [ ] API/kube/feed · [ ] policy requireDataSlab · [ ] tests, docs, changelog
-- [ ] sc-build (blocked: stormcentral#521)
+- [x] contents in probe/Observed/Drive · [x] enrolable (pure) + tick + event
+- [x] API (+ `POST /api/v1/drives/{id}/enroll`), kube, feed (metric +
+      Enrol action) · [x] policy requireDataSlab · [x] tests, docs,
+      changelog (1558a8b)
+- [ ] **next:** sc-build (never run: stormcentral#521), then the release with
+      #26/#50/#36. The page does not show `enrolable` yet (the feed does)
 
 ### #36: ATA SECURITY ERASE for SATA drives without SANITIZE (2026-10-07) — IN PROGRESS
 
