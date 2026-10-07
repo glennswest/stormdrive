@@ -6,7 +6,7 @@
   import { post, del } from './lib/api.js'
   import {
     human, shelfKey, healthDot, canJoin, canLeave, canTest, canDestructive,
-    canFormat, canFirmware, canForget, canLocate, formatTarget,
+    canFormat, canFirmware, canForget, canLocate, formatTarget, volumeLine,
   } from './lib/model.js'
 
   // `onprepare(select, title, preset)` opens the Prepare pane (#38): every
@@ -108,6 +108,18 @@
   {#each u.slabs || [] as s}
     <div class="small dim">{s.role} {s.tier}: {human(s.allocated_bytes)} used of {human(s.total_bytes)}</div>
   {/each}
+  {#if u.volumes}
+    <!-- #26: absent = the engine reports no placement; [] = none here -->
+    <h3>Volumes on this drive ({u.volumes.length})</h3>
+    {#each u.volumes.map(volumeLine) as v}
+      <div class="vol" class:trouble={v.trouble}>
+        <div>{v.name}{#if v.kind} <span class="chip">{v.kind}</span>{/if} <span class="dim">— {v.who}</span></div>
+        <div class="small dim">{v.detail}</div>
+      </div>
+    {:else}
+      <div class="small dim">none</div>
+    {/each}
+  {/if}
 {/if}
 
 <h3>Fleet</h3>
@@ -198,6 +210,8 @@
   .small { font-size: 12px; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
   .chip { padding: 1px 8px; border-radius: 9px; background: var(--accent-bg); color: var(--accent); font-size: 12px; }
+  .vol { margin: 4px 0; }
+  .vol.trouble { color: var(--warn); }
   .msgs { margin: 4px 0; padding-left: 18px; color: var(--warn); font-size: 12px; }
   button.danger { color: var(--error); }
   progress { width: 140px; }

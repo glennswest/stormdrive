@@ -138,6 +138,12 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         if !u.slabs.is_empty() {
             metrics.push(Metric::new("slabs", u.slabs.len().to_string()).tone("muted"));
         }
+        // The volumes with legs here (#26): what goes with this drive. Warn
+        // when one already has a leg in trouble on it.
+        if let Some(vs) = u.volumes.as_ref().filter(|vs| !vs.is_empty()) {
+            let m = Metric::new("volumes", vs.len().to_string());
+            metrics.push(if vs.iter().any(|v| v.state != "ok") { m.tone("warn") } else { m });
+        }
         // What the slabs may still promise (#13): committed and headroom
         // once stormblock reports committed per slab (stormblock#152).
         if let Some(c) = u.committed_bytes {

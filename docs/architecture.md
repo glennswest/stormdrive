@@ -701,9 +701,47 @@ serial, then the `/dev` path.
   A drive with no slab reads as all outside, all free.
 
 `usage` is shown on `/api/v1/drives`, on the kube Drive `status.usage`, in
-the components feed (`used`, `free` (warn under 10 %), `slabs`) and in the
-UI's size column, with the per-slab split on hover. It is not part of the
-placement view: it changes with every write and would churn `generation`.
+the components feed (`used`, `free` (warn under 10 %), `slabs`, `volumes`)
+and in the UI's size column, with the per-slab split on hover. It is not
+part of the placement view: it changes with every write and would churn
+`generation`.
+
+**The volumes on the drive (`usage.volumes`, #26, stormconsole#29).** The
+question is "which volumes am I about to lose if this drive goes". The
+console can read every node's stormdrive, but only its own node's engine
+(each engine is behind that node's token, stormblock#107). stormdrive
+already reads its own engine with the node token, so on the same tick it
+also reads `GET /api/v1/volumes?placement=true` (stormblock v17.1, #136).
+That listing gives, per volume, the slabs and drives holding its legs and
+each slab's state; v18.1 adds the consumer. `usage::volumes_on` turns it
+round to give the volumes per drive, the same reduction as stormconsole's
+`plugins/stormblock/src/placement.rs`:
+
+```json
+"volumes": [{ "id": "…", "name": "db", "kind": "volume",
+              "consumer": { "kind": "PersistentVolumeClaim", "namespace": "shop", "name": "db" },
+              "bytes": 8589934592, "legs": 8, "shared_legs": 0,
+              "state": "ok", "rebuild": "none", "policy": "mirror2", "health": "healthy" }],
+"volumes_collected_at": …
+```
+
+- Drives are matched like slabs: by WWN, then serial, then path. A fabric
+  drive (`nvme-tcp://host/…`) belongs to another node, so it never matches.
+- `bytes` and `legs` are this volume's on this drive. `shared_legs` counts
+  legs shared with another volume (a clone and its golden). `state` is the
+  worst state of the volume's slabs on this drive (`missing` > `failed` >
+  `quarantined` > `draining` > `ok`). `rebuild`, `policy` and `health` are
+  volume-wide. Entries are sorted largest first.
+- **Absent, not empty**, when the engine lists volumes and none carries a
+  placement (an engine before v17.1). A reader can then tell "not reported"
+  from "nothing here". An engine with no volumes gives `[]`.
+- The engine walks every volume's extent map to answer, so this request
+  gets a 30 s timeout instead of the client's 5 s. If the read fails, the
+  last answer is kept along with its `volumes_collected_at`, while the slab
+  numbers are refreshed.
+- Shown in the drive pane ("Volumes on this drive", with any volume in
+  trouble marked), as the feed metric `volumes` (warn when one is in
+  trouble here), and as `stormdrive_drive_volumes` / `_volumes_degraded`.
 
 ### Per-drive overcommit (`overcommit` on every drive, #13)
 "An attribute to drives to allow overcommit or not." The split follows

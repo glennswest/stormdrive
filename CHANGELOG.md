@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-06
+- **feat:** `usage.volumes` on every drive: the volumes with legs on it, from the engine's `GET /api/v1/volumes?placement=true` (stormblock v17.1+). Each entry has id, name, kind, consumer, bytes, legs, shared legs, the worst slab state here, rebuild, policy and health, largest first. It is absent while the engine reports no placement, and a failed read keeps the last answer with `volumes_collected_at`. This lets a console show them for every node (#26, stormconsole#29)
+- **feat:** feed metric `volumes`; Prometheus `stormdrive_drive_volumes`, `stormdrive_drive_volumes_degraded` (#26)
+- **feat(web):** the drive pane lists the volumes on the drive, marking any in trouble there (#26)
+- **docs:** README, architecture "Per-drive usage": the volumes on each drive (#26)
+
 ## [v0.21.1] — 2026-10-06
 
 ### Fixed

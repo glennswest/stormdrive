@@ -240,6 +240,17 @@ fn drive(o: &mut Out, d: &Drive) {
     if let Some(u) = &d.usage {
         o.gauge("stormdrive_drive_used_bytes", "Bytes allocated in stormblock slabs on the drive.", &l, u.used_bytes as f64);
         o.gauge("stormdrive_drive_free_bytes", "Capacity minus used.", &l, u.free_bytes as f64);
+        // Once the engine reports placement (#26): how many volumes lose a
+        // leg if this drive goes, and how many already have one in trouble here.
+        if let Some(vs) = &u.volumes {
+            o.gauge("stormdrive_drive_volumes", "Volumes with legs on the drive (stormblock placement).", &l, vs.len() as f64);
+            o.gauge(
+                "stormdrive_drive_volumes_degraded",
+                "Volumes whose slabs on the drive are draining, quarantined, failed or missing.",
+                &l,
+                vs.iter().filter(|v| v.state != "ok").count() as f64,
+            );
+        }
     }
 }
 

@@ -624,14 +624,24 @@ pub fn replaced_in_bay(
         .map(|d| d.id)
 }
 
-/// Each drive's usage (#12) from stormblock's slab listing. When the
-/// engine does not answer, the last known usage stays, with its time.
+/// Each drive's usage (#12) from stormblock's slab listing, and the volumes
+/// on it (#26) from the engine's placement. When the engine does not answer,
+/// the last known usage stays, with its time; when only the placement read
+/// fails, the last volumes stay, with theirs.
 async fn refresh_usage(state: &Arc<AppState>) -> anyhow::Result<()> {
     let slabs = state.stormblock.list_slabs().await?;
+    let volumes = match state.stormblock.list_volumes_placed().await {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::debug!("stormblock volume placement: {e:#}");
+            None
+        }
+    };
     let now = SystemTime::now();
     let mut inv = state.inventory.write().await;
     for d in inv.drives.values_mut() {
-        d.usage = Some(crate::usage::compute(d, &slabs, now));
+        let last = d.usage.take();
+        d.usage = Some(crate::usage::refresh(d, &slabs, volumes.as_deref(), last, now));
     }
     Ok(())
 }

@@ -393,15 +393,20 @@ impl StormBlockClient {
             .error_for_status()?
             .json()
             .await?;
-        Ok(match v {
-            Value::Array(a) => a,
-            Value::Object(mut o) => o
-                .remove("items")
-                .or_else(|| o.remove("slabs"))
-                .and_then(|d| d.as_array().cloned())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        })
+        Ok(items(v, "slabs"))
+    }
+
+    /// GET /api/v1/volumes?placement=true — every volume with the slabs and
+    /// drives holding it (stormblock v17.1, #136) and its consumer (v18.1).
+    /// The engine walks every volume's extent map for it, so it gets longer
+    /// than the client's 5 s.
+    pub async fn list_volumes_placed(&self) -> anyhow::Result<Vec<Value>> {
+        let req = self
+            .http
+            .get(self.url("/api/v1/volumes?placement=true"))
+            .timeout(Duration::from_secs(30));
+        let v: Value = self.send(req).await?.error_for_status()?.json().await?;
+        Ok(items(v, "volumes"))
     }
 
     /// POST /api/v1/slabs {device_path, tier} — format the drive as a slab.
@@ -494,8 +499,19 @@ impl StormBlockClient {
     }
 }
 
-/// Percent-encode the path-segment characters that matter for a /dev path
-/// used as a URL path parameter.
+/// A listing's entries: a bare array, or `items` (or `alt`) of an object.
+fn items(v: Value, alt: &str) -> Vec<Value> {
+    match v {
+        Value::Array(a) => a,
+        Value::Object(mut o) => o
+            .remove("items")
+            .or_else(|| o.remove(alt))
+            .and_then(|d| d.as_array().cloned())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 fn with_bearer(req: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::RequestBuilder {
     match token {
         Some(t) => req.bearer_auth(t),
@@ -503,6 +519,8 @@ fn with_bearer(req: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::Re
     }
 }
 
+/// Percent-encode the path-segment characters that matter for a /dev path
+/// used as a URL path parameter.
 fn urlencode_path(s: &str) -> String {
     s.replace('%', "%25").replace('/', "%2F")
 }

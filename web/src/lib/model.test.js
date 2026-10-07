@@ -2,6 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  volumeLine,
   groupDrives,
   groupIdOf,
   selectedDrives,
@@ -93,4 +94,23 @@ test('eligibility mirrors the server guards', () => {
   assert.equal(healthDot(drive({ activity: 'missing' })), 'error')
   assert.equal(healthDot(drive({ health: { status: 'warning' } })), 'warn')
   assert.equal(human(1536), '1.5 KiB')
+})
+
+test('a volume on a drive reads as what it is, who uses it, and how it stands here', () => {
+  const ok = volumeLine({
+    id: 'v1', name: 'db', kind: 'volume', bytes: 8 * 1024 ** 3, legs: 8, shared_legs: 3,
+    consumer: { kind: 'PersistentVolumeClaim', namespace: 'shop', name: 'db' },
+    state: 'ok', rebuild: 'none', policy: 'mirror2', health: 'healthy',
+  })
+  assert.equal(ok.who, 'PersistentVolumeClaim shop/db')
+  assert.equal(ok.kind, '')
+  assert.equal(ok.detail, '8.0 GiB · 8 legs, 3 shared · mirror2')
+  assert.equal(ok.trouble, false)
+
+  const bad = volumeLine({ id: 'g1', name: '', kind: 'golden', bytes: 1024, legs: 1, state: 'failed', rebuild: 'needed', policy: 'mirror2', health: 'degraded' })
+  assert.equal(bad.name, 'g1')
+  assert.equal(bad.who, 'unclaimed')
+  assert.equal(bad.kind, 'golden')
+  assert.equal(bad.detail, '1.0 KiB · 1 leg · mirror2 degraded · here: failed · rebuild needed')
+  assert.equal(bad.trouble, true)
 })

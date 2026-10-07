@@ -24,6 +24,15 @@
 //!   slabs, as stormblock reports it per slab (`committed_bytes`). Null
 //!   until the engine reports it — stormblock#152 adds it.
 //! - `headroom` = promisable − committed: what a new claim can still get.
+//!
+//! And which volumes the drive holds (#26, stormconsole#29): "which volumes
+//! am I about to lose if this drive goes". stormblock v17.1 answers it per
+//! volume (`GET /api/v1/volumes?placement=true`: the slabs and drives
+//! holding each leg, each slab's state); [`volumes_on`] turns that inside
+//! out for one drive, the same reduction as stormconsole's
+//! `plugins/stormblock/src/placement.rs`. A console reads every node's
+//! stormdrive but only its own node's engine, so this is how it sees them
+//! everywhere.
 
 use crate::drive::{Drive, Overcommit};
 use serde::{Deserialize, Serialize};
@@ -68,6 +77,53 @@ pub struct Usage {
     pub headroom_bytes: Option<u64>,
     /// When stormblock last answered for this drive.
     pub collected_at: SystemTime,
+    /// The volumes with legs on this drive, largest first (#26). Absent —
+    /// not empty — while the engine reports no placement (before v17.1) or
+    /// has not answered yet: "not reported" is not "nothing here".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volumes: Option<Vec<DriveVolume>>,
+    /// When the engine's volume placement last answered. A failed read keeps
+    /// the last answer, and this says how old it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volumes_collected_at: Option<SystemTime>,
+}
+
+/// Who uses a volume, as the engine reports it (stormblock v18.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Consumer {
+    /// `PersistentVolumeClaim`, `VirtualMachineInstance`, `Mount`, …
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
+    pub name: String,
+}
+
+/// One volume with legs on a drive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriveVolume {
+    pub id: String,
+    pub name: String,
+    /// The engine's word: `volume`, `golden`, `blank`, `snapshot`, …
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer: Option<Consumer>,
+    /// The volume's bytes on this drive.
+    pub bytes: u64,
+    /// Its data legs on this drive.
+    pub legs: u64,
+    /// Of those, legs shared with another volume (a clone and its golden):
+    /// here, but not this volume's alone to lose.
+    pub shared_legs: u64,
+    /// The worst state of its slabs on this drive: `ok`, `draining`,
+    /// `quarantined`, `failed` or `missing`.
+    pub state: String,
+    /// `none`, `needed`, `queued` or `running`.
+    pub rebuild: String,
+    /// The redundancy policy (`mirror2`, …) and its health, volume-wide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
 }
 
 fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -92,6 +148,72 @@ pub fn slab_on(slab: &Value, d: &Drive) -> bool {
     }
     let path = str_of(r, "path");
     !path.is_empty() && (path == d.path || d.paths.iter().any(|p| p == path))
+}
+
+/// A placement entry (a drive or a slab of a volume) on this drive. A
+/// fabric drive (`nvme-tcp://host/…`) is another node's, whatever its serial.
+fn placed_on(entry: &Value, d: &Drive) -> bool {
+    let path = entry.get("drive").map(|r| str_of(r, "path")).unwrap_or_default();
+    !path.contains("://") && slab_on(entry, d)
+}
+
+/// The worst first: one failed leg here is the fact that matters.
+const WORST: [&str; 4] = ["missing", "failed", "quarantined", "draining"];
+
+/// The volumes with legs on this drive, out of the engine's listing with
+/// placement, largest first. None when no volume carries a placement (an
+/// engine before v17.1); an engine with no volumes at all is an empty list.
+pub fn volumes_on(d: &Drive, volumes: &[Value]) -> Option<Vec<DriveVolume>> {
+    let placed: Vec<(&Value, &Value)> = volumes
+        .iter()
+        .filter_map(|v| v.get("placement").filter(|p| p.is_object()).map(|p| (v, p)))
+        .collect();
+    if placed.is_empty() && !volumes.is_empty() {
+        return None;
+    }
+    let list = |p: &'_ Value, k: &str| -> Vec<Value> {
+        p.get(k).and_then(Value::as_array).cloned().unwrap_or_default()
+    };
+    let mut out = Vec::new();
+    for (v, p) in placed {
+        let here: Vec<Value> = list(p, "drives").into_iter().filter(|e| placed_on(e, d)).collect();
+        if here.is_empty() {
+            continue;
+        }
+        let slabs: Vec<Value> = list(p, "slabs").into_iter().filter(|s| placed_on(s, d)).collect();
+        let state = WORST
+            .into_iter()
+            .find(|w| slabs.iter().any(|s| str_of(s, "state") == *w))
+            .unwrap_or("ok");
+        let id = str_of(v, "id").to_string();
+        let name = Some(str_of(v, "name")).filter(|n| !n.is_empty()).map_or_else(|| id.clone(), str::to_string);
+        let consumer = v.get("consumer").and_then(|c| {
+            let (kind, name) = (str_of(c, "kind"), str_of(c, "name"));
+            (!kind.is_empty() && !name.is_empty()).then(|| Consumer {
+                kind: kind.to_string(),
+                namespace: str_of(c, "namespace").to_string(),
+                name: name.to_string(),
+            })
+        });
+        let legs = p.get("legs");
+        let word = |k: &str| legs.map(|l| str_of(l, k)).filter(|s| !s.is_empty()).map(str::to_string);
+        out.push(DriveVolume {
+            id,
+            name,
+            kind: Some(str_of(v, "kind")).filter(|k| !k.is_empty()).unwrap_or("volume").to_string(),
+            consumer,
+            bytes: here.iter().map(|e| u64_of(e, "bytes")).sum(),
+            legs: here.iter().map(|e| u64_of(e, "legs")).sum(),
+            shared_legs: slabs.iter().map(|s| u64_of(s, "shared_legs")).sum(),
+            state: state.to_string(),
+            rebuild: Some(str_of(p, "rebuild")).filter(|r| !r.is_empty()).unwrap_or("none").to_string(),
+            policy: word("policy"),
+            health: word("health"),
+        });
+    }
+    // Largest first: the volume that loses most when this drive goes.
+    out.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.id.cmp(&b.id)));
+    Some(out)
 }
 
 fn slab_usage(slab: &Value) -> SlabUsage {
@@ -136,8 +258,30 @@ pub fn compute(d: &Drive, slabs: &[Value], now: SystemTime) -> Usage {
         committed_bytes: committed,
         headroom_bytes: None,
         collected_at: now,
+        volumes: None,
+        volumes_collected_at: None,
     }
     .priced(d.overcommit)
+}
+
+/// One monitor tick's usage: from the slab listing, with the volumes from
+/// the placement listing when it answered (`volumes`), else the last
+/// answer's volumes and their time.
+pub fn refresh(d: &Drive, slabs: &[Value], volumes: Option<&[Value]>, last: Option<Usage>, now: SystemTime) -> Usage {
+    let mut u = compute(d, slabs, now);
+    match volumes {
+        Some(vs) => {
+            u.volumes = volumes_on(d, vs);
+            u.volumes_collected_at = u.volumes.as_ref().map(|_| now);
+        }
+        None => {
+            if let Some(last) = last {
+                u.volumes = last.volumes;
+                u.volumes_collected_at = last.volumes_collected_at;
+            }
+        }
+    }
+    u
 }
 
 impl Usage {
@@ -245,6 +389,106 @@ mod tests {
         assert!(slab_on(&slab("s", "data", 1, 0, json!({ "serial": "", "path": "/dev/sdc" })), &c));
         assert!(!slab_on(&slab("s", "data", 1, 0, json!({ "serial": "S2", "path": "/dev/sdc" })), &c));
         assert!(!slab_on(&json!({ "id": "pre-v17.1, no drive" }), &c));
+    }
+
+    /// A volume as stormblock v17.1+ lists it with `?placement=true`.
+    fn vol(id: &str, bytes: u64, drives: Value, slabs: Value) -> Value {
+        json!({ "id": id, "name": format!("{id}-name"), "kind": "volume", "in_use": true,
+                "consumer": { "kind": "PersistentVolumeClaim", "namespace": "shop", "name": "db" },
+                "size_bytes": bytes,
+                "placement": { "drives": drives, "slabs": slabs, "rebuild": "none",
+                               "legs": { "policy": "mirror2", "health": "healthy", "extents": 4,
+                                         "expected": 8, "missing": 0, "unreadable": 0, "failed_slabs": [] } } })
+    }
+
+    #[test]
+    fn each_drive_lists_the_volumes_on_it_largest_first() {
+        let a = drive("SN1", Some("naa.1"), "/dev/sda", 100 * SLOT);
+        let b = drive("SN2", None, "/dev/sdb", 100 * SLOT);
+        let sn1 = json!({ "serial": "SN1", "wwn": "naa.1", "model": "M", "path": "/dev/sda" });
+        let sn2 = json!({ "serial": "SN2", "model": "M", "path": "/dev/sdb" });
+        let big = vol(
+            "big",
+            8 * SLOT,
+            json!([{ "drive": sn1, "node": "n1", "slabs": 1, "legs": 8, "bytes": 8 * SLOT },
+                   { "drive": sn2, "node": "n1", "slabs": 1, "legs": 8, "bytes": 8 * SLOT }]),
+            json!([{ "id": "s1", "drive": sn1, "state": "ok", "legs": 8, "shared_legs": 3, "bytes": 8 * SLOT },
+                   { "id": "s2", "drive": sn2, "state": "draining", "legs": 8, "shared_legs": 0, "bytes": 8 * SLOT,
+                     "drain": { "state": "running", "moved": 1, "remaining": 7, "failed": 0 } }]),
+        );
+        let mut small = vol(
+            "small",
+            SLOT,
+            json!([{ "drive": sn1, "node": "n1", "slabs": 1, "legs": 1, "bytes": SLOT }]),
+            json!([{ "id": "s1", "drive": sn1, "state": "ok", "legs": 1, "shared_legs": 0, "bytes": SLOT }]),
+        );
+        small.as_object_mut().unwrap().remove("consumer");
+        let vs = [small, big];
+
+        let on_a = volumes_on(&a, &vs).unwrap();
+        assert_eq!(on_a.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(), ["big", "small"]);
+        let v = &on_a[0];
+        assert_eq!((v.bytes, v.legs, v.shared_legs), (8 * SLOT, 8, 3));
+        assert_eq!((v.name.as_str(), v.kind.as_str(), v.state.as_str()), ("big-name", "volume", "ok"));
+        assert_eq!(v.consumer.as_ref().map(|c| (c.kind.as_str(), c.namespace.as_str(), c.name.as_str())),
+                   Some(("PersistentVolumeClaim", "shop", "db")));
+        assert_eq!((v.policy.as_deref(), v.health.as_deref(), v.rebuild.as_str()), (Some("mirror2"), Some("healthy"), "none"));
+        assert_eq!(on_a[1].consumer, None);
+
+        let on_b = volumes_on(&b, &vs).unwrap();
+        assert_eq!(on_b.len(), 1);
+        assert_eq!(on_b[0].state, "draining");
+
+        let elsewhere = drive("SN3", None, "/dev/sdc", 100 * SLOT);
+        assert_eq!(volumes_on(&elsewhere, &vs), Some(vec![]), "placement known, nothing here");
+    }
+
+    #[test]
+    fn the_worst_slab_state_on_the_drive_is_the_volumes_state_there() {
+        let d = drive("SN1", None, "/dev/sda", 100 * SLOT);
+        let r = json!({ "serial": "SN1", "path": "/dev/sda" });
+        let v = vol(
+            "v",
+            2,
+            json!([{ "drive": r, "legs": 2, "bytes": 2 }]),
+            json!([{ "id": "a", "drive": r, "state": "quarantined" }, { "id": "b", "drive": r, "state": "failed" }]),
+        );
+        assert_eq!(volumes_on(&d, &[v]).unwrap()[0].state, "failed");
+    }
+
+    #[test]
+    fn no_placement_is_not_reported_and_no_volumes_is_empty() {
+        let d = drive("SN1", None, "/dev/sda", 100 * SLOT);
+        assert_eq!(volumes_on(&d, &[json!({ "id": "v1", "kind": "volume" })]), None, "engine before v17.1");
+        assert_eq!(volumes_on(&d, &[]), Some(vec![]), "an engine with no volumes");
+        let u = compute(&d, &[], SystemTime::UNIX_EPOCH);
+        let j = serde_json::to_value(&u).unwrap();
+        assert!(j.get("volumes").is_none(), "absent, not empty, until reported");
+    }
+
+    #[test]
+    fn a_failed_placement_read_keeps_the_last_volumes_and_their_time() {
+        let d = drive("SN1", None, "/dev/sda", 100 * SLOT);
+        let r = json!({ "serial": "SN1", "path": "/dev/sda" });
+        let vs = [vol("v", 5, json!([{ "drive": r, "legs": 1, "bytes": 5 }]), json!([]))];
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + std::time::Duration::from_secs(60);
+        let first = refresh(&d, &[], Some(&vs), None, t0);
+        assert_eq!(first.volumes.as_ref().map(Vec::len), Some(1));
+        assert_eq!(first.volumes_collected_at, Some(t0));
+        let kept = refresh(&d, &[], None, Some(first.clone()), t1);
+        assert_eq!((kept.collected_at, kept.volumes_collected_at), (t1, Some(t0)), "the slabs are new, the volumes are not");
+        assert_eq!(kept.volumes, first.volumes);
+        let old_engine = refresh(&d, &[], Some(&[json!({ "id": "v" })]), Some(first), t1);
+        assert_eq!((old_engine.volumes, old_engine.volumes_collected_at), (None, None));
+    }
+
+    #[test]
+    fn a_fabric_drive_with_the_same_serial_is_another_nodes() {
+        let d = drive("SN1", None, "/dev/nvme0n1", 100 * SLOT);
+        let remote = json!({ "serial": "SN1", "path": "nvme-tcp://10.0.0.2:4420/nqn.x" });
+        let v = vol("v", 1, json!([{ "drive": remote, "legs": 1, "bytes": 1 }]), json!([]));
+        assert_eq!(volumes_on(&d, &[v]), Some(vec![]));
     }
 
     #[test]

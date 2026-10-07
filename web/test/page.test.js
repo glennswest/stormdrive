@@ -40,6 +40,16 @@ function fixture() {
       name: `nvme${slot}n1`, kind: 'nvme_ssd', model: 'Micron 7450',
       location: { pcie_addr: `10000:${slot.toString(16)}:00.0`, pcie_slot: String(slot), bay: slot },
       health: { status: slot === 7 ? 'warning' : 'good', temperature_c: 40, wear_pct: 3, media_errors: 0, messages: [] },
+      // #26: the engine's placement says which volumes have legs here.
+      ...(slot === 1 ? { usage: {
+        capacity_bytes: 1.2e12, used_bytes: 9 * 2 ** 30, free_bytes: 1.2e12 - 9 * 2 ** 30, outside_slabs_bytes: 2 ** 30,
+        slabs: [{ id: 's1', role: 'data', tier: 'hot', total_bytes: 1.1e12, allocated_bytes: 9 * 2 ** 30 }],
+        volumes: [
+          { id: 'v1', name: 'db', kind: 'volume', bytes: 8 * 2 ** 30, legs: 8, shared_legs: 0, state: 'ok', rebuild: 'none',
+            consumer: { kind: 'PersistentVolumeClaim', namespace: 'shop', name: 'db' }, policy: 'mirror2', health: 'healthy' },
+          { id: 'g1', name: 'ubuntu', kind: 'golden', bytes: 2 ** 30, legs: 1, shared_legs: 1, state: 'draining', rebuild: 'none' },
+        ],
+      } } : {}),
     }))
   }
   const report = (key) => ({
@@ -124,6 +134,12 @@ test('the built page renders a 212-drive node grouped, and stays put across a re
   firstRow.click()
   await tick()
   assert.match(doc.querySelector('aside.pane').textContent, /nvme1n1[\s\S]*Micron 7450[\s\S]*PCIe slot 1/)
+  // …with the volumes on it (#26), largest first, the one in trouble marked.
+  const vols = [...doc.querySelectorAll('aside.pane .vol')]
+  assert.match(doc.querySelector('aside.pane').textContent, /Volumes on this drive \(2\)/)
+  assert.match(vols[0].textContent, /db[\s\S]*PersistentVolumeClaim shop\/db[\s\S]*8\.0 GiB · 8 legs · mirror2/)
+  assert.match(vols[1].textContent, /ubuntu[\s\S]*golden[\s\S]*unclaimed[\s\S]*here: draining/)
+  assert.ok(vols[1].classList.contains('trouble') && !vols[0].classList.contains('trouble'))
 
   // The 4 s refresh diffs keyed rows: the same row element survives.
   const before = calls.filter((c) => c.endsWith('api/v1/drives')).length

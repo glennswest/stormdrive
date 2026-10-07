@@ -244,3 +244,23 @@ export function selectedDrives(selected, groups) {
   }
   return ids
 }
+
+// The volumes with legs on a drive (#26), one line each: what it is, who
+// uses it, what of it is here, and how it stands. `trouble` = a leg here is
+// draining, quarantined, failed or missing, or the volume owes a rebuild.
+export function volumeLine(v) {
+  const c = v.consumer
+  const who = c ? `${c.kind} ${c.namespace ? c.namespace + '/' : ''}${c.name}` : 'unclaimed'
+  const shared = v.shared_legs ? `, ${v.shared_legs} shared` : ''
+  const bits = [`${human(v.bytes)} · ${v.legs} leg${v.legs === 1 ? '' : 's'}${shared}`]
+  if (v.policy) bits.push(v.health && v.health !== 'healthy' ? `${v.policy} ${v.health}` : v.policy)
+  if (v.state && v.state !== 'ok') bits.push(`here: ${v.state}`)
+  if (v.rebuild && v.rebuild !== 'none') bits.push(`rebuild ${v.rebuild}`)
+  return {
+    name: v.name || v.id,
+    kind: v.kind === 'volume' ? '' : v.kind,
+    who,
+    detail: bits.join(' · '),
+    trouble: (v.state && v.state !== 'ok') || (v.rebuild && v.rebuild !== 'none'),
+  }
+}

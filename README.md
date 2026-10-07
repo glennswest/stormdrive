@@ -115,6 +115,13 @@ are listed under [Not yet](#not-yet).
 - **Usage** (`src/usage.rs`). Every drive carries `usage`: capacity, its
   stormblock slabs, used, free, and what lies outside the slabs. It is joined
   from stormblock's `/api/v1/slabs` by WWN, else serial, else path.
+  `usage.volumes` lists the volumes with legs on the drive, largest first
+  (#26), from the engine's `GET /api/v1/volumes?placement=true`
+  (stormblock v17.1+). Each entry has id, name, kind, consumer, bytes, legs,
+  shared legs, the worst slab state on this drive, rebuild, policy and
+  health. The field is absent while the engine reports no placement. A
+  console reads this from every node's :9092, including nodes whose engine
+  it cannot reach.
 - **Overcommit.** Each drive has an `overcommit {enabled, ratio}` setting.
   It is off by default, and the ratio can be 1.0 to 16.0. stormdrive pushes
   it to stormblock. stormblock enforces it (stormblock#152, not on
@@ -594,6 +601,7 @@ one fits. Every drive series carries `device`, `serial`, `model`,
 | `stormdrive_drive_unsafe_shutdowns_total` | NVMe |
 | `stormdrive_drive_last_poll_timestamp_seconds` | last health poll the drive answered |
 | `stormdrive_drive_used_bytes`, `_free_bytes` | from stormblock's slabs (#12) |
+| `stormdrive_drive_volumes`, `_volumes_degraded` | volumes with legs on the drive, and those whose slabs here are draining/quarantined/failed/missing (#26); absent until the engine reports placement |
 | `stormdrive_enclosure_info`, `_ok`, `_last_scan_timestamp_seconds` | per shelf |
 | `stormdrive_enclosure_element_ok`, `_temperature_celsius`, `_fan_rpm`, `_volts`, `_amps` `{type,index}` | per installed SES element |
 | `stormdrive_poll_*`, `stormdrive_discovery_seconds`, `stormdrive_build_info` | the daemon |
