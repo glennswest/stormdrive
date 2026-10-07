@@ -744,7 +744,7 @@ mod tests {
         // on without setting it again (also when locked).
         let set = AtaSecurity { enabled: true, locked: true, ..ok };
         assert!(plan_security_erase(&set, false, None).unwrap_err().contains("not by this job"));
-        assert_eq!(plan_security_erase(&set, true, None).unwrap().set_password, false);
+        assert!(!plan_security_erase(&set, true, None).unwrap().set_password);
     }
 
     #[test]

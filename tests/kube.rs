@@ -245,10 +245,11 @@ async fn writes_and_operations_are_decided_by_the_apiserver() {
     assert_eq!(statuses["by-alice"]["requester"], "kubernetes:alice");
     assert!(!statuses.contains_key("elsewhere"), "another node's operation is not ours");
 
-    let s = seen.lock().unwrap();
-    assert!(s.events.iter().any(|e| e["involvedObject"]["name"] == "by-bob" && e["reason"] == "Refused" && e["type"] == "Warning"));
-    assert!(s.events.iter().filter(|e| e["involvedObject"]["name"].as_str().is_some_and(|n| n.starts_with("by-") || n == "unstamped")).all(|e| e["involvedObject"]["kind"] == "DriveOperation"));
-    drop(s);
+    {
+        let s = seen.lock().unwrap();
+        assert!(s.events.iter().any(|e| e["involvedObject"]["name"] == "by-bob" && e["reason"] == "Refused" && e["type"] == "Warning"));
+        assert!(s.events.iter().filter(|e| e["involvedObject"]["name"].as_str().is_some_and(|n| n.starts_with("by-") || n == "unstamped")).all(|e| e["involvedObject"]["kind"] == "DriveOperation"));
+    }
 
     // The policies (#50).
     let mut pols = HashMap::new();
