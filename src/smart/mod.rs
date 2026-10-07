@@ -22,6 +22,25 @@ pub struct Sample {
     pub messages: Vec<String>,
     /// The rest of the NVMe SMART/Health log (None for SAS/SATA).
     pub nvme: Option<NvmeCounters>,
+    /// What a SAS/SATA drive says itself (#22): LOG SENSE or ATA SMART.
+    pub smart: Option<SmartCounters>,
+}
+
+/// A SAS/SATA drive's own health (#22). The sector counters come from ATA
+/// SMART (None from LOG SENSE, which this does not read them from).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SmartCounters {
+    /// `log_sense` or `ata_smart`.
+    pub source: String,
+    /// The drive predicts its own failure: why, in its words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reallocated_sectors: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_sectors: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_uncorrectable: Option<u64>,
 }
 
 /// NVMe SMART/Health log (0x02) counters beyond what health decides on;
@@ -43,7 +62,7 @@ pub struct NvmeCounters {
 pub fn collect(drive: &Drive) -> Sample {
     match drive.kind {
         DriveKind::NvmeSsd => nvme::collect(&drive.path, &drive.name),
-        _ => scsi::collect(&drive.name),
+        _ => scsi::collect(&drive.name, drive.kind.is_ssd()),
     }
 }
 

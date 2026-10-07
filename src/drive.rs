@@ -362,6 +362,9 @@ pub struct HealthReport {
     /// NVMe log 0x02 counters (#18); absent for SAS/SATA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nvme: Option<crate::smart::NvmeCounters>,
+    /// What a SAS/SATA drive says itself (#22): LOG SENSE / ATA SMART.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smart: Option<crate::smart::SmartCounters>,
 }
 
 impl HealthReport {

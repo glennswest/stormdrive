@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-07
+- **feat:** SAS/SATA health from the drive itself (#22). SAS: LOG SENSE Informational Exceptions (0x2F: the drive's own failure prediction, temperature), Temperature (0x0D) and on SSDs Solid State Media (0x11 → `wear_pct`). SATA (vendor `ATA`, also behind SAS HBAs): ATA SMART READ DATA + THRESHOLDS → reallocated / pending / offline-uncorrectable sectors, temperature, power-on hours, SSD wear; a pre-fail attribute at or below its threshold is a predicted failure. A predicted failure makes the drive `failing`, pending or offline-uncorrectable sectors `warning`. Shown in `health.smart` and Prometheus (`stormdrive_drive_predicted_failure`, `_reallocated_sectors`, `_pending_sectors`, `_offline_uncorrectable_sectors`)
+
 ## [v0.23.0] — 2026-10-07
 
 ### Added

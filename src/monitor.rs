@@ -42,6 +42,18 @@ pub fn evaluate(
         );
         return (status, why);
     }
+    // The drive's own verdict and sector counters (SAS/SATA, #22).
+    if let Some(sm) = &s.smart {
+        if let Some(why_failing) = &sm.predicted_failure {
+            worsen(&mut status, &mut why, HealthStatus::Failing, why_failing.clone());
+        }
+        if let Some(n) = sm.pending_sectors.filter(|n| *n > 0) {
+            worsen(&mut status, &mut why, HealthStatus::Warning, format!("{n} sector(s) pending reallocation"));
+        }
+        if let Some(n) = sm.offline_uncorrectable.filter(|n| *n > 0) {
+            worsen(&mut status, &mut why, HealthStatus::Warning, format!("{n} offline-uncorrectable sector(s)"));
+        }
+    }
     if s.critical_warning & crit::READ_ONLY != 0 {
         worsen(&mut status, &mut why, HealthStatus::Failed, "NVMe: media in read-only mode".into());
     }
@@ -305,6 +317,7 @@ async fn apply_outcome(
             messages: why.clone(),
             collected_at: Some(SystemTime::now()),
             nvme: sample.nvme,
+            smart: sample.smart.clone(),
         };
     } else {
         // No answer: the last readings stand; only the verdict and the
@@ -759,6 +772,22 @@ mod tests {
             kernel_ok: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_sas_or_sata_drive_can_fail_on_its_own_word() {
+        let cfg = MonitorConfig::default();
+        let smart = |c: crate::smart::SmartCounters| Sample { smart: Some(c), ..good_sample() };
+        let clean = crate::smart::SmartCounters { source: "ata_smart".into(), reallocated_sectors: Some(3), pending_sectors: Some(0), offline_uncorrectable: Some(0), predicted_failure: None };
+        assert_eq!(evaluate(&cfg, &smart(clean.clone()), None).0, HealthStatus::Good, "a few reallocated sectors alone: good");
+        let pending = crate::smart::SmartCounters { pending_sectors: Some(8), ..clean.clone() };
+        let (st, why) = evaluate(&cfg, &smart(pending), None);
+        assert_eq!(st, HealthStatus::Warning);
+        assert!(why.iter().any(|w| w.contains("8 sector(s) pending")), "{why:?}");
+        let predicted = crate::smart::SmartCounters { predicted_failure: Some("the drive predicts its own failure (SMART threshold exceeded, ASC 5Dh/10h)".into()), source: "log_sense".into(), ..Default::default() };
+        let (st, why) = evaluate(&cfg, &smart(predicted), None);
+        assert_eq!(st, HealthStatus::Failing);
+        assert!(why.iter().any(|w| w.contains("5Dh")), "{why:?}");
     }
 
     #[test]

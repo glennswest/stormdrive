@@ -247,14 +247,27 @@ path failover is actually needed.
   percentage used, POH, unsafe shutdowns, media errors, error-log count.
   (Reference implementation: stormblock `main.rs:2342`, which decodes the
   same page for must-gather.)
-- **SAS/SATA** (`smart/scsi.rs`): sysfs only — `device/state`,
+- **SAS/SATA** (`smart/scsi.rs`). From sysfs: `device/state`,
   `device/ioerr_cnt` (commands that failed, which the feed and UI label "io
   errs", not media errors) and the hwmon temperature (drivetemp or the SAS
-  driver). No command goes to the drive.
-- **Design — not built:** SG_IO log sense for SAS/SATA: Informational
-  Exceptions (0x2F — the drive's own predicted-failure verdict), Temperature
-  (0x0D), Solid State Media (0x11 — endurance used), and ATA SMART READ DATA
-  passthrough for SATA behind SAS HBAs.
+  driver). Then the drive itself (#22), over SG_IO on its sg node (else
+  `/dev/<name>`), with a 10 s timeout per command:
+  - **not `ATA`:** LOG SENSE (cumulative) of Informational Exceptions
+    (0x2F). Parameter 0's ASC/ASCQ (5Dh = threshold exceeded) is the
+    predicted failure; its temperature byte is used when hwmon has none.
+    Temperature (0x0D) is read only if still none, and Solid State Media
+    (0x11) parameter 1, Percentage Used, on an SSD.
+  - **vendor `ATA`:** ATA PASS-THROUGH(16) SMART READ DATA (D0h) and READ
+    THRESHOLDS (D1h), with LBA 4Fh/C2h. Attributes 5/197/198 are the sector
+    counters, 194 the temperature, 9 power-on hours, and 233/231/177 an
+    SSD's wear (100 − normalized). Any pre-fail attribute at or below its
+    non-zero threshold is the predicted failure. That is the same verdict
+    as SMART RETURN STATUS, without needing CK_COND register readback.
+
+  A page or command the drive refuses is not reported. Parsers are pure
+  and unit-tested. `health.smart` carries `source`, `predicted_failure`
+  and the counters. The threshold engine makes a predicted failure
+  `Failing`, and pending or offline-uncorrectable sectors `Warning`.
 - **Threshold engine** (`monitor::evaluate`, a pure function):
   - `failed`: the kernel's `device/state` is not `running`, the NVMe log
     read failed, or the read timed out (all `kernel_ok = false`). Also the

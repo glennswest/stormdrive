@@ -37,6 +37,7 @@ pub fn decode_smart_page(page: &[u8; 512]) -> Sample {
             unsafe_shutdowns: u128_at(144),
             error_log_entries: u128_at(176),
         }),
+        smart: None,
     }
 }
 

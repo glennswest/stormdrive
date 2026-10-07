@@ -74,7 +74,8 @@ src/
   discovery/      sysfs enumeration, classification, probe cache [Linux]
   hotplug.rs      NETLINK_KOBJECT_UEVENT listener → debounced discovery pass
   contents.rs     slab probe (STRMSLAB at LBA 0 / GPT partition starts) → in_use_by
-  smart/          health samples: NVMe Get Log Page 0x02; SAS/SATA sysfs only
+  smart/          health samples: NVMe Get Log Page 0x02; SAS/SATA sysfs + LOG
+                  SENSE 0x2F/0x0D/0x11 or ATA SMART (#22)
   poller.rs       health scheduler: per-drive phase, bounded, timed out, costed
   monitor.rs      loop: discovery, SES/HBA scans, threshold engine, trends,
                   usage + reconcile, events
@@ -111,7 +112,7 @@ web/              the page: Svelte 5 + stormview DataGrid (#6); web/dist is
 ```
 
 Not in the tree (design only, see docs/architecture.md): a sequencer, a
-thermal actuator, SCSI log sense.
+thermal actuator.
 
 **Ports:** stormdrive listens on **:9092** (stormblock has :9090, stormd
 :9080).
@@ -454,8 +455,8 @@ its own. Design (the issue's, no open decision):
   `_pending_sectors`, `_offline_uncorrectable_sectors`; cost: ≤ 3 commands
   a sample (SAS), 2 (SATA), under the sampler timeout
 Steps:
-- [ ] parsers + tests · [ ] Linux collect · [ ] evaluate, report, metrics
-- [ ] docs, changelog · [ ] build VM, release, golden; live: the R230's WD
+- [x] parsers + tests · [x] Linux collect · [x] evaluate, report, metrics
+- [x] docs, changelog · [ ] build VM, release, golden; live: the R230's WD
 
 ### #23: wear-out projection from the trend (2026-10-07) — DONE (v0.23.0)
 
@@ -1154,7 +1155,7 @@ with stable id. Found:
 ### Phase 2: Monitoring (health, wear, thermal) — mostly DONE
 - [x] NVMe: Get Log Page 0x02 via NVME_IOCTL_ADMIN_CMD
 - [x] SCSI/SATA: sysfs (state, ioerr_cnt, hwmon)
-- [ ] SCSI/SATA: SG_IO log pages (0x2F, 0x0D, 0x11) + ATA SMART — #22 (in progress)
+- [x] SCSI/SATA: SG_IO log pages (0x2F, 0x0D, 0x11) + ATA SMART — #22
 - [x] Threshold engine → health state machine, hysteresis
 - [x] Wear trending: persisted samples (on change or daily)
 - [x] Wear-out projection — #23

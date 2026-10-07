@@ -64,9 +64,21 @@ are listed under [Not yet](#not-yet).
   - **NVMe:** Get Log Page 0x02 through `NVME_IOCTL_ADMIN_CMD`: critical
     warning bits, temperature, available spare, percentage used, power-on
     hours, media errors.
-  - **SAS/SATA:** sysfs only: `device/state`, `device/ioerr_cnt` (failed
-    commands, shown as "io errs") and the hwmon temperature. There is no
-    SCSI log sense or ATA SMART yet.
+  - **SAS/SATA:** from sysfs, `device/state`, `device/ioerr_cnt` (failed
+    commands, shown as "io errs") and the hwmon temperature. From the drive
+    itself (#22), one or two commands a sample:
+    - SAS: LOG SENSE Informational Exceptions (0x2F: the drive's own failure
+      prediction, and temperature), Temperature (0x0D), and on an SSD the
+      Solid State Media page (0x11: endurance used, as `wear_pct`).
+    - SATA (vendor `ATA`, also behind a SAS HBA): ATA SMART READ DATA and
+      THRESHOLDS. That gives reallocated, pending and offline-uncorrectable
+      sectors, temperature, power-on hours and SSD wear; a pre-fail
+      attribute at or below its threshold is the drive predicting its own
+      failure.
+
+    A predicted failure makes the drive `failing`; pending or
+    offline-uncorrectable sectors make it `warning`. They are in
+    `health.smart`.
   - **Verdict:** `good`, `warning`, `failing` or `failed`, from the
     thresholds in `[monitor]`. A worse verdict must repeat
     `monitor.hysteresis` samples in a row before it sticks. A better one
@@ -705,6 +717,8 @@ one fits. Every drive series carries `device`, `serial`, `model`,
 | `stormdrive_drive_info{id,wwn,kind,firmware,membership,designation,activity,owner}` | 1 per drive |
 | `stormdrive_drive_health_status{status}` | 1 for the current verdict |
 | `stormdrive_drive_io_errors_total` | SAS/SATA: sysfs `ioerr_cnt`, failed commands since boot (not media errors) |
+| `stormdrive_drive_predicted_failure` | SAS/SATA: 1 when the drive predicts its own failure (LOG SENSE 0x2F / ATA SMART threshold) (#22) |
+| `stormdrive_drive_reallocated_sectors`, `_pending_sectors`, `_offline_uncorrectable_sectors` | SATA: ATA SMART 5 / 197 / 198 (#22) |
 | `stormdrive_drive_unsafe_shutdowns_total` | NVMe |
 | `stormdrive_drive_last_poll_timestamp_seconds` | last health poll the drive answered |
 | `stormdrive_drive_used_bytes`, `_free_bytes` | from stormblock's slabs (#12) |
@@ -715,9 +729,8 @@ one fits. Every drive series carries `device`, `serial`, `model`,
 | `stormdrive_poll_*`, `stormdrive_discovery_seconds`, `stormdrive_build_info` | the daemon |
 
 A missing drive keeps `smartctl_device`, `stormdrive_drive_info` and its
-last-poll time; its readings go. Reallocated / pending sectors and grown
-defects on HDDs need SCSI log sense / ATA SMART (#22) and appear when that
-lands.
+last-poll time; its readings go. Grown defects on SAS HDDs (READ DEFECT
+DATA) are not read.
 
 ```bash
 T="Authorization: Bearer $(oc whoami -t)"     # a storage-admin's bearer
@@ -784,7 +797,6 @@ These are documented as design only; the code does not do them:
 - `DriveOperation`s and `DrivePolicy`s run only once stormcos installs the
   CRDs and gives stormdrive a credential (stormcos#302); the requester stamp
   (rustkube#210) has shipped
-- SCSI log sense / ATA SMART for SAS and SATA health (#22)
 - a node-wide sequencer for every disruptive operation (the firmware
   redundancy gate itself is #24, built)
 - in the drive worker: ATA SECURITY ERASE for SATA drives without ATA

@@ -217,6 +217,18 @@ fn drive(o: &mut Out, d: &Drive) {
     if let Some(w) = h.wear_pct {
         o.gauge("smartctl_device_percentage_used", "Endurance used, percent (may exceed 100).", &l, w as f64);
     }
+    if let Some(sm) = &h.smart {
+        o.gauge("stormdrive_drive_predicted_failure", "1 when the drive predicts its own failure (SCSI IE / ATA SMART threshold).", &l, sm.predicted_failure.is_some() as u8 as f64);
+        if let Some(n) = sm.reallocated_sectors {
+            o.gauge("stormdrive_drive_reallocated_sectors", "ATA SMART 5: reallocated sectors.", &l, n as f64);
+        }
+        if let Some(n) = sm.pending_sectors {
+            o.gauge("stormdrive_drive_pending_sectors", "ATA SMART 197: sectors pending reallocation.", &l, n as f64);
+        }
+        if let Some(n) = sm.offline_uncorrectable {
+            o.gauge("stormdrive_drive_offline_uncorrectable_sectors", "ATA SMART 198: offline-uncorrectable sectors.", &l, n as f64);
+        }
+    }
     if let Some(p) = d.wear_projection {
         o.gauge("stormdrive_drive_wear_out_days", "Days until wear reaches 100 %, by a line through the wear trend (#23).", &l, p.days_left as f64);
         o.gauge("stormdrive_drive_wear_rate_pct_per_day", "Wear per day by that line.", &l, p.rate_pct_per_day);
