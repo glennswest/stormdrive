@@ -79,7 +79,8 @@ impl Schedule {
 /// What came of asking a drive.
 #[derive(Debug)]
 pub enum Outcome {
-    Sampled(Sample),
+    /// Boxed: a sample is far larger than the other variants.
+    Sampled(Box<Sample>),
     /// No answer within the timeout; the read is still running.
     TimedOut,
     /// An earlier read of this drive has still not returned; not asked
@@ -93,7 +94,7 @@ impl Outcome {
     /// any other worsening.
     pub fn sample(&self, timeout: Duration) -> Sample {
         match self {
-            Outcome::Sampled(s) => s.clone(),
+            Outcome::Sampled(s) => (**s).clone(),
             Outcome::TimedOut => Sample {
                 kernel_ok: false,
                 messages: vec![format!("health read did not answer within {} s", timeout.as_secs())],
@@ -228,7 +229,7 @@ impl Sampler {
                     None => ms as f64,
                 });
                 refresh_cost(&mut st);
-                Outcome::Sampled(sample)
+                Outcome::Sampled(Box::new(sample))
             }
             Ok(Err(_)) => {
                 // The collector panicked: nothing is running any more.
