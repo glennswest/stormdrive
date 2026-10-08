@@ -442,6 +442,39 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #71: every remote call retries (code review, P1, 2026-10-08) — IN PROGRESS
+
+Owner, after the Dell's test images failed on one 30 s engine timeout:
+"sounds like it doesn't retry". Every call that leaves the process: the
+engine client (`stormblock.rs`), the apiserver client (`kubeapi.rs`), and the
+test container's client of :9092 (`test/src/api.rs`). Nothing else leaves
+(SG_IO, netlink, sysfs are local; no ssh, DNS only inside reqwest).
+Design (the issue's, no open decision):
+- one helper, workspace crate `retry/` (`stormdrive-retry`, lib `retry`),
+  used by the daemon and the test crate: `retry::with_backoff(policy, what,
+  op, classify)`; exponential backoff with jitter, attempts cap and a
+  whole-operation deadline (each attempt's timeout is cut to what is left),
+  Retry-After honoured; one log line "succeeded on attempt 3 after 4.1 s" /
+  "gave up after 4 attempts / 30.2 s: …"; giving up on a transient failure is
+  `retry::Infra` (downcastable), a real answer returns at once
+- classify: idempotent → timeouts, connect/reset, 5xx, 408, 429; not
+  idempotent → only failures where the request never went out (connect) and
+  429; 4xx is a real answer
+- engine: reads, labels, overcommit, health report, drain cancel, drive
+  close (404 after a sent attempt = done) retried; `add_drive`,
+  `format_slab`, `start_drain` connect-only (the fleet loop's backoff /
+  pending-drain retry / reconcile cover the rest)
+- kube: get/patch/delete, TokenReview/SAR, Drive create (409 = done)
+  retried; Event create connect-only; `KubeError::is_infra()`
+- test runner: reads retried, writes connect-only; a test that gives up on
+  infrastructure is reported `skip` with `"infrastructure": true` and the run
+  exits 2 (test standard: 2 = could not run), never 1
+Steps:
+- [ ] retry crate + tests (fake failing N times per policy)
+- [ ] engine · [ ] kube · [ ] test runner
+- [ ] docs (README "Remote calls and retries" with the call-site table),
+      changelog, sc-build, release, golden
+
 ### #64: drive history + hardware assets in system-data (P0, stormcos#456, 2026-10-08) — DONE (v0.26.0)
 
 app-system-data (stormcos `docs/SYSTEM-DATA.md`): a kept volume in the data
