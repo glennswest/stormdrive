@@ -258,12 +258,18 @@ path failover is actually needed.
     (0x2F). Parameter 0's ASC/ASCQ (5Dh = threshold exceeded) is the
     predicted failure; its temperature byte is used when hwmon has none.
     Temperature (0x0D) is read only if still none, and Solid State Media
-    (0x11) parameter 1, Percentage Used, on an SSD.
+    (0x11) parameter 1, Percentage Used, on an SSD. Then the error counter
+    pages (#64) Write (0x02), Read (0x03) and Verify (0x05): parameters
+    0003h (total corrected), 0005h (bytes processed) and 0006h (total
+    uncorrected), each a big-endian counter of its own length. The
+    uncorrected errors summed are the drive's `media_errors`.
   - **vendor `ATA`:** ATA PASS-THROUGH(16) SMART READ DATA (D0h) and READ
     THRESHOLDS (D1h), with LBA 4Fh/C2h. Attributes 5/197/198 are the sector
     counters, 187 (reported uncorrectable) the drive's `media_errors`, 194
     the temperature, 9 power-on hours, and 233/231/177 an
-    SSD's wear (100 − normalized). Any pre-fail attribute at or below its
+    SSD's wear (100 − normalized), 199 the interface CRC errors. The whole
+    table (id, pre-fail, value, worst, threshold, raw) is kept for the
+    drive history (#64), not served with health. Any pre-fail attribute at or below its
     non-zero threshold is the predicted failure. That is the same verdict
     as SMART RETURN STATUS, without needing CK_COND register readback.
 
@@ -349,7 +355,7 @@ What one cycle does, per drive:
 | Transport | Per sample | At 160 drives, 60 s interval |
 |---|---|---|
 | NVMe | one admin command, Get Log Page 0x02 (512 B), 5 s command timeout | 160 admin commands a minute, ~2.7 a second, 8 at most in flight |
-| SAS/SATA | sysfs (`device/state`, `ioerr_cnt`, hwmon) + LOG SENSE 0x2F/0x0D/0x11 (SAS, ≤ 3 commands) or ATA SMART READ DATA + THRESHOLDS (SATA, 2 commands) (#22) | 160 × ~4 sysfs reads + ≤ 3 drive commands a minute |
+| SAS/SATA | sysfs (`device/state`, `ioerr_cnt`, hwmon) + LOG SENSE 0x2F/0x0D/0x11 + error counters 0x02/0x03/0x05 (SAS, ≤ 6 commands, #64) or ATA SMART READ DATA + THRESHOLDS (SATA, 2 commands) (#22) | 160 × ~4 sysfs reads + ≤ 6 drive commands a minute |
 
 A discovery pass (every 30 s, and on hotplug) reads sysfs attributes per
 device. It sends drive I/O only for new or changed devices, plus a
@@ -676,6 +682,72 @@ There is no `thermal.rs`. What exists:
 is deliberately last and gated behind explicit config, because the review
 found no precedent in the ecosystem and fan policy is chassis-specific. The
 scope is your decision (#32).
+
+### Drive history and assets in system-data (`history.rs`, `assets.rs`, #64)
+
+app-system-data (stormcos `docs/SYSTEM-DATA.md`, stormcos#456) is the
+node's record of itself: a volume in the data half that every install
+keeps and only a node reset wipes. stormblock#355 makes and mounts it; stormcos mounts it
+into stormdrive's unit; stormdrive writes two of its parts under
+`history.dir` (default `/data/system-data`). The directory is never
+created: one on the install-wiped root would look kept and not be. While
+it is absent nothing is written, and `GET /api/v1/history` says why. It is
+checked on every write, so a volume mounted later is picked up.
+
+**Drive history** (`history/drives/<key>/<YYYY-MM>.jsonl`). The key is
+what the drive is, not where: `wwn-<WWID>`, else `serial-<model>-<serial>`
+(sanitised). Each line is a `Record`: `at`/`unix`, `boot_id`, `node`,
+`kernel`, `stormdrive`, `why` (`first`/`changed`/`heartbeat`), `drive`
+(id, wwn, serial, model, firmware, kind, path, bay key, capacity),
+`status`, `temperature_c`, `counters` (a flat name → value map: health
+fields, `nvme.*` = the whole log 0x02, `smart.*`, `sas.<page>.<counter>`,
+`ata.<id>` for lifetime ATA counts), `predicted_failure`,
+`ata_attributes` (the SATA table) and `findings`.
+
+A record is due (`history::due`, pure) on the drive's first sample, when a
+counter whose rule says `writes` changes, when the verdict, firmware, bay
+or predicted failure changes, when there are findings, and otherwise every
+`heartbeat_secs` (3600). Counters that move on every read on a busy drive
+(bytes, commands, busy minutes, power-on hours, SAS corrected/bytes) do not
+force a record on their own: at the 60 s poll, a record per sample is about
+90 MB a day for 160 drives; this is a few records an hour per drive. Setting
+`heartbeat_secs` to the poll interval writes every sample. Lines are
+appended and `fdatasync`ed; a new month prunes months older than
+`keep_months` (24).
+
+**Findings** (`history::findings`, pure). Each counter has a rule
+(`history::spec`): error counters (`media_errors`, reallocated, offline and
+reported uncorrectable, CRC, `sas.*.uncorrected`, `nvme.error_log_entries`)
+are findings when they grow or go back; pending sectors when they grow;
+lifetime counters (power-on hours, bytes, commands, cycles, unsafe
+shutdowns, wear, the ATA counts) when they go back. Gauges (`io_errors`,
+which is per boot and not media errors (#58), available spare, the critical-warning bits)
+never are. The comparison is with the drive's last record, which is read
+back from its newest file the first time the drive is sampled (a torn last
+line is skipped). So it spans a restart and an install: `other_boot` says
+the previous record came from another boot. A finding is in the record and
+a `history` warning event. The same last record gives the threshold
+engine its media-error baseline for the first sample after a restart or
+install, so growth across an install is a `warning` too.
+
+**Assets** (`assets/<YYYYMMDDTHHMMSSZ>-<boot_id>.json`). After every
+discovery pass, `assets::host_items` (DMI from `/sys/class/dmi/id`,
+`/proc/cpuinfo` per `physical id`, SMBIOS from
+`/sys/firmware/dmi/tables/DMI`: type 17 memory devices with a module, type
+38 IPMI interface; `/sys/class/net/*` with a `device`; `/sys/class/nvme/*`
+with transport `pcie`) and `assets::scanned_items` (the HBA and SES scans,
+every present drive by bay key, else by WWN/serial) make a map of items
+under stable keys. The map is compared with this boot's file. A new boot
+writes a new file with `changes` against the newest other boot's file
+(`assets::diff`: added, removed, `field: old → new` on the item's
+fields) and an `assets` event (a warning when something was removed). An
+unchanged map writes nothing. A changed one within the boot rewrites the
+file and appends to `changed_in_boot`. The SMBIOS parser walks the
+structures (formatted area, then a string set ending in two NULs), stops at
+type 127 or a truncated structure, and is unit-tested on a synthetic
+table. Kernel `MemTotal` is recorded and not compared (it moves with the
+kernel's reservations). DMI serials and the SMBIOS table are root-only:
+without root they are null or absent. The newest 1000 boot files are kept.
 
 ### Events (`events.rs`)
 A ring of 4096, each entry `{seq, time, drive_id?, severity, kind,

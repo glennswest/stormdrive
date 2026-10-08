@@ -68,16 +68,20 @@ are listed under [Not yet](#not-yet).
     that failed since boot, resets included: `health.io_errors`, shown as
     "io errs", never a warning and never media errors, #58) and the hwmon
     temperature. From the drive
-    itself (#22), one or two commands a sample:
+    itself (#22), two to six commands a sample:
     - SAS: LOG SENSE Informational Exceptions (0x2F: the drive's own failure
       prediction, and temperature), Temperature (0x0D), and on an SSD the
-      Solid State Media page (0x11: endurance used, as `wear_pct`).
+      Solid State Media page (0x11: endurance used, as `wear_pct`). The
+      Write, Read and Verify error counter pages (0x02/0x03/0x05: corrected,
+      uncorrected, bytes processed, #64) are in `health.smart`; the
+      uncorrected errors together are the drive's `media_errors`.
     - SATA (vendor `ATA`, also behind a SAS HBA): ATA SMART READ DATA and
       THRESHOLDS. That gives reallocated, pending and offline-uncorrectable
       sectors, temperature, power-on hours and SSD wear; a pre-fail
       attribute at or below its threshold is the drive predicting its own
       failure. Attribute 187 (reported uncorrectable) is the drive's
-      `media_errors`.
+      `media_errors`; 199 (interface CRC errors) is `smart.crc_errors`. The
+      whole attribute table goes into the drive history (#64).
 
     A predicted failure makes the drive `failing`; pending or
     offline-uncorrectable sectors make it `warning`. They are in
@@ -107,7 +111,41 @@ are listed under [Not yet](#not-yet).
     value changes or once a day. `GET /api/v1/drives/{id}/health` returns it.
     It lives in `data_dir`, so a reinstall that replaces `data_dir` starts it
     again; the drive's own counters (ATA SMART, NVMe log) are on the drive
-    and survive both.
+    and survive both, and the drive history below keeps them.
+- **Drive history and hardware assets in system-data** (#64, stormcos#456):
+  the node's kept volume in the data half, which every install keeps
+  (stormblock#355 makes it; stormcos mounts it into stormdrive at
+  `history.dir`, default `/data/system-data`). stormdrive never creates that
+  directory: while it is absent, history is off and `GET /api/v1/history`
+  says so.
+  - `history/drives/<wwn-…|serial-…>/<YYYY-MM>.jsonl`: one JSON record a
+    line — time, boot id, kernel, stormdrive version, the drive (id, WWN,
+    serial, model, firmware, kind, path, bay), its verdict, temperature and
+    **every counter** (health, NVMe log 0x02 in full, SAS error counter
+    pages, SATA's whole SMART table). Written on a drive's first sample, when
+    a counter that matters changes (errors, wear, cycles — not bytes,
+    commands or power-on hours, which move on every read), when its verdict,
+    firmware or bay changes, and otherwise every `history.heartbeat_secs`.
+    Months older than `history.keep_months` are removed.
+  - **Findings:** each record is compared with the drive's last one, read
+    back from the file at start, so across restarts and installs. An error
+    counter that grows (media errors, reallocated, pending, offline or
+    reported uncorrectable, CRC, SAS uncorrected, NVMe error-log entries), or
+    a lifetime counter that goes backwards (power-on hours, bytes, cycles,
+    wear: the drive's SMART was reset, or it is not the drive it was), is a
+    finding: in the record and a `history` warning event. `io_errors` (per
+    boot) never is. The first sample after an install also grows its
+    media-error warning from the history's count.
+  - `assets/<YYYYMMDDTHHMMSSZ>-<boot_id>.json`, one per boot: system,
+    board and BIOS (DMI), CPUs per socket (model, cores, threads,
+    microcode), DIMMs (SMBIOS type 17: slot, size, type, speed, maker,
+    serial, part), the BMC's interface (SMBIOS 38), physical NICs (MAC,
+    driver, PCIe), NVMe controllers, HBAs (board, firmware, BIOS, NVDATA),
+    shelves (each IOM's revision) and the drive in each bay. `changes` is
+    the difference from the previous boot's file (added, removed,
+    `field: old → new`) and an `assets` event (a warning when something was
+    removed). A change within the boot rewrites the file
+    (`changed_in_boot`). The newest 1000 boots are kept.
 - **Location** (`src/topology.rs`, `src/ses.rs`, `src/hba.rs`).
   - **SAS:** the HBA (SCSI host, PCIe address, driver), the shelf, the bay,
     the SAS address, the expander phy and the expander.
@@ -443,7 +481,8 @@ for locate LEDs and rescans.
 are read from `src/config.rs`, and
 [deploy/stormdrive.example.toml](deploy/stormdrive.example.toml) lists them
 all. The daemon refuses to start on an unparseable `listen_addr`, a zero
-interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
+interval, a zero `max_concurrent`/`sample_timeout_secs`, `hysteresis = 0` or
+`history.keep_months = 0`.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -493,6 +532,9 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, or `hysteresis = 0`.
 | `worker.enroll_per_domain` | `1` | drive-worker enrolls at once per failure domain (shelf, else HBA) |
 | `worker.offer` | `true` | mark blank, healthy, out-of-fleet drives `enrolable`, with an event (#42) |
 | `worker.offer_min_bytes` | `1073741824` | …at least this big |
+| `history.dir` | `/data/system-data` | the system-data volume as mounted for stormdrive (#64); absent = no history or assets, never created |
+| `history.heartbeat_secs` | `3600` | a drive record when a counter changes, else this often (`monitor.interval_secs` = every sample) |
+| `history.keep_months` | `24` | months of drive history kept |
 
 Qualified for `auto_add`: out of the fleet, designation `none`, idle, a
 health verdict that is known and not Failing/Failed, not `in_use_by`, and
@@ -691,6 +733,9 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/drives` | every drive, with any running test/format/firmware run inlined |
 | `GET /api/v1/drives/{id}` · `DELETE` | one drive · forget a missing, out-of-fleet drive |
 | `GET /api/v1/drives/{id}/health` | health report + trend |
+| `GET /api/v1/drives/{id}/history?limit=` | the drive's records from system-data, oldest first, the newest `limit` (100) (#64) |
+| `GET /api/v1/history` | the system-data directory, whether history is written, records and findings this run, this boot's assets file (#64) |
+| `GET /api/v1/assets` | this boot's hardware record and what changed since the previous boot (#64); 404 before it is taken |
 | `GET /api/v1/drives/{id}/slabs` | slabs on the disk, the engine's slabs on it, the engine's slab report and the finding (#58) |
 | `POST /api/v1/drives/{id}/locate` | `{"on": bool}` |
 | `POST /api/v1/drives/{id}/fleet` | `{"action":"join","format_slab"?,"tier"?}` or `{"action":"leave","drain"?,"force"?}` |
