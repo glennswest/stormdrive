@@ -12,9 +12,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use retry::{Idempotent, Policy};
 use serde_json::{json, Value};
 
 use crate::config::KubernetesConfig;
+
+/// One try's timeout; `retry::Policy::KUBE` bounds the whole call (#71).
+const KUBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 const SA_DIR: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
 
@@ -31,7 +35,8 @@ pub struct KubeUser {
 /// What the apiserver answered to a call that was made.
 #[derive(Debug)]
 pub enum KubeError {
-    /// It could not be reached, or answered garbage.
+    /// It could not be reached, kept failing (5xx, timeouts) for a whole
+    /// retry policy, or answered garbage.
     Unavailable(String),
     /// It answered with an error status.
     Status(u16, String),
@@ -47,6 +52,12 @@ impl std::fmt::Display for KubeError {
 }
 
 impl KubeError {
+    /// Infrastructure (the apiserver not there, overloaded or failing), not
+    /// an answer from it.
+    pub fn is_infra(&self) -> bool {
+        matches!(self, KubeError::Unavailable(_) | KubeError::Status(408 | 429 | 500..=599, _))
+    }
+
     pub fn code(&self) -> Option<u16> {
         match self {
             KubeError::Status(c, _) => Some(*c),
@@ -92,7 +103,7 @@ impl KubeApi {
         let Some((base, ca, token_file)) = resolve(cfg) else {
             return Ok(None);
         };
-        let mut b = reqwest::Client::builder().timeout(Duration::from_secs(10));
+        let mut b = reqwest::Client::builder().timeout(KUBE_TIMEOUT);
         if let Some(ca) = &ca {
             let pem = std::fs::read(ca).map_err(|e| anyhow::anyhow!("kubernetes.ca_file {ca}: {e}"))?;
             let cert = reqwest::Certificate::from_pem(&pem).map_err(|e| anyhow::anyhow!("kubernetes.ca_file {ca}: {e}"))?;
@@ -114,17 +125,54 @@ impl KubeApi {
         non_empty(std::fs::read_to_string(f).ok())
     }
 
-    async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>, content_type: &str) -> Result<Value, KubeError> {
-        let mut req = self.http.request(method, format!("{}{path}", self.base));
+    /// One try: status, Retry-After and body.
+    async fn send_once(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+        content_type: &str,
+        timeout: Duration,
+    ) -> reqwest::Result<(u16, Option<Duration>, String)> {
+        let mut req = self.http.request(method, format!("{}{path}", self.base)).timeout(timeout);
         if let Some(t) = self.token() {
             req = req.bearer_auth(t);
         }
         if let Some(b) = body {
             req = req.header(reqwest::header::CONTENT_TYPE, content_type).body(b.to_string());
         }
-        let resp = req.send().await.map_err(|e| KubeError::Unavailable(e.to_string()))?;
+        let resp = req.send().await?;
         let code = resp.status().as_u16();
-        let text = resp.text().await.map_err(|e| KubeError::Unavailable(e.to_string()))?;
+        let after = retry::retry_after(resp.headers());
+        Ok((code, after, resp.text().await?))
+    }
+
+    /// Every apiserver call (#71): `retry::Policy::KUBE`; `idem` says whether
+    /// a try that may have reached the apiserver can be repeated. Giving up
+    /// on a transient failure is `Unavailable` with the attempts in it.
+    async fn call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+        content_type: &str,
+        idem: Idempotent,
+    ) -> Result<Value, KubeError> {
+        let what = format!("apiserver {method} {}", path.split('?').next().unwrap_or(path));
+        let tried = retry::with_backoff(
+            &Policy::KUBE,
+            &what,
+            |a| self.send_once(method.clone(), path, body, content_type, a.timeout(KUBE_TIMEOUT)),
+            |r| match r {
+                Ok((code, after, _)) => retry::classify_status(*code, *after, idem),
+                Err(e) => retry::classify_error(e, idem),
+            },
+        )
+        .await;
+        if let Some(infra) = tried.gave_up {
+            return Err(KubeError::Unavailable(infra.to_string()));
+        }
+        let (code, _, text) = tried.result.map_err(|e| KubeError::Unavailable(retry::error_chain(&e)))?;
         if !(200..300).contains(&code) {
             let msg = serde_json::from_str::<Value>(&text)
                 .ok()
@@ -139,22 +187,32 @@ impl KubeApi {
     }
 
     pub async fn get(&self, path: &str) -> Result<Value, KubeError> {
-        self.call(reqwest::Method::GET, path, None, "").await
+        self.call(reqwest::Method::GET, path, None, "", Idempotent::Yes).await
     }
+    /// A create that must not happen twice (an Event: a repeat is a second
+    /// Event): retried only when it never reached the apiserver.
     pub async fn create(&self, path: &str, body: &Value) -> Result<Value, KubeError> {
-        self.call(reqwest::Method::POST, path, Some(body), "application/json").await
+        self.call(reqwest::Method::POST, path, Some(body), "application/json", Idempotent::No).await
     }
+    /// A create whose repeat is harmless: a review (nothing is stored), or an
+    /// object with a fixed name whose caller takes 409 AlreadyExists as done.
+    pub async fn create_retried(&self, path: &str, body: &Value) -> Result<Value, KubeError> {
+        self.call(reqwest::Method::POST, path, Some(body), "application/json", Idempotent::Yes).await
+    }
+    /// A merge patch sets the fields it names: the same patch twice is the
+    /// same object.
     pub async fn merge_patch(&self, path: &str, body: &Value) -> Result<Value, KubeError> {
-        self.call(reqwest::Method::PATCH, path, Some(body), "application/merge-patch+json").await
+        self.call(reqwest::Method::PATCH, path, Some(body), "application/merge-patch+json", Idempotent::Yes).await
     }
+    /// Callers take 404 as done, so a repeat after a lost answer is too.
     pub async fn delete(&self, path: &str) -> Result<Value, KubeError> {
-        self.call(reqwest::Method::DELETE, path, None, "").await
+        self.call(reqwest::Method::DELETE, path, None, "", Idempotent::Yes).await
     }
 
     /// TokenReview: who is this bearer? `Ok(None)` = not a valid bearer.
     pub async fn token_review(&self, bearer: &str) -> Result<Option<KubeUser>, KubeError> {
         let v = self
-            .create(
+            .create_retried(
                 "/apis/authentication.k8s.io/v1/tokenreviews",
                 &json!({ "apiVersion": "authentication.k8s.io/v1", "kind": "TokenReview", "spec": { "token": bearer } }),
             )
@@ -165,7 +223,7 @@ impl KubeApi {
     /// SubjectAccessReview: may `user` do `verb` on `resource` (in
     /// `storage.storm.io`)? `Ok((allowed, reason))`.
     pub async fn access_review(&self, user: &KubeUser, resource: &str, verb: &str, name: Option<&str>) -> Result<(bool, String), KubeError> {
-        let v = self.create("/apis/authorization.k8s.io/v1/subjectaccessreviews", &access_review_body(user, resource, verb, name)).await?;
+        let v = self.create_retried("/apis/authorization.k8s.io/v1/subjectaccessreviews", &access_review_body(user, resource, verb, name)).await?;
         Ok((v["status"]["allowed"].as_bool().unwrap_or(false), v["status"]["reason"].as_str().unwrap_or("").to_string()))
     }
 }
@@ -231,5 +289,65 @@ mod tests {
         let c = KubernetesConfig { api_url: "https://k:6443/".into(), ..Default::default() };
         let api = KubeApi::from_config(&c).unwrap().unwrap();
         assert_eq!(api.base(), "https://k:6443");
+    }
+
+    /// #71: reviews retry a flaky apiserver; an Event create does not
+    /// repeat once it may have landed; an apiserver that stays down is
+    /// `Unavailable`, an answer (403) is a `Status`.
+    #[tokio::test]
+    async fn calls_retry_by_idempotency() {
+        use axum::http::StatusCode;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let reviews = std::sync::Arc::new(AtomicU32::new(0));
+        let events = std::sync::Arc::new(AtomicU32::new(0));
+        let (r, e) = (reviews.clone(), events.clone());
+        let app = axum::Router::new()
+            .route(
+                "/apis/authentication.k8s.io/v1/tokenreviews",
+                axum::routing::post(move || {
+                    let r = r.clone();
+                    async move {
+                        if r.fetch_add(1, Ordering::SeqCst) < 2 {
+                            (StatusCode::BAD_GATEWAY, axum::Json(json!({})))
+                        } else {
+                            (StatusCode::CREATED, axum::Json(json!({ "status": { "authenticated": true, "user": { "username": "alice" } } })))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/api/v1/namespaces/default/events",
+                axum::routing::post(move || {
+                    let e = e.clone();
+                    async move {
+                        e.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }
+                }),
+            )
+            .route("/apis/x", axum::routing::get(|| async { (StatusCode::FORBIDDEN, axum::Json(json!({ "message": "no" }))) }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let api = KubeApi { base, token_file: None, http: reqwest::Client::new() };
+
+        assert_eq!(api.token_review("b").await.unwrap().unwrap().username, "alice");
+        assert_eq!(reviews.load(Ordering::SeqCst), 3);
+
+        let err = api.create("/api/v1/namespaces/default/events", &json!({})).await.unwrap_err();
+        assert_eq!(events.load(Ordering::SeqCst), 1);
+        assert_eq!(err.code(), Some(503));
+        assert!(err.is_infra());
+
+        let err = api.get("/apis/x").await.unwrap_err();
+        assert!(!err.is_infra());
+        assert_eq!(err.code(), Some(403));
+
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let gone = KubeApi { base: format!("http://{}", l.local_addr().unwrap()), token_file: None, http: reqwest::Client::new() };
+        drop(l);
+        let err = gone.get("/apis/x?watch=0").await.unwrap_err();
+        assert!(err.is_infra());
+        assert!(err.to_string().contains("apiserver GET /apis/x: infrastructure: gave up after 3 attempts"), "{err}");
     }
 }

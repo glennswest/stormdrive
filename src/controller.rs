@@ -240,7 +240,7 @@ impl Controller {
             Ok(_) => {}
             Err(e) if e.code() == Some(404) => {
                 let body = json!({ "apiVersion": o["apiVersion"], "kind": "Drive", "metadata": o["metadata"], "spec": o["spec"] });
-                match self.kube.create(&path("drives", None), &body).await {
+                match self.kube.create_retried(&path("drives", None), &body).await {
                     Ok(_) | Err(crate::kubeapi::KubeError::Status(409, _)) => {}
                     Err(e) => return Err(format!("creating Drive {name}: {e}")),
                 }
