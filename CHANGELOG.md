@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-08
+- **build:** `stormview` git dependency pinned to `rev = 81ef1d2` instead of `branch = "main"` (Cargo.lock `?rev=`), so golden builds accept it under stormcentral#571's SBOM rule; moving it forward is now a deliberate rev bump (#63)
 - **docs:** work plan: #58 done in v0.25.0 (golden-stormdrive-4a5c915a3ae1)
 
 ## [v0.25.0] — 2026-10-08
