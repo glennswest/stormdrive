@@ -438,6 +438,49 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #64: drive history + hardware assets in system-data (P0, stormcos#456, 2026-10-08)
+
+app-system-data (stormcos `docs/SYSTEM-DATA.md`): a kept volume in the data
+half, survives every install; stormdrive writes `history/drives/` and
+`assets/`. stormblock#355 makes and mounts it; stormcos mounts it into our
+unit once #355 names the path. The system/partner/customer class split
+(stormblock#356) is on hold and doesn't touch these two parts (both "system").
+Design (no open decision):
+- `[history] dir` (default `/data/system-data`, beside `/data/stormcert`).
+  Absent dir → off, said once and on `GET /api/v1/history`; never created
+  (a dir on the install-wiped root would look kept and isn't)
+- **drives** (`src/history.rs`): `history/drives/<wwn-…|serial-…>/<YYYY-MM>.jsonl`,
+  one JSON line per record: time, boot id, os release, stormdrive version,
+  identity (wwn, serial, model, firmware, kind, path, bay key), verdict, and
+  every counter: health fields, NVMe log 0x02 in full, ATA SMART attribute
+  table in full, SAS LOG SENSE error counters (new: pages 0x02/0x03/0x05,
+  read/write/verify corrected + uncorrected; uncorrected → SAS
+  `media_errors`). Written when a counter changes, else every
+  `heartbeat_secs` (3600; = monitor interval gives every collection: 160
+  drives × 60 s would be ~90 MB/day). `keep_months` (24) prunes old months
+- **findings** (pure): vs the last record (read back from the file at
+  start, so across installs): an error counter that grows (media errors,
+  reallocated, pending, offline/reported uncorrectable, CRC, SAS
+  uncorrected, NVMe error-log entries) or any lifetime counter that goes
+  backwards (power-on hours, bytes, cycles, wear …) → warning event +
+  `findings` in the record. `io_errors` (per boot) never. The first sample
+  after an install uses the history's media_errors as its growth baseline
+- **assets** (`src/assets.rs`): per boot `assets/<UTC>-<boot_id>.json`:
+  system/board/BIOS (`/sys/class/dmi/id`), CPU (`/proc/cpuinfo`), memory
+  (MemTotal + SMBIOS type 17 DIMMs from `/sys/firmware/dmi/tables/DMI`),
+  BMC presence (SMBIOS 38; detail is stormipmi's), NICs (`/sys/class/net`
+  with a device), HBAs, NVMe controllers, shelves (IOMs + revisions), bays
+  (drive per bay). `changes` vs the previous boot's file (added / removed /
+  field old → new) + an event; rewritten when it changes within a boot
+- API: `GET /api/v1/history` (status), `GET /api/v1/drives/{id}/history`,
+  `GET /api/v1/assets`
+Steps:
+- [ ] config + SAS error-counter pages + ATA table + NVMe extras
+- [ ] history.rs (record, findings, files) + monitor hook
+- [ ] assets.rs (collect, SMBIOS, diff, files) + monitor hook
+- [ ] API, tests, docs (README, architecture), changelog, release, golden;
+      tell stormcos#456 the path
+
 ### #63: pin git dependencies to a rev (stormcentral#571, 2026-10-08) — DONE
 
 Golden builds write `SBOM/crates.csv` and refuse a git dependency not pinned
