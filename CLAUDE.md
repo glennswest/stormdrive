@@ -438,6 +438,37 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #58: unused slabs and uncollected health read as healthy (P1, Dell sda, 2026-10-08) — IN PROGRESS
+
+The Dell ran diskless from forge (engine `slabs.system/data = remote`) while
+sda carried both slab partitions; stormdrive said nothing. Its health had
+`collected_at: null`, and the 10-06 "media errors growing 32 → 33" was sysfs
+`ioerr_cnt` (failed commands: resets count), not media errors: the drive's
+own SMART shows none (owner's smartctl -x). Owner: flow-over is mandatory; a
+node that can't take its own disk fails loudly as a hardware fault, the drive
+marked suspect/failed. Design (no open decision):
+- `io_errors` (sysfs ioerr_cnt) separate from `media_errors`; no warning on
+  its growth. `media_errors` = the drive's own count only (NVMe log 0x02;
+  ATA attribute 187 reported-uncorrectable)
+- engine slab report: `GET /api/v1/health` `slabs {diskless, system, data,
+  items, local_disk {state, drive, reason}}` (stormblock#344), read on the
+  usage tick. Pure `engine_finding(drive, report)`: a drive with stormblock
+  slab partitions (`contents`) whose roles the engine has `remote`, or that
+  `local_disk` names refused/failed → `Drive.engine_finding {roles, reason,
+  severity}`; refused / remote = warning ("suspect"), failed = failing. Folded
+  into the health verdict (also before the first sample) + an event on change
+- health never collected: `HealthReport.not_collected` says why (not yet due /
+  timed out / stuck / missing); a present drive with no sample after 3
+  intervals → warning event; the health loop is supervised (restarted + event
+  if it ever dies)
+- `GET /api/v1/drives/{id}/slabs`: the slab partitions on the disk, the
+  engine's slabs on it (usage) and the engine's verdict
+- trend across installs: the drive's own counters (ATA SMART, NVMe) live on
+  the drive; the inventory trend stays in data_dir
+Steps:
+- [ ] io_errors split · [ ] engine report + finding · [ ] not_collected +
+      supervision · [ ] /slabs route · [ ] tests, docs, changelog, release
+
 ### #21: SIGTERM stops gracefully and persists (2026-10-07) — DONE (v0.24.0)
 
 stormd and systemd stop the daemon with SIGTERM, which skipped the final
