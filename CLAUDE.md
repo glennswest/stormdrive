@@ -442,7 +442,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #64: drive history + hardware assets in system-data (P0, stormcos#456, 2026-10-08)
+### #64: drive history + hardware assets in system-data (P0, stormcos#456, 2026-10-08) — DONE (v0.26.0)
 
 app-system-data (stormcos `docs/SYSTEM-DATA.md`): a kept volume in the data
 half, survives every install; stormdrive writes `history/drives/` and
@@ -485,7 +485,14 @@ Steps:
 - [x] API, docs (README, architecture), changelog (73e1c03); short suite
       `system-data` + harness system-data dir (8050274); stormcos#456 told
       the mount point (`/data/system-data`)
-- [ ] sc-build + clippy green, v0.26.0, golden
+- [x] build VM on 531d07e and v0.26.0 (d1d260a): 235 unit (12 new: history
+      ×6, assets ×5, SAS error pages) + harnesses — short `system-data`
+      passes against the VM's real DMI/cpuinfo/NICs (7 items) — clippy
+      -D warnings clean, `web/rebuild.sh --check` identical
+- [ ] golden: the #63 one failed in stormcentral's SBOM step (`cargo
+      metadata --offline`, not a refused dependency) → stormcentral#589;
+      requested again on v0.26.0
+- Live: waits on the system-data mount (stormblock#355, stormcos#456)
 
 ### #63: pin git dependencies to a rev (stormcentral#571, 2026-10-08) — DONE
 
