@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.27.0** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
+**Version: 0.27.1** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -442,7 +442,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — IN PROGRESS
+### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 
 Owner: "Formatting a 15 PB SSD drive is a century; imagine a server with
 100s." Review of every path that writes/reads a device at create, enrol,
@@ -472,7 +472,10 @@ Steps:
 - [x] tests: policy steps / test sizes constant at 1 PiB
 - [x] docs (architecture "Cost at enrol", README), changelog; stormblock#363
       commented; #73 filed
-- [ ] sc-build, v0.27.1, golden, close #72
+- [x] build VM on 580707b: 241 unit (4 new: 1 PiB partition bytes counted,
+      slow slab format waited for once, policy metadata steps, sampled test
+      sizes) + harnesses, clippy -D warnings clean; v0.27.1, golden, #72 closed
+- Engine side stays open: stormblock#363 (slot table zero-fill); #73 Decide
 
 ### #71: every remote call retries (code review, P1, 2026-10-08) — DONE (v0.27.0)
 

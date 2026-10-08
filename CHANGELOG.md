@@ -3,7 +3,15 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-10-08
+## [v0.27.1] — 2026-10-08
+
+### Fixed
+- Enrol: the engine's slab format gets one try of up to 15 min (`ENGINE_FORMAT`), not 5 s — a large drive's format was cut off and never enrolled (#72)
+
+### Documentation
+- Architecture "Cost at enrol: metadata only": every path that touches a drive and its bytes; partition, sampled tests and policy enrol tested at 1 PiB (#72)
+
+### 2026-10-08 (in v0.27.1)
 - **fix:** enrol: the engine's slab format (`POST /api/v1/slabs`) gets one try of up to 15 min (`retry::Policy::ENGINE_FORMAT`) instead of 5 s; a large drive's format, which zero-fills the engine's slot table today (stormblock#363), was cut off and abandoned halfway, so the drive never enrolled (#72)
 - **test:** #72 — partitioning a 1 PiB disk writes ~8 MiB (counted) in well under a second; a 1 PiB drive is enrolled by partition + slab steps only; smoke and destructive_sample tests cost the same at 1 PiB as at 1 GiB (`drivetest::planned_bytes`)
 - **docs:** architecture "Cost at enrol: metadata only" — every path that touches a drive with its bytes; README retry table gains `ENGINE_FORMAT` (#72)
