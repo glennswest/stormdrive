@@ -3,6 +3,17 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.25.0] — 2026-10-08
+
+### Added
+- A drive whose slabs the engine doesn't use is a finding: `engine_finding`, warning (suspect) or failing, from the engine's slab report (#58)
+- `GET /api/v1/drives/{id}/slabs` (#58)
+- `health.not_collected` and a warning event when a drive has no health sample (#58)
+
+### Fixed
+- `ioerr_cnt` is `io_errors`, not media errors, and no warning; `media_errors` is the drive's own count (#58)
+- The health loop is restarted if it ever stops (#58)
+
 ### 2026-10-08
 - **fix:** the kernel's `ioerr_cnt` (commands failed since boot, resets included) is `health.io_errors`, no longer `media_errors`, and its growth is no warning. The Dell's "media errors growing 32 → 33" was this counter while the drive's own SMART logs had none. `media_errors` is the drive's own count only (NVMe log 0x02, ATA attribute 187, also in `health.smart.reported_uncorrectable`) (#58)
 - **feat:** a drive whose slabs the engine doesn't use is a finding (#58). Each monitor tick reads the engine's `GET /api/v1/health` `slabs` report (stormblock#344). A drive carrying stormblock slab partitions (role from the GPT type) of a half the engine runs `remote`, or on a `diskless` node, gets `engine_finding` and turns `warning` (suspect); `failing` when the boot says it took the disk and it failed. The engine's reason is in the message, and it raises an `engine` event
