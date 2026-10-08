@@ -3,7 +3,19 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-10-08
+## [v0.26.0] — 2026-10-08
+
+### Added
+- Drive history in system-data: `history/drives/<wwn|serial>/<YYYY-MM>.jsonl`, every counter per drive, recorded on change or hourly; findings (an error counter grew, a lifetime counter went backwards) across restarts and installs, as events; `GET /api/v1/drives/{id}/history`, `GET /api/v1/history` (#64)
+- Hardware assets in system-data: `assets/<UTC>-<boot_id>.json` per boot (DMI, CPUs, DIMMs, BMC, NICs, NVMe controllers, HBAs, shelves, drives by bay) with the changes since the previous boot; `GET /api/v1/assets` (#64)
+- SAS error counter pages 0x02/0x03/0x05 (uncorrected = `media_errors`), the full SATA SMART table, CRC errors, more NVMe log 0x02 counters (#64)
+- `[history]` config; short suite `system-data` (#64)
+
+### Changed
+- `stormview` pinned to a rev (#63)
+
+
+### 2026-10-08 (in v0.26.0)
 - **test:** short suite `system-data`: history status, this boot's assets, a record for every sampled drive (skipped while system-data is not mounted); the cargo-test harness gives its daemon a system-data dir (#64)
 - **feat:** drive history in system-data: `history/drives/<wwn|serial>/<YYYY-MM>.jsonl`, a record per drive on change or hourly with every counter; findings (an error counter grew, a lifetime counter went backwards) across restarts and installs, as events; the first sample after an install grows from the history's media errors; `GET /api/v1/drives/{id}/history`, `GET /api/v1/history` (#64)
 - **feat:** hardware assets in system-data: `assets/<UTC>-<boot_id>.json` per boot (DMI, CPUs, DIMMs from SMBIOS 17, BMC from SMBIOS 38, NICs, NVMe controllers, HBAs, shelves, drives by bay) with the changes since the previous boot, as an event; `GET /api/v1/assets` (#64)
