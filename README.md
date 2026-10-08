@@ -418,7 +418,7 @@ stormdrive's suites follow stormcentral's
 
 | Suite | Budget | What it proves |
 |---|---|---|
-| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled; card, placement (+304), feed, kube Drives, events, HBAs, the page, `/metrics` (every drive by serial) |
+| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled; system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); card, placement (+304), feed, kube Drives, events, HBAs, the page, `/metrics` (every drive by serial) |
 | `medium` | < 30 min | 404 envelope, malformed requests refused (400); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost, page under `/ui/` |
 | `long` | the night window | waves until the window ends: 4 + drives/8 API readers (4–64) and a smoke test on every idle, usable drive; p50/p95, errors, drives left busy, stuck or timed-out health reads, event growth. A wave slower than 2× the first (+250 ms), or leaving residue, fails |
 

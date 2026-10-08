@@ -40,11 +40,16 @@ async fn start() -> Daemon {
     let cfg = dir.join("stormdrive.toml");
     let ca = common::Ca::new("harness node CA");
     let (ca_file, crt, key) = common::node_certs(&dir, &ca);
+    // A system-data directory (#64): the short suite's `system-data` check
+    // reads the history and this machine's assets back.
+    let sysdata = dir.join("system-data");
+    std::fs::create_dir_all(&sysdata).unwrap();
     std::fs::write(
         &cfg,
         format!(
-            "[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nadmin_token = \"harness-admin\"\n{}",
-            common::api_toml(&ca_file, &crt, &key)
+            "[discovery]\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nadmin_token = \"harness-admin\"\n{}[history]\ndir = \"{}\"\n",
+            common::api_toml(&ca_file, &crt, &key),
+            sysdata.display()
         ),
     )
     .unwrap();

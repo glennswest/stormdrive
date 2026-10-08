@@ -22,6 +22,7 @@ pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("drive-identity", drive_identity(api)).await;
     r.run("health-verdicts", health_verdicts(api)).await;
     r.run("drive-slabs", drive_slabs(api)).await;
+    r.run("system-data", system_data(api)).await;
     r.run("summary-card", summary_card(api)).await;
     r.run("placement", placement(api)).await;
     r.run("components-feed", components_feed(api)).await;
@@ -142,6 +143,48 @@ async fn drive_slabs(api: &Api) -> Outcome {
         out.push_str(&format!("; reported: {}", findings.join("; ")));
     }
     Ok(out)
+}
+
+/// Drive history and hardware assets in system-data (#64): when the volume
+/// is mounted for stormdrive, this boot's assets are recorded and every
+/// sampled drive has history. Skipped while it is not mounted.
+async fn system_data(api: &Api) -> Outcome {
+    api.need((0, 26, 0), "drive history + assets (#64)")?;
+    let st = api.get("api/v1/history").await?.json("GET /api/v1/history")?;
+    ensure(st["dir"].is_string(), "history status names no dir")?;
+    if st["active"] != true {
+        return Err(Why::Skip(format!("system-data not mounted: {}", st["reason"].as_str().unwrap_or("?"))));
+    }
+    // The first discovery pass takes the assets; give it a moment.
+    let mut assets = None;
+    for _ in 0..30 {
+        let r = api.get("api/v1/assets").await?;
+        if r.ok() {
+            assets = Some(r.json("GET /api/v1/assets")?);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    let a = assets.ok_or_else(|| Why::Fail("system-data is active but no assets record was taken in 30 s".into()))?;
+    let items = a["items"].as_object().ok_or_else(|| Why::Fail("assets: items is not an object".into()))?;
+    ensure(!items.is_empty(), "assets: no items")?;
+    ensure(a["boot_id"] == st["boot"]["boot_id"], format!("assets boot {} ≠ this boot {}", a["boot_id"], st["boot"]["boot_id"]))?;
+    ensure(a["changes"].is_array(), "assets: no changes list")?;
+    let cpus = items.keys().filter(|k| k.starts_with("cpu/")).count();
+    // Every drive health was collected for has history.
+    let mut with = 0;
+    for d in crate::drives(api).await?.iter().filter(|d| present(d) && !d["health"]["collected_at"].is_null()) {
+        let h = api.get(&format!("api/v1/drives/{}/history?limit=1", s(d, "id"))).await?.json("GET drive history")?;
+        let recs = h["records"].as_array().map(Vec::len).unwrap_or_default();
+        ensure(recs == 1, format!("{}: sampled, but {recs} history records", s(d, "name")))?;
+        with += 1;
+    }
+    Ok(format!(
+        "{}: {} asset items ({cpus} cpu), {} change(s) since the previous boot; {with} drives with history",
+        st["dir"].as_str().unwrap_or_default(),
+        items.len(),
+        a["changes"].as_array().map(Vec::len).unwrap_or_default()
+    ))
 }
 
 /// The stormd card: a known health word, and its Drives count is the list's.
