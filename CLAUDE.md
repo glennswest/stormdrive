@@ -442,6 +442,37 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
+### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — IN PROGRESS
+
+Owner: "Formatting a 15 PB SSD drive is a century; imagine a server with
+100s." Review of every path that writes/reads a device at create, enrol,
+install, import or replace (full table: docs/architecture.md "Cost at
+enrol"):
+- worker `partition` (`write_layout`): 4 MiB head + 4 MiB tail + 2 GPT
+  copies = constant ~8 MiB whatever the size — metadata only, OK
+- worker/fleet `enroll` / auto_add: our side is open + labels (no I/O);
+  the engine's `POST /api/v1/slabs` zero-fills its whole slot table
+  (stormblock `slab.rs` `write_zeros`, ~64 GiB per PiB, ~1 TB at 15 PB) →
+  stormblock#363 (commented). Our client gave it one 5 s try and is not
+  idempotent → on a large drive the enrol fails and the engine's format is
+  cut off. Fix here: `Call::Format`, its own policy (15 min a try, connect
+  failures only retried)
+- contents/discovery probes: LBA 0, GPT, partition starts — bounded, OK
+- policy steps: [format only when 520-byte] partition enroll; no test, no
+  sanitize. The 520→4096 FORMAT UNIT is the drive's own, opt-in per policy
+  (`reformat`), background, per-HBA bounded, re-attached after a restart —
+  but it is on the policy's enrol chain, which #72 says it must never be →
+  Decide issue (#50 asked for it)
+- tests: smoke 16 MiB, destructive_sample 16 MiB whatever the size;
+  read_scan is O(capacity) and explicit only (never on a policy/auto path)
+- sanitize / security erase / NVMe format: device-side, explicit steps
+Steps:
+- [ ] write_layout over a byte-counting target: 1 PiB test (bytes written,
+      seconds) · [ ] format_slab long timeout + stand-in engine test
+- [ ] tests: policy steps / test sizes constant at 1 PiB
+- [ ] docs (architecture table, README), changelog; stormblock#363 comment;
+      Decide issue (policy reformat); sc-build, version, golden
+
 ### #71: every remote call retries (code review, P1, 2026-10-08) — DONE (v0.27.0)
 
 Owner, after the Dell's test images failed on one 30 s engine timeout:
