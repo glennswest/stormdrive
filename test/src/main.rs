@@ -10,6 +10,8 @@ async fn main() {
         eprintln!("usage: test short|medium|long");
         std::process::exit(2);
     }
+    // stdout is the JSON report; retries (#71) are logged on stderr.
+    retry::log_to_stderr(true);
     let env = stormdrive_test::env::Env::read(&suite);
     let mut r = stormdrive_test::report::Report::new(&env.results);
     let code = stormdrive_test::run(&suite, &env, &mut r).await;

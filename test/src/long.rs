@@ -148,7 +148,7 @@ async fn wave(env: &Env, api: &Api, n: usize, budget: Duration) -> Result<Wave, 
             }
             Ok(r) if r.status == 409 => w.smoke_busy += 1,
             Ok(r) => w.errors.push(format!("smoke {name}: HTTP {}", r.status)),
-            Err(Why::Fail(e)) | Err(Why::Skip(e)) => w.errors.push(format!("smoke {name}: {e}")),
+            Err(e) => w.errors.push(format!("smoke {name}: {}", e.message())),
         }
     }
     w.smoke_started = running.len();
@@ -169,7 +169,7 @@ async fn wave(env: &Env, api: &Api, n: usize, budget: Duration) -> Result<Wave, 
                 match api.get(path).await {
                     Ok(r) if r.ok() => lat.push(t.elapsed().as_millis() as u64),
                     Ok(r) => errs.push(format!("{path}: HTTP {}", r.status)),
-                    Err(Why::Fail(e)) | Err(Why::Skip(e)) => errs.push(format!("{path}: {e}")),
+                    Err(e) => errs.push(format!("{path}: {}", e.message())),
                 }
             }
             (lat, errs)

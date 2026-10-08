@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use retry::{Idempotent, Policy};
 use serde_json::Value;
 
 use crate::env::Tls;
@@ -36,15 +37,20 @@ impl Reply {
         (200..300).contains(&self.status)
     }
 
-    /// The body when the status is 2xx, else a failure naming the call.
+    /// The body when the status is 2xx, else a failure naming the call —
+    /// infrastructure for 503/504 (stormdrive, or what it calls, not there
+    /// through its own retries: the engine, the apiserver; #71).
     pub fn json(self, what: &str) -> Result<Value, Why> {
         if self.ok() {
-            Ok(self.body)
-        } else {
-            Err(Why::Fail(format!("{what}: HTTP {} {}", self.status, self.text.chars().take(200).collect::<String>())))
+            return Ok(self.body);
         }
+        let m = format!("{what}: HTTP {} {}", self.status, self.text.chars().take(200).collect::<String>());
+        Err(if matches!(self.status, 503 | 504) { Why::Infra(m) } else { Why::Fail(m) })
     }
 }
+
+/// One request's own timeout; `retry::Policy::TEST` bounds the whole call.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let mut it = v.trim().trim_start_matches('v').split(['.', '-', '+']).map(|p| p.parse::<u64>().ok());
@@ -55,7 +61,7 @@ impl Api {
     /// `token`: the run's storage-admin bearer; `read_token`: a bearer for
     /// reads when there is none (the pod's service account).
     pub fn new(base: &str, tls: &Tls, token: Option<String>, read_token: Option<String>) -> Self {
-        let mut b = reqwest::Client::builder().timeout(Duration::from_secs(60)).connect_timeout(Duration::from_secs(10));
+        let mut b = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).connect_timeout(Duration::from_secs(10));
         if let Some(ca) = &tls.ca {
             match reqwest::Certificate::from_pem_bundle(ca) {
                 Ok(cs) => {
@@ -89,11 +95,39 @@ impl Api {
         format!("{}/{}", self.base, path.trim_start_matches('/'))
     }
 
-    async fn send(&self, mut req: reqwest::RequestBuilder) -> Result<Reply, Why> {
-        if let Some(t) = &self.token {
-            req = req.bearer_auth(t);
+    /// Every call to the node (#71): `retry::Policy::TEST`. A read retries
+    /// timeouts, refused connections and 5xx; a write (`Idempotent::No`)
+    /// only what never reached the node, since the suites' writes start
+    /// things (a test, a designation) that a repeat would find busy. A call
+    /// that gives up, or a transport error not retried, is infrastructure
+    /// (`Why::Infra`), not a failure of the feature under test.
+    async fn send_with(&self, req: reqwest::RequestBuilder, idem: Idempotent, usual: Duration) -> Result<reqwest::Response, Why> {
+        let what = match req.try_clone().and_then(|r| r.build().ok()) {
+            Some(r) => format!("{} {}", r.method(), r.url().path()),
+            None => "stormdrive".to_string(),
+        };
+        let tried = retry::with_backoff(
+            &Policy::TEST,
+            &what,
+            |a| {
+                // The suites send JSON or no body: always cloneable.
+                let mut r = req.try_clone().expect("test request body is cloneable").timeout(a.timeout(usual));
+                if let Some(t) = &self.token {
+                    r = r.bearer_auth(t);
+                }
+                r.send()
+            },
+            |r| retry::classify_response(r, idem),
+        )
+        .await;
+        if let Some(infra) = tried.gave_up {
+            return Err(Why::Infra(infra.to_string()));
         }
-        let r = req.send().await.map_err(|e| Why::Fail(format!("request failed: {e}")))?;
+        tried.result.map_err(|e| Why::Infra(format!("{what}: {}", retry::error_chain(&e))))
+    }
+
+    async fn send(&self, req: reqwest::RequestBuilder, idem: Idempotent) -> Result<Reply, Why> {
+        let r = self.send_with(req, idem, REQUEST_TIMEOUT).await?;
         let status = r.status().as_u16();
         let header = |h: reqwest::header::HeaderName| r.headers().get(h).and_then(|v| v.to_str().ok()).map(str::to_string);
         let etag = header(reqwest::header::ETAG);
@@ -104,11 +138,11 @@ impl Api {
     }
 
     pub async fn get(&self, path: &str) -> Result<Reply, Why> {
-        self.send(self.http.get(self.url(path))).await
+        self.send(self.http.get(self.url(path)), Idempotent::Yes).await
     }
 
     pub async fn get_if_none_match(&self, path: &str, etag: &str) -> Result<Reply, Why> {
-        self.send(self.http.get(self.url(path)).header(reqwest::header::IF_NONE_MATCH, etag)).await
+        self.send(self.http.get(self.url(path)).header(reqwest::header::IF_NONE_MATCH, etag), Idempotent::Yes).await
     }
 
     pub async fn post(&self, path: &str, body: Value) -> Result<Reply, Why> {
@@ -128,7 +162,7 @@ impl Api {
     /// one (`STORM_STORMDRIVE_TOKEN` unset) a 401/403 skips the check rather
     /// than failing it — the gate doing its job is not the feature's fault.
     async fn write(&self, req: reqwest::RequestBuilder) -> Result<Reply, Why> {
-        let r = self.send(req).await?;
+        let r = self.send(req, Idempotent::No).await?;
         if !self.admin && matches!(r.status, 401 | 403) {
             return Err(Why::Skip(format!("needs a storage-admin bearer (STORM_STORMDRIVE_TOKEN): HTTP {}", r.status)));
         }
@@ -146,23 +180,19 @@ impl Api {
     /// this client holds.
     pub async fn post_as(&self, path: &str, bearer: Option<&str>) -> Result<Reply, Why> {
         let api = self.bare(bearer);
-        api.send(api.http.post(api.url(path))).await
+        api.send(api.http.post(api.url(path)), Idempotent::No).await
     }
 
     /// The same read with no credential at all, or with `bearer`.
     pub async fn get_as(&self, path: &str, bearer: Option<&str>) -> Result<Reply, Why> {
         let api = self.bare(bearer);
-        api.send(api.http.get(api.url(path))).await
+        api.send(api.http.get(api.url(path)), Idempotent::Yes).await
     }
 
     /// A streaming GET (kube `?watch=1`): the first `want` lines, or what
     /// arrived within `within`.
     pub async fn stream_lines(&self, path: &str, want: usize, within: Duration) -> Result<Vec<String>, Why> {
-        let mut req = self.http.get(self.url(path)).timeout(within + Duration::from_secs(5));
-        if let Some(t) = &self.token {
-            req = req.bearer_auth(t);
-        }
-        let mut r = req.send().await.map_err(|e| Why::Fail(format!("watch: {e}")))?;
+        let mut r = self.send_with(self.http.get(self.url(path)), Idempotent::Yes, within + Duration::from_secs(5)).await?;
         if !r.status().is_success() {
             return Err(Why::Fail(format!("watch: HTTP {}", r.status())));
         }
@@ -214,5 +244,51 @@ mod tests {
         assert_eq!(parse_version("0.15.0-dirty"), Some((0, 15, 0)));
         assert_eq!(parse_version("x"), None);
         assert!(Some((0, 16, 0)) >= Some((0, 12, 0)));
+    }
+
+    /// #71: a node that answers 503 twice, then 200 — a read retries
+    /// through it, a write does not; a node that is not there is
+    /// infrastructure, not a failure.
+    #[tokio::test]
+    async fn reads_retry_writes_do_not_and_absence_is_infrastructure() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let hits = Arc::new(AtomicU32::new(0));
+        let h = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = l.accept().await else { return };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let n = h.fetch_add(1, Ordering::SeqCst);
+                let reply = if n < 2 || n >= 3 {
+                    "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"
+                };
+                let _ = s.write_all(reply.as_bytes()).await;
+            }
+        });
+        let tls = crate::env::Tls { ca: None, identity: None };
+        let api = super::Api::new(&base, &tls, None, None);
+        assert!(api.get("api/v1/health").await.ok().unwrap().ok());
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+        let r = api.post_empty("api/v1/x").await.ok().unwrap();
+        assert_eq!(r.status, 503);
+        assert_eq!(hits.load(Ordering::SeqCst), 4, "a write is sent once");
+        assert!(matches!(r.json("POST x"), Err(crate::report::Why::Infra(_))));
+
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let gone = format!("http://{}", l.local_addr().unwrap());
+        drop(l);
+        let api = super::Api::new(&gone, &tls, None, None);
+        match api.get("api/v1/health").await {
+            Err(crate::report::Why::Infra(m)) => assert!(m.contains("gave up after 4 attempts"), "{m}"),
+            _ => panic!("not infrastructure"),
+        }
     }
 }

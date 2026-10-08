@@ -109,7 +109,7 @@ pub async fn run(suite: &str, env: &Env, r: &mut Report) -> i32 {
         _ => tokio::time::timeout(limit, long::run(env, &api, r)).await,
     };
     let code = match result {
-        Ok(Ok(())) => i32::from(r.fail > 0),
+        Ok(Ok(())) => r.exit_code(),
         Ok(Err(e)) => {
             eprintln!("could not run: {e}");
             2
@@ -127,9 +127,10 @@ pub async fn run(suite: &str, env: &Env, r: &mut Report) -> i32 {
 /// answering is "could not run" (exit 2), never a pass or a fail.
 pub async fn api_up(api: &Api, r: &mut Report) -> Result<(), String> {
     let t = std::time::Instant::now();
-    let reply = api.get("api/v1/health").await.map_err(|e| match e {
-        Why::Fail(m) | Why::Skip(m) => format!("stormdrive at {} did not answer: {m}", api.url("")),
-    })?;
+    let reply = api
+        .get("api/v1/health")
+        .await
+        .map_err(|e| format!("stormdrive at {} did not answer: {}", api.url(""), e.message()))?;
     let outcome = (|| {
         let v = reply.json("GET /api/v1/health")?;
         report::ensure(v["status"] == "ok", format!("status {}", v["status"]))?;
