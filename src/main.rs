@@ -93,6 +93,9 @@ async fn main() -> anyhow::Result<()> {
         Some(k) => tracing::info!(apiserver = k.base(), "writes are reviewed by the apiserver (storage.storm.io)"),
         None => tracing::warn!("no apiserver ([kubernetes] api_url): only the admin token may write, and no Drive/DriveOperation objects are kept"),
     }
+    // app-system-data (#64): drive history + assets, kept across installs.
+    let history = stormdrive::history::History::new(&config.history, stormdrive::history::Boot::read(&node_name));
+    history.available();
     let gate = stormdrive::kubeauth::Gate::new(&config.api, kube.clone(), data_dir.as_deref());
     let state = Arc::new(AppState {
         config,
@@ -115,6 +118,8 @@ async fn main() -> anyhow::Result<()> {
         worker: stormdrive::worker::Worker::load(data_dir.as_deref()),
         gate,
         engine_slabs: RwLock::new(None),
+        history: Arc::new(history),
+        assets: RwLock::new(None),
     });
 
     // What was in flight when we stopped — worker jobs, and drives a

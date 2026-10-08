@@ -215,6 +215,7 @@ async fn tick(
         merge_observed(state, observed).await;
         let cached = discovery::probe_cache().lock().map(|c| c.len()).unwrap_or_default();
         state.poller.record_discovery(started.elapsed().as_millis() as u64, seen, cached);
+        refresh_assets(state).await;
     }
 
     refresh_offers(state).await;
@@ -240,6 +241,39 @@ async fn tick(
 
     state.persist().await;
     Ok(())
+}
+
+/// This boot's hardware assets in system-data (#64), after each discovery
+/// pass: written the first time and whenever an item changed.
+async fn refresh_assets(state: &Arc<AppState>) {
+    let mut items = std::collections::BTreeMap::new();
+    {
+        let inv = state.inventory.read().await;
+        let drives: Vec<_> = inv.drives.values().cloned().collect();
+        crate::assets::scanned_items(&drives, &*state.hbas.read().await, &*state.shelves.read().await, &mut items);
+    }
+    let h = state.history.clone();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let res = tokio::task::spawn_blocking(move || {
+        let (host, mem) = crate::assets::host_items(std::path::Path::new("/"));
+        items.extend(host);
+        crate::assets::record(&h, &h.boot, items, mem, now)
+    })
+    .await;
+    match res {
+        Ok(Ok(Some(r))) => {
+            {
+                let mut log = state.events.write().await;
+                for (warn, msg) in r.events {
+                    log.push(None, if warn { Severity::Warning } else { Severity::Info }, "assets", format!("{msg} ({})", r.file));
+                }
+            }
+            *state.assets.write().await = Some(r.assets);
+        }
+        Ok(Ok(None)) => {}
+        Ok(Err(e)) => tracing::warn!("system-data: assets not written: {e:#}"),
+        Err(e) => tracing::warn!("system-data: assets: {e}"),
+    }
 }
 
 /// Health polling must not stop for good (#58: a drive whose health was
@@ -366,6 +400,16 @@ async fn apply_outcome(
         let Some(d) = inv.drives.get(&id) else { return };
         (d.health.collected_at.is_some().then_some(d.health.media_errors), d.health.status(), d.engine_finding.clone())
     };
+    // The first sample in this run (a restart, a reinstall) grows from the
+    // drive's last kept record (#64), not from nothing.
+    let prev = match prev {
+        Some(p) => Some(p),
+        None if out.answered() => {
+            let (h, d) = (state.history.clone(), drive.clone());
+            tokio::task::spawn_blocking(move || h.baseline_media_errors(&d)).await.ok().flatten()
+        }
+        None => None,
+    };
     let (candidate, mut why) = evaluate(&state.config.monitor, &sample, prev);
     let mut effective = damper.apply(&state.config.monitor, id, current, candidate);
     // The engine leaving the drive's slabs unused (#58) is not damped: it
@@ -429,7 +473,22 @@ async fn apply_outcome(
             }
         }
     }
+    let snapshot = out.answered().then(|| inv.drives.get(&id).cloned()).flatten();
     drop(inv);
+    // The drive history in system-data (#64): a record when due; findings
+    // (an error counter grew, a lifetime counter went back) are events.
+    if let Some(snap) = snapshot {
+        let h = state.history.clone();
+        let s = sample.clone();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let found = tokio::task::spawn_blocking(move || h.observe(&snap, &s, effective, now)).await.unwrap_or_default();
+        if !found.is_empty() {
+            let mut log = state.events.write().await;
+            for f in found {
+                log.push(Some(id), Severity::Warning, "history", format!("{} ({} {}): {}", drive.name, drive.model, drive.serial, f.message()));
+            }
+        }
+    }
     if let Some(msg) = wear_event {
         state.events.write().await.push(Some(id), Severity::Warning, "wear", msg);
     }

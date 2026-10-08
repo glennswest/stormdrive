@@ -66,6 +66,10 @@ pub struct AppState {
     /// The engine's own report of where the node's slabs run, as last read
     /// (#58); None until it answers with one.
     pub engine_slabs: RwLock<Option<crate::engine::EngineSlabs>>,
+    /// Drive history and hardware assets in system-data (#64).
+    pub history: Arc<crate::history::History>,
+    /// This boot's hardware assets record, once taken (#64).
+    pub assets: RwLock<Option<crate::assets::Assets>>,
 }
 
 impl AppState {
@@ -198,6 +202,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}", get(get_drive).delete(forget_drive))
         .route("/api/v1/drives/{id}/health", get(get_drive_health))
         .route("/api/v1/drives/{id}/slabs", get(get_drive_slabs))
+        .route("/api/v1/drives/{id}/history", get(get_drive_history))
+        // app-system-data (#64): drive history status, this boot's assets.
+        .route("/api/v1/history", get(history_status))
+        .route("/api/v1/assets", get(get_assets))
         .route("/api/v1/drives/{id}/locate", post(set_locate))
         // Parameter-less action routes: a stormview renderer invokes
         // method+path with no body, so every action needs a body-free form.
@@ -691,6 +699,61 @@ async fn get_drive_slabs(
         "engine": engine,
         "finding": d.engine_finding,
     })))
+}
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    limit: Option<usize>,
+}
+
+/// `GET /api/v1/drives/{id}/history?limit=` — the drive's records from
+/// system-data (#64), oldest first, the newest `limit` (default 100, at
+/// most 10000). Across installs: the file is the drive's, not this run's.
+async fn get_drive_history(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let d = {
+        let inv = s.inventory.read().await;
+        inv.resolve(&id).cloned().ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?
+    };
+    let limit = q.limit.unwrap_or(100).clamp(1, 10_000);
+    let h = s.history.clone();
+    let d2 = d.clone();
+    let (active, records) = tokio::task::spawn_blocking(move || (h.available(), h.read(&d2, limit)))
+        .await
+        .map_err(|e| ApiError::internal(format!("history read: {e}")))?;
+    Ok(Json(json!({
+        "drive": d.id,
+        "name": d.name,
+        "key": crate::history::key(&d),
+        "active": active,
+        "records": records,
+    })))
+}
+
+/// `GET /api/v1/history` — where drive history and assets go, and whether
+/// they are being written (#64).
+async fn history_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let h = s.history.clone();
+    let st = tokio::task::spawn_blocking(move || {
+        h.available();
+        h.status.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    })
+    .await
+    .unwrap_or_default();
+    Json(json!(st))
+}
+
+/// `GET /api/v1/assets` — this boot's hardware record (#64): every item,
+/// and what changed since the previous boot. 404 until it is taken (or
+/// when system-data is not mounted).
+async fn get_assets(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
+    match s.assets.read().await.clone() {
+        Some(a) => Ok(Json(json!(a))),
+        None => Err(ApiError::not_found("no assets record this boot (see /api/v1/history)".to_string())),
+    }
 }
 
 #[derive(Deserialize)]

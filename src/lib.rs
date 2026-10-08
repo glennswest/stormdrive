@@ -7,6 +7,7 @@
 //! docs/architecture.md.
 
 pub mod api;
+pub mod assets;
 pub mod components;
 pub mod config;
 pub mod contents;
@@ -22,6 +23,7 @@ pub mod fleet;
 pub mod format;
 pub mod gpt;
 pub mod hba;
+pub mod history;
 pub mod hotplug;
 pub mod inventory;
 pub mod iomfw;
