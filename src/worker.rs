@@ -1239,19 +1239,38 @@ fn read_geometry(name: &str) -> Option<(u64, u32)> {
     Some((sectors * 512, lbs))
 }
 
+/// Where `write_layout` writes: the disk, or (in tests) a counter.
+pub trait LayoutTarget {
+    fn put(&self, buf: &[u8], offset: u64) -> std::io::Result<()>;
+    fn sync(&self) -> std::io::Result<()>;
+}
+
+#[cfg(unix)]
+impl LayoutTarget for std::fs::File {
+    fn put(&self, buf: &[u8], offset: u64) -> std::io::Result<()> {
+        std::os::unix::fs::FileExt::write_all_at(self, buf, offset)
+    }
+    fn sync(&self) -> std::io::Result<()> {
+        self.sync_all()
+    }
+}
+
+/// The most `write_layout` clears at each end of the disk.
+pub const CLEAR_BYTES: u64 = 4 << 20;
+
 /// Clear the first and last 4 MiB — what was there stops being there, not
 /// just stops being described (old tables, superblocks, md/LVM labels) —
-/// then write both copies of the table and sync.
-#[cfg(unix)]
-pub fn write_layout(f: &std::fs::File, capacity: u64, layout: &crate::gpt::Layout) -> Result<(), String> {
-    use std::os::unix::fs::FileExt;
-    let zero = vec![0u8; (4u64 << 20).min(capacity / 2) as usize];
+/// then write both copies of the table and sync. Metadata only (#72): about
+/// 8 MiB whatever the disk's size, never a pass over its surface; what
+/// stormblock never wrote it never reads.
+pub fn write_layout(f: &impl LayoutTarget, capacity: u64, layout: &crate::gpt::Layout) -> Result<(), String> {
+    let zero = vec![0u8; CLEAR_BYTES.min(capacity / 2) as usize];
     let tail = capacity.saturating_sub(zero.len() as u64);
-    f.write_all_at(&zero, 0).map_err(|e| format!("clear head: {e}"))?;
-    f.write_all_at(&zero, tail).map_err(|e| format!("clear tail: {e}"))?;
-    f.write_all_at(&layout.primary, 0).map_err(|e| format!("write GPT: {e}"))?;
-    f.write_all_at(&layout.backup, layout.backup_offset).map_err(|e| format!("write backup GPT: {e}"))?;
-    f.sync_all().map_err(|e| format!("sync: {e}"))
+    f.put(&zero, 0).map_err(|e| format!("clear head: {e}"))?;
+    f.put(&zero, tail).map_err(|e| format!("clear tail: {e}"))?;
+    f.put(&layout.primary, 0).map_err(|e| format!("write GPT: {e}"))?;
+    f.put(&layout.backup, layout.backup_offset).map_err(|e| format!("write backup GPT: {e}"))?;
+    f.sync().map_err(|e| format!("sync: {e}"))
 }
 
 /// Clear the old signatures, write a GPT with one partition, have the kernel
@@ -1765,6 +1784,35 @@ mod tests {
             other => eprintln!("sfdisk not usable here ({:?}); our own parser checked it", other.map(|o| o.status)),
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #72: partitioning a 1 PiB disk writes metadata only — ~8 MiB at the
+    /// two ends, counted — and takes no time to speak of.
+    #[test]
+    fn partitioning_a_pib_disk_writes_only_metadata() {
+        struct Counter(std::sync::Mutex<Vec<(u64, u64)>>);
+        impl LayoutTarget for Counter {
+            fn put(&self, buf: &[u8], offset: u64) -> std::io::Result<()> {
+                self.0.lock().unwrap().push((offset, buf.len() as u64));
+                Ok(())
+            }
+            fn sync(&self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let cap = 1u64 << 50;
+        let started = std::time::Instant::now();
+        let l = crate::gpt::layout(cap, 4096, crate::gpt::TYPE_SLAB_DATA, "stormblock-data", [7; 16], [9; 16]).unwrap();
+        let c = Counter(Default::default());
+        write_layout(&c, cap, &l).unwrap();
+        let writes = c.0.into_inner().unwrap();
+        let bytes: u64 = writes.iter().map(|w| w.1).sum();
+        assert_eq!(bytes, 2 * CLEAR_BYTES + l.primary.len() as u64 + l.backup.len() as u64);
+        assert!(bytes < 9 << 20, "{bytes} bytes written on a 1 PiB disk");
+        for (off, len) in &writes {
+            assert!(off + len <= CLEAR_BYTES || *off >= cap - CLEAR_BYTES, "write at {off}+{len} is not at an end");
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
     }
 
     #[test]

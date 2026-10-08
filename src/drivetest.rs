@@ -268,6 +268,18 @@ fn run_destructive(drive: &Drive, handle: &TestHandle) -> std::io::Result<()> {
     }
 }
 
+/// The bytes a test reads (and, destructive, writes and reads back). Smoke
+/// and destructive_sample are sampled: a constant whatever the size (#72).
+/// read_scan is the whole surface — an operator's choice, never on an
+/// enrol path.
+pub fn planned_bytes(kind: TestKind, capacity: u64) -> u64 {
+    match kind {
+        TestKind::Smoke => sample_offsets(capacity, SAMPLE_REGIONS).len() as u64 * MIB,
+        TestKind::ReadScan => capacity,
+        TestKind::DestructiveSample => sample_offsets(capacity, DESTRUCTIVE_REGIONS).len() as u64 * 2 * MIB,
+    }
+}
+
 /// Start a test: flips the drive to Testing, runs on the blocking pool,
 /// restores Idle and emits the verdict event when done. Returns the shared
 /// handle the API polls.
@@ -276,13 +288,7 @@ pub async fn start(
     drive: Drive,
     kind: TestKind,
 ) -> Arc<TestHandle> {
-    let bytes_total = match kind {
-        TestKind::Smoke => sample_offsets(drive.capacity_bytes, SAMPLE_REGIONS).len() as u64 * MIB,
-        TestKind::ReadScan => drive.capacity_bytes,
-        TestKind::DestructiveSample => {
-            sample_offsets(drive.capacity_bytes, DESTRUCTIVE_REGIONS).len() as u64 * 2 * MIB
-        }
-    };
+    let bytes_total = planned_bytes(kind, drive.capacity_bytes);
     let handle = Arc::new(TestHandle::new(kind, bytes_total));
     state.tests.write().await.insert(drive.id, handle.clone());
     set_activity(&state, drive.id, Activity::Testing).await;
@@ -332,6 +338,16 @@ async fn set_activity(state: &Arc<AppState>, id: DriveId, activity: Activity) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #72: the sampled tests cost the same on 1 PiB as on 1 GiB.
+    #[test]
+    fn sampled_tests_are_constant_cost() {
+        for kind in [TestKind::Smoke, TestKind::DestructiveSample] {
+            assert_eq!(planned_bytes(kind, 1 << 50), planned_bytes(kind, 1 << 30), "{kind:?}");
+            assert!(planned_bytes(kind, 1 << 50) <= 32 * MIB, "{kind:?}");
+        }
+        assert_eq!(planned_bytes(TestKind::ReadScan, 1 << 50), 1 << 50);
+    }
 
     #[test]
     fn sample_offsets_cover_ends_and_spread() {

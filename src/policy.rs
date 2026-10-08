@@ -313,6 +313,21 @@ mod tests {
         assert_eq!(crate::worker::guard(&d, &steps, false, &cx), Ok(()));
     }
 
+    /// #72: a usable drive of any size — 1 PiB here — is enrolled by
+    /// metadata steps only: a partition table and the engine's slab. No
+    /// test, no erase, no format.
+    #[test]
+    fn a_pib_drive_is_enrolled_by_metadata_steps_only() {
+        let p = stormblock1();
+        let mut d = netapp(5);
+        d.block_size = 4096;
+        d.usable = true;
+        d.capacity_bytes = 1 << 50;
+        d.health.status = Some(HealthStatus::Good);
+        let Verdict::Run(steps) = verdict(&p, &d, false) else { panic!() };
+        assert!(steps.iter().all(|s| matches!(s, Step::Partition { .. } | Step::Enroll { .. })), "{steps:?}");
+    }
+
     #[test]
     fn a_drive_holding_data_is_left_alone() {
         let p = stormblock1();

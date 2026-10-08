@@ -62,6 +62,17 @@ impl Policy {
         max_delay: Duration::from_secs(5),
         deadline: Duration::from_secs(100),
     };
+    /// The engine's slab format (`POST /api/v1/slabs`, 15 min a try). It is
+    /// not idempotent, so only a try that never reached the engine repeats;
+    /// the long try is so a format the engine takes time over (its slot
+    /// table is zero-filled today, stormblock#363) is not cut off (#72).
+    pub const ENGINE_FORMAT: Policy = Policy {
+        name: "engine-format",
+        attempts: 4,
+        base: Duration::from_millis(250),
+        max_delay: Duration::from_secs(4),
+        deadline: Duration::from_secs(20 * 60),
+    };
     /// The apiserver: 10 s requests; the write gate waits on it, so short.
     pub const KUBE: Policy = Policy {
         name: "kube",

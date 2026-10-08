@@ -29,6 +29,10 @@ const DEFAULT_TOKEN_FILES: &[&str] = &[
 /// placement walk (the engine walks every extent map for it).
 const ENGINE_TIMEOUT: Duration = Duration::from_secs(5);
 const ENGINE_SLOW_TIMEOUT: Duration = Duration::from_secs(30);
+/// One try of a slab format (#72): enrolling is metadata only, but the
+/// engine's format zero-fills its slot table (~64 GiB a PiB, stormblock#363),
+/// and a try cut off by our timeout is a format the engine abandons halfway.
+const ENGINE_FORMAT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Which credentials and policy an engine call uses.
 #[derive(Clone, Copy)]
@@ -38,6 +42,9 @@ enum Call {
     Admin,
     /// `ENGINE_SLOW`: the volume placement walk.
     Slow,
+    /// `ENGINE_FORMAT`: a slab format — destructive (the admin cascade),
+    /// with a try long enough for the engine to finish it.
+    Format,
 }
 
 /// The engine was not there (timeouts, refused, 5xx) for a whole retry
@@ -288,6 +295,7 @@ impl StormBlockClient {
         let (policy, usual) = match how {
             Call::Ordinary | Call::Admin => (&Policy::ENGINE, ENGINE_TIMEOUT),
             Call::Slow => (&Policy::ENGINE_SLOW, ENGINE_SLOW_TIMEOUT),
+            Call::Format => (&Policy::ENGINE_FORMAT, ENGINE_FORMAT_TIMEOUT),
         };
         let tried = retry::with_backoff(
             policy,
@@ -297,7 +305,7 @@ impl StormBlockClient {
                 let r = req.try_clone().expect("engine request body is cloneable").timeout(a.timeout(usual));
                 async move {
                     match how {
-                        Call::Admin => self.send_admin_once(r).await,
+                        Call::Admin | Call::Format => self.send_admin_once(r).await,
                         Call::Ordinary | Call::Slow => self.send_once(r).await,
                     }
                 }
@@ -510,8 +518,9 @@ impl StormBlockClient {
         // Not retried once it may have reached the engine: a second format
         // of a drive that took the first is refused (or worse). The worker
         // and the fleet loop report the failure; nothing repeats it blind.
+        // One try may take minutes (`Call::Format`, #72).
         Ok(self
-            .call(Call::Admin, req, Idempotent::No)
+            .call(Call::Format, req, Idempotent::No)
             .await?
             .0
             .error_for_status()?
@@ -978,6 +987,33 @@ mod tests {
         assert_eq!(i.what, "stormblock GET /api/v1/drives");
         // Connection refused never reached the engine: even a format retries.
         let e = c.format_slab("/dev/sdb", "hdd", None).await.unwrap_err();
-        assert_eq!(e.downcast_ref::<retry::Infra>().unwrap().attempts, Policy::ENGINE.attempts);
+        assert_eq!(e.downcast_ref::<retry::Infra>().unwrap().attempts, Policy::ENGINE_FORMAT.attempts);
+    }
+
+    /// #72: a slab format the engine takes longer than an ordinary call's
+    /// 5 s over (its zero-filled slot table on a large drive) is waited for,
+    /// once — not cut off, and not sent twice.
+    #[tokio::test]
+    async fn a_slow_slab_format_is_waited_for_not_cut_off() {
+        let tries = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let t = tries.clone();
+        let app = axum::Router::new().route(
+            "/api/v1/slabs",
+            axum::routing::post(move || {
+                let t = t.clone();
+                async move {
+                    t.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(ENGINE_TIMEOUT + Duration::from_secs(2)).await;
+                    axum::Json(serde_json::json!({ "id": "slab-1" }))
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let c = StormBlockClient::new(StormBlockConfig { url, admin_token: "root".into(), ..Default::default() });
+        let v = c.format_slab("/dev/sdb", "hdd", Some("data")).await.unwrap();
+        assert_eq!(v["id"], "slab-1");
+        assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
