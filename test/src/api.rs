@@ -264,7 +264,7 @@ mod tests {
                 let mut buf = [0u8; 4096];
                 let _ = s.read(&mut buf).await;
                 let n = h.fetch_add(1, Ordering::SeqCst);
-                let reply = if n < 2 || n >= 3 {
+                let reply = if n != 2 {
                     "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
                 } else {
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"

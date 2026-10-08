@@ -189,7 +189,7 @@ fn rand_u64() -> u64 {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(1)
-            ^ (std::process::id() as u64) << 32;
+            ^ ((std::process::id() as u64) << 32);
         let _ = STATE.compare_exchange(0, seed | 1, Ordering::Relaxed, Ordering::Relaxed);
     }
     s = STATE.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
