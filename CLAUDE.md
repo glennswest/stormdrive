@@ -477,6 +477,9 @@ Steps:
 - [x] build VM on 457efba: 237 unit (engine + kube retry tests) + retry 9
       (each policy vs a fake failing N times, deadline, Retry-After, real
       sockets) + test crate 11 + harnesses, clippy -D warnings clean; v0.27.0
+- [x] golden requested twice on v0.27.0: compiled, then the SBOM step's
+      `cargo metadata --offline` failed (stormcentral#589, commented). #71
+      closed; the golden builds once #589 is fixed
 
 ### #64: drive history + hardware assets in system-data (P0, stormcos#456, 2026-10-08) — DONE (v0.26.0)
 
