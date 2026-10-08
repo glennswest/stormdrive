@@ -398,7 +398,7 @@ mod tests {
                 critical_warning: 4,
                 media_errors: 7,
                 collected_at: Some(UNIX_EPOCH + std::time::Duration::from_secs(1_791_300_001)),
-                nvme: Some(NvmeCounters { available_spare_threshold_pct: 10, bytes_read: 512_000, bytes_written: 1_024_000, power_cycles: 41, unsafe_shutdowns: 5, error_log_entries: 9 }),
+                nvme: Some(NvmeCounters { available_spare_threshold_pct: 10, bytes_read: 512_000, bytes_written: 1_024_000, power_cycles: 41, unsafe_shutdowns: 5, error_log_entries: 9, ..Default::default() }),
                 ..Default::default()
             };
         });

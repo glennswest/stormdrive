@@ -4,6 +4,8 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-08
+- **feat:** SAS health reads the Write/Read/Verify error counter pages (0x02/0x03/0x05); their uncorrected errors are the drive's `media_errors`. SATA: the whole SMART attribute table (with worst + threshold) and CRC errors (199). NVMe: host read/write commands, busy minutes, minutes over the warning/critical temperature (#64)
+- **feat:** `[history]` config: the system-data volume's directory, heartbeat, months kept (#64)
 - **build:** `stormview` git dependency pinned to `rev = 81ef1d2` instead of `branch = "main"` (Cargo.lock `?rev=`), so golden builds accept it under stormcentral#571's SBOM rule; moving it forward is now a deliberate rev bump (#63)
 - **docs:** work plan: #58 done in v0.25.0 (golden-stormdrive-4a5c915a3ae1)
 

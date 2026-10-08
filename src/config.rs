@@ -18,6 +18,7 @@ pub struct Config {
     pub firmware: FirmwareConfig,
     pub worker: WorkerConfig,
     pub kubernetes: KubernetesConfig,
+    pub history: HistoryConfig,
 }
 
 impl Default for Config {
@@ -33,7 +34,31 @@ impl Default for Config {
             firmware: FirmwareConfig::default(),
             worker: WorkerConfig::default(),
             kubernetes: KubernetesConfig::default(),
+            history: HistoryConfig::default(),
         }
+    }
+}
+
+/// app-system-data (#64, stormcos#456): the node's kept record of itself,
+/// in the data half, kept across every install. stormdrive writes
+/// `history/drives/` and `assets/` under `dir`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryConfig {
+    /// Where the system-data volume is mounted for stormdrive. When it does
+    /// not exist, history is off: it is never created here, since a
+    /// directory on the install-wiped root would look kept and not be.
+    pub dir: String,
+    /// A drive's record is written when any counter changes, else this
+    /// often. The monitor interval writes every sample.
+    pub heartbeat_secs: u64,
+    /// Months of drive history kept (whole `<YYYY-MM>.jsonl` files).
+    pub keep_months: u32,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self { dir: "/data/system-data".into(), heartbeat_secs: 3600, keep_months: 24 }
     }
 }
 
@@ -335,6 +360,9 @@ impl Config {
         }
         if self.kubernetes.interval_secs == 0 {
             anyhow::bail!("kubernetes.interval_secs must be non-zero");
+        }
+        if self.history.keep_months == 0 {
+            anyhow::bail!("history.keep_months must be >= 1");
         }
         if self.monitor.hysteresis == 0 {
             anyhow::bail!("monitor.hysteresis must be >= 1");

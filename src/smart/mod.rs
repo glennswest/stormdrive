@@ -30,6 +30,23 @@ pub struct Sample {
     pub nvme: Option<NvmeCounters>,
     /// What a SAS/SATA drive says itself (#22): LOG SENSE or ATA SMART.
     pub smart: Option<SmartCounters>,
+    /// A SATA drive's whole SMART attribute table (#64): kept in the drive
+    /// history, not served with health.
+    pub ata_attributes: Vec<AtaAttribute>,
+}
+
+/// One ATA SMART attribute as the drive reports it (#64).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AtaAttribute {
+    pub id: u8,
+    /// Pre-fail (else old-age).
+    pub prefail: bool,
+    pub value: u8,
+    pub worst: u8,
+    /// READ THRESHOLDS; 0 when the drive gave none.
+    pub threshold: u8,
+    /// The 48-bit raw value.
+    pub raw: u64,
 }
 
 /// A SAS/SATA drive's own health (#22). The sector counters come from ATA
@@ -50,6 +67,31 @@ pub struct SmartCounters {
     /// ATA 187: errors the drive could not correct on a host read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_uncorrectable: Option<u64>,
+    /// ATA 199: interface (UDMA) CRC errors — cabling or backplane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crc_errors: Option<u64>,
+    /// SAS error counter log pages (#64): Write (0x02), Read (0x03) and
+    /// Verify (0x05) errors, as the drive counts them over its life.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_errors: Option<ErrorCounters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_errors: Option<ErrorCounters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_errors: Option<ErrorCounters>,
+}
+
+/// One SCSI error counter page (SBC: parameters 0003h, 0005h, 0006h).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ErrorCounters {
+    /// Total errors corrected (0003h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrected: Option<u64>,
+    /// Total errors the drive could not correct (0006h): media errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncorrected: Option<u64>,
+    /// Total bytes processed (0005h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
 }
 
 /// NVMe SMART/Health log (0x02) counters beyond what health decides on;
@@ -64,6 +106,19 @@ pub struct NvmeCounters {
     pub unsafe_shutdowns: u64,
     /// Error Information Log entries over the controller's life.
     pub error_log_entries: u64,
+    /// Host read / write commands completed (#64).
+    #[serde(default)]
+    pub host_read_commands: u64,
+    #[serde(default)]
+    pub host_write_commands: u64,
+    /// Minutes the controller was busy with I/O.
+    #[serde(default)]
+    pub controller_busy_minutes: u64,
+    /// Minutes over the warning / critical composite temperature.
+    #[serde(default)]
+    pub warning_temp_minutes: u64,
+    #[serde(default)]
+    pub critical_temp_minutes: u64,
 }
 
 /// Collect a sample for one drive. Blocking (ioctls, sysfs reads) — call

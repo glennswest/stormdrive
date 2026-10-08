@@ -37,8 +37,14 @@ pub fn decode_smart_page(page: &[u8; 512]) -> Sample {
             power_cycles: u128_at(112),
             unsafe_shutdowns: u128_at(144),
             error_log_entries: u128_at(176),
+            host_read_commands: u128_at(64),
+            host_write_commands: u128_at(80),
+            controller_busy_minutes: u128_at(96),
+            warning_temp_minutes: u64::from(u32::from_le_bytes([page[192], page[193], page[194], page[195]])),
+            critical_temp_minutes: u64::from(u32::from_le_bytes([page[196], page[197], page[198], page[199]])),
         }),
         smart: None,
+        ata_attributes: Vec::new(),
     }
 }
 
@@ -172,6 +178,11 @@ mod tests {
         page[112..128].copy_from_slice(&41u128.to_le_bytes()); // power cycles
         page[144..160].copy_from_slice(&5u128.to_le_bytes()); // unsafe shutdowns
         page[176..192].copy_from_slice(&9u128.to_le_bytes()); // error log entries
+        page[64..80].copy_from_slice(&100u128.to_le_bytes()); // host reads
+        page[80..96].copy_from_slice(&200u128.to_le_bytes()); // host writes
+        page[96..112].copy_from_slice(&30u128.to_le_bytes()); // busy minutes
+        page[192..196].copy_from_slice(&4u32.to_le_bytes()); // warning temp minutes
+        page[196..200].copy_from_slice(&1u32.to_le_bytes()); // critical temp minutes
 
         let s = decode_smart_page(&page);
         assert_eq!(s.critical_warning, 0x04);
@@ -184,6 +195,10 @@ mod tests {
         assert_eq!(
             (n.available_spare_threshold_pct, n.bytes_read, n.bytes_written, n.power_cycles, n.unsafe_shutdowns, n.error_log_entries),
             (10, 1_024_000, 1_536_000, 41, 5, 9)
+        );
+        assert_eq!(
+            (n.host_read_commands, n.host_write_commands, n.controller_busy_minutes, n.warning_temp_minutes, n.critical_temp_minutes),
+            (100, 200, 30, 4, 1)
         );
         assert!(s.kernel_ok);
     }

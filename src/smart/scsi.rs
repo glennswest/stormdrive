@@ -13,10 +13,15 @@
 //!   pre-fail attribute at or below its threshold, the drive's own verdict
 //!   without reading the status registers back.
 //!
+//! - SAS, also (#64): the error counter pages Write (0x02), Read (0x03) and
+//!   Verify (0x05) — corrected, uncorrected, bytes processed. The drive's
+//!   uncorrected errors are its media errors. A SATA drive's whole
+//!   attribute table goes into the drive history.
+//!
 //! A page or command the drive does not support is simply not reported.
 //! Parsers are portable and unit-tested; issuing the commands is Linux-only.
 
-use super::{Sample, SmartCounters};
+use super::{AtaAttribute, ErrorCounters, Sample, SmartCounters};
 
 /// Parse an ioerr_cnt sysfs value ("0x12" or plain decimal).
 pub fn parse_ioerr(s: &str) -> u64 {
@@ -75,6 +80,28 @@ pub fn parse_temperature(raw: &[u8]) -> Option<i32> {
     d.get(1).filter(|t| **t != 0xFF).map(|t| i32::from(*t))
 }
 
+/// An error counter page (0x02 write, 0x03 read, 0x05 verify): parameters
+/// 0003h (total corrected), 0005h (bytes processed), 0006h (total
+/// uncorrected), each a big-endian counter of its own length.
+pub fn parse_error_counters(raw: &[u8], page: u8) -> Option<ErrorCounters> {
+    let params = log_params(raw, page);
+    let get = |code: u16| {
+        params
+            .iter()
+            .find(|(c, _)| *c == code)
+            .filter(|(_, d)| !d.is_empty() && d.len() <= 8)
+            .map(|(_, d)| d.iter().fold(0u64, |acc, b| (acc << 8) | u64::from(*b)))
+    };
+    let c = ErrorCounters { corrected: get(3), uncorrected: get(6), bytes: get(5) };
+    (c != ErrorCounters::default()).then_some(c)
+}
+
+/// The drive's own media errors from its error counter pages: uncorrected
+/// read + write + verify errors.
+pub fn sas_media_errors(c: &SmartCounters) -> u64 {
+    [c.read_errors, c.write_errors, c.verify_errors].iter().flatten().filter_map(|e| e.uncorrected).sum()
+}
+
 /// Solid State Media (0x11), parameter 1: Percentage Used Endurance
 /// Indicator.
 pub fn parse_ssd_endurance(raw: &[u8]) -> Option<u8> {
@@ -105,6 +132,7 @@ pub struct Attribute {
     pub id: u8,
     pub prefail: bool,
     pub value: u8,
+    pub worst: u8,
     pub raw: u64,
 }
 
@@ -117,6 +145,7 @@ pub fn parse_smart_attributes(data: &[u8]) -> Vec<Attribute> {
                 id: a[0],
                 prefail: u16::from_le_bytes([a[1], a[2]]) & 1 != 0,
                 value: a[3],
+                worst: a[4],
                 raw: a[5..11].iter().rev().fold(0u64, |acc, b| (acc << 8) | u64::from(*b)),
             })
         })
@@ -143,7 +172,8 @@ pub fn apply_ata_smart(attrs: &[Attribute], thresholds: &[(u8, u8)], ssd: bool, 
         pending_sectors: raw(197),
         offline_uncorrectable: raw(198),
         reported_uncorrectable: raw(187),
-        predicted_failure: None,
+        crc_errors: raw(199),
+        ..Default::default()
     };
     // The drive's own media-error count (#58); not the kernel's ioerr_cnt.
     s.media_errors = raw(187).unwrap_or(0);
@@ -171,6 +201,17 @@ pub fn apply_ata_smart(attrs: &[Attribute], thresholds: &[(u8, u8)], ssd: bool, 
         });
     }
     s.smart = Some(c);
+    s.ata_attributes = attrs
+        .iter()
+        .map(|a| AtaAttribute {
+            id: a.id,
+            prefail: a.prefail,
+            value: a.value,
+            worst: a.worst,
+            threshold: thresholds.iter().find(|(id, _)| *id == a.id).map_or(0, |t| t.1),
+            raw: a.raw,
+        })
+        .collect();
 }
 
 #[cfg(target_os = "linux")]
@@ -251,6 +292,14 @@ mod linux {
             if let Some(w) = log_sense(&dev, 0x11).and_then(|r| parse_ssd_endurance(&r)) {
                 s.wear_pct = Some(w);
             }
+        }
+        // The error counter pages (#64): the drive's own media errors.
+        c.write_errors = log_sense(&dev, 0x02).and_then(|r| parse_error_counters(&r, 0x02));
+        c.read_errors = log_sense(&dev, 0x03).and_then(|r| parse_error_counters(&r, 0x03));
+        c.verify_errors = log_sense(&dev, 0x05).and_then(|r| parse_error_counters(&r, 0x05));
+        if c.write_errors.is_some() || c.read_errors.is_some() || c.verify_errors.is_some() {
+            any = true;
+            s.media_errors = sas_media_errors(&c);
         }
         if any {
             s.smart = Some(c);
@@ -352,6 +401,22 @@ mod tests {
         assert_eq!(parse_ie(&short), None);
     }
 
+    #[test]
+    fn sas_error_counter_pages() {
+        // Read errors: 3 corrected (2-byte counter), 1 TB processed
+        // (8-byte), 2 uncorrected (4-byte).
+        let read = page(0x03, &[(0, &[0, 9]), (3, &[0, 3]), (5, &1_000_000_000_000u64.to_be_bytes()), (6, &[0, 0, 0, 2])]);
+        let r = parse_error_counters(&read, 0x03).unwrap();
+        assert_eq!((r.corrected, r.bytes, r.uncorrected), (Some(3), Some(1_000_000_000_000), Some(2)));
+        assert_eq!(parse_error_counters(&read, 0x02), None, "not the write page");
+        let write = page(0x02, &[(6, &[0, 1])]);
+        let w = parse_error_counters(&write, 0x02).unwrap();
+        assert_eq!((w.corrected, w.uncorrected), (None, Some(1)));
+        assert_eq!(parse_error_counters(&page(0x05, &[(0, &[0, 1])]), 0x05), None, "no counter we read");
+        let c = SmartCounters { read_errors: Some(r), write_errors: Some(w), ..Default::default() };
+        assert_eq!(sas_media_errors(&c), 3);
+    }
+
     /// A SMART READ DATA / THRESHOLDS pair: (id, flags, value, raw).
     fn smart(attrs: &[(u8, u16, u8, u64)], thresholds: &[(u8, u8)]) -> (Vec<u8>, Vec<u8>) {
         let mut d = vec![0u8; 512];
@@ -387,6 +452,9 @@ mod tests {
         assert_eq!((c.reallocated_sectors, c.pending_sectors, c.offline_uncorrectable), (Some(0), Some(0), Some(0)));
         assert_eq!(c.predicted_failure, None);
         assert_eq!((s.temperature_c, s.power_on_hours, s.wear_pct), (Some(29), Some(18000), None));
+        // The whole table, with thresholds, for the history (#64).
+        assert_eq!(s.ata_attributes.len(), 5);
+        assert_eq!(s.ata_attributes[0], AtaAttribute { id: 5, prefail: true, value: 200, worst: 0, threshold: 140, raw: 0 });
 
         // Reallocated sectors pre-fail at value 100 ≤ threshold 140: the
         // drive's own failure prediction; 8 pending.

@@ -901,7 +901,7 @@ mod tests {
     fn a_sas_or_sata_drive_can_fail_on_its_own_word() {
         let cfg = MonitorConfig::default();
         let smart = |c: crate::smart::SmartCounters| Sample { smart: Some(c), ..good_sample() };
-        let clean = crate::smart::SmartCounters { source: "ata_smart".into(), reallocated_sectors: Some(3), pending_sectors: Some(0), offline_uncorrectable: Some(0), predicted_failure: None, reported_uncorrectable: None };
+        let clean = crate::smart::SmartCounters { source: "ata_smart".into(), reallocated_sectors: Some(3), pending_sectors: Some(0), offline_uncorrectable: Some(0), predicted_failure: None, reported_uncorrectable: None, ..Default::default() };
         assert_eq!(evaluate(&cfg, &smart(clean.clone()), None).0, HealthStatus::Good, "a few reallocated sectors alone: good");
         let pending = crate::smart::SmartCounters { pending_sectors: Some(8), ..clean.clone() };
         let (st, why) = evaluate(&cfg, &smart(pending), None);
@@ -987,7 +987,7 @@ mod tests {
         let (st, why) = evaluate(&cfg(), &s, Some(0));
         assert_eq!(st, HealthStatus::Good, "{why:?}");
         // The drive's own count (ATA 187) is what grows into a warning.
-        let attrs = [crate::smart::scsi::Attribute { id: 187, prefail: false, value: 100, raw: 3 }];
+        let attrs = [crate::smart::scsi::Attribute { id: 187, prefail: false, value: 100, worst: 100, raw: 3 }];
         crate::smart::scsi::apply_ata_smart(&attrs, &[], false, &mut s);
         assert_eq!(s.media_errors, 3);
         assert_eq!(s.smart.as_ref().unwrap().reported_uncorrectable, Some(3));
