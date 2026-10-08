@@ -98,6 +98,10 @@ src/
   fleet.rs        the loop: labels, health push, overcommit push, drains →
                   retire, auto-add
   usage.rs        per-drive used/free joined from stormblock's slabs (#12)
+  history.rs      drive history in system-data: records, counter rules,
+                  findings across installs (#64)
+  assets.rs       per-boot hardware assets: DMI, cpuinfo, SMBIOS 17/38, NICs,
+                  NVMe, HBAs, shelves, bays; diff vs the previous boot (#64)
   placement.rs    where every drive + shelf is, hashed generation (#10)
   components.rs   stormview feed: drives, shelves, HBAs with actions
   api/mod.rs      axum REST :9092, summary card, embeds web/dist (the page)
@@ -475,11 +479,13 @@ Design (no open decision):
 - API: `GET /api/v1/history` (status), `GET /api/v1/drives/{id}/history`,
   `GET /api/v1/assets`
 Steps:
-- [ ] config + SAS error-counter pages + ATA table + NVMe extras
-- [ ] history.rs (record, findings, files) + monitor hook
-- [ ] assets.rs (collect, SMBIOS, diff, files) + monitor hook
-- [ ] API, tests, docs (README, architecture), changelog, release, golden;
-      tell stormcos#456 the path
+- [x] config + SAS error-counter pages + ATA table + NVMe extras (9ee9bee)
+- [x] history.rs (record, findings, files) + monitor hook (eb2fe0c)
+- [x] assets.rs (collect, SMBIOS, diff, files) + monitor hook (eb2fe0c)
+- [x] API, docs (README, architecture), changelog (73e1c03); short suite
+      `system-data` + harness system-data dir (8050274); stormcos#456 told
+      the mount point (`/data/system-data`)
+- [ ] sc-build + clippy green, v0.26.0, golden
 
 ### #63: pin git dependencies to a rev (stormcentral#571, 2026-10-08) — DONE
 
