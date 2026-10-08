@@ -1427,6 +1427,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "stormdrive-retry",
  "stormdrive-test",
  "stormview",
  "thiserror 1.0.69",
@@ -1440,11 +1441,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "stormdrive-retry"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "stormdrive-test"
 version = "0.1.0"
 dependencies = [
  "reqwest",
  "serde_json",
+ "stormdrive-retry",
  "tokio",
 ]
 

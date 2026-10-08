@@ -1,0 +1,21 @@
+[package]
+name = "stormdrive-retry"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "stormdrive's one retry helper (#71): bounded backoff with jitter, a whole-operation deadline, attempts logged, infrastructure failures told apart from real answers."
+publish = false
+
+# Shared by the daemon (engine + apiserver clients) and the test container's
+# client of :9092, so every remote call in the repo retries the same way.
+[dependencies]
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+reqwest = { version = "0.12", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time", "net", "test-util"] }
+
+[lib]
+name = "retry"
+path = "src/lib.rs"

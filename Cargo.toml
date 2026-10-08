@@ -22,6 +22,8 @@ anyhow = "1"
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Every remote call retries through one helper (#71).
+stormdrive-retry = { path = "retry" }
 # :9092's TLS (#19): the stormcert serving pair, node-CA client certificates.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
@@ -36,11 +38,12 @@ stormdrive-test = { path = "test" }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+# retry/ is the shared retry helper (#71), used by the daemon and test/.
 # test/ is the test container's crate (#11): a member so one Cargo.lock pins it,
 # and a default member so sc-build's `cargo test` runs its unit tests too.
 [workspace]
-members = [".", "test"]
-default-members = [".", "test"]
+members = [".", "test", "retry"]
+default-members = [".", "test", "retry"]
 
 [profile.release]
 lto = true

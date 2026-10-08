@@ -15,6 +15,8 @@ publish = false
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# The daemon's retry helper (#71): the one library code shared with it.
+stormdrive-retry = { path = "../retry" }
 
 [lib]
 name = "stormdrive_test"
