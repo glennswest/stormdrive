@@ -114,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
         persisted: Default::default(),
         worker: stormdrive::worker::Worker::load(data_dir.as_deref()),
         gate,
+        engine_slabs: RwLock::new(None),
     });
 
     // What was in flight when we stopped — worker jobs, and drives a

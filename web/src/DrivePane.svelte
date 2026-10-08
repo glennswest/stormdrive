@@ -93,7 +93,9 @@
   {#if d.wear_projection}<dt>wear-out</dt><dd>{wearOut(d.wear_projection)}</dd>{/if}
   {#if h.available_spare_pct != null}<dt>spare</dt><dd>{h.available_spare_pct} %</dd>{/if}
   {#if h.power_on_hours != null}<dt>power-on</dt><dd>{h.power_on_hours} h</dd>{/if}
-  <dt>{d.kind === 'nvme_ssd' ? 'media errs' : 'io errs'}</dt><dd>{h.media_errors ?? 0}</dd>
+  <dt>media errs</dt><dd>{h.media_errors ?? 0}</dd>
+  {#if h.io_errors != null}<dt>io errs</dt><dd title="commands that failed since boot (resets count too); not media errors">{h.io_errors}</dd>{/if}
+  {#if h.not_collected}<dt>not collected</dt><dd>{h.not_collected}</dd>{/if}
 </dl>
 {#if h.messages?.length}<ul class="msgs">{#each h.messages as m}<li>{m}</li>{/each}</ul>{/if}
 

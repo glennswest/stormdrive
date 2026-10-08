@@ -527,6 +527,8 @@ mod tests {
             usable: true,
             in_use_by: None,
             contents: None,
+            slab_parts: vec![],
+            engine_finding: None,
             enrolable: false,
             wear_projection: None,
             format: None,

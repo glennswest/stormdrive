@@ -56,6 +56,8 @@ pub struct GptPartition {
     pub index: usize,
     pub first_lba: u64,
     pub name: String,
+    /// Partition type GUID as GPT stores it (mixed-endian).
+    pub type_guid: [u8; 16],
 }
 
 pub fn parse_gpt_entries(buf: &[u8], h: &GptHeader) -> Vec<GptPartition> {
@@ -79,6 +81,7 @@ pub fn parse_gpt_entries(buf: &[u8], h: &GptHeader) -> Vec<GptPartition> {
                 index: i + 1,
                 first_lba: first,
                 name: String::from_utf16_lossy(&units),
+                type_guid: e[..16].try_into().unwrap(),
             })
         })
         .collect()
@@ -181,10 +184,45 @@ pub fn describe_slabs(whole_drive: bool, partitions: &[String]) -> Option<String
     Some(format!("stormblock (slabs in partitions {})", partitions.join(", ")))
 }
 
+/// One stormblock slab found on the disk (#58): where, and which half of
+/// the node it belongs to, so it can be held against the engine's own
+/// report of where its slabs are.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SlabPart {
+    /// GPT partition number; None for a slab on the whole drive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<usize>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// `system` or `data` from the partition type GUID (stormblock's
+    /// `SLAB` / `SLAB_DATA`); `unknown` for a whole-drive slab or another
+    /// type.
+    pub role: String,
+    /// Byte offset of the slab on the drive, as the engine names a local
+    /// partition slab (`/dev/sda@1048576`).
+    pub offset_bytes: u64,
+}
+
+/// The half a slab partition belongs to, by its type GUID.
+pub fn slab_role(type_guid: &[u8; 16]) -> &'static str {
+    if type_guid == &crate::gpt::TYPE_SLAB_DATA {
+        "data"
+    } else if type_guid == &crate::gpt::TYPE_SLAB {
+        "system"
+    } else {
+        "unknown"
+    }
+}
+
 /// Read the drive and say who holds it, or None when it carries no
 /// stormblock slab (or cannot be read — a 520-byte drive, a drive mid
 /// format; those have nothing the kernel could have put there).
 pub fn probe(path: &str) -> Option<String> {
+    probe_slabs(path).0
+}
+
+/// [`probe`], and each slab it found (#58).
+pub fn probe_slabs(path: &str) -> (Option<String>, Vec<SlabPart>) {
     #[cfg(target_os = "linux")]
     {
         linux::probe(path)
@@ -192,7 +230,7 @@ pub fn probe(path: &str) -> Option<String> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = path;
-        None
+        (None, vec![])
     }
 }
 
@@ -233,14 +271,15 @@ mod linux {
         describe_holdings(&found)
     }
 
-    pub fn probe(path: &str) -> Option<String> {
-        let f = File::open(path).ok()?;
-        let head = read(&f, 0, 512)?;
+    pub fn probe(path: &str) -> (Option<String>, Vec<SlabPart>) {
+        let Ok(f) = File::open(path) else { return (None, vec![]) };
+        let Some(head) = read(&f, 0, 512) else { return (None, vec![]) };
         if is_slab_header(&head) {
-            return describe_slabs(true, &[]);
+            let whole = SlabPart { partition: None, name: String::new(), role: "unknown".into(), offset_bytes: 0 };
+            return (describe_slabs(true, &[]), vec![whole]);
         }
         if head.starts_with(STORMRAID_MAGIC) {
-            return Some(STORMRAID_HOLDER.into());
+            return (Some(STORMRAID_HOLDER.into()), vec![]);
         }
         // The GPT header is at LBA 1; which LBA size depends on the drive.
         for lbs in [512u64, 4096] {
@@ -251,11 +290,14 @@ mod linux {
             let Some(table) = read(&f, h.entries_lba * lbs, len) else {
                 continue;
             };
-            let slabs: Vec<String> = parse_gpt_entries(&table, &h)
+            let parts: Vec<GptPartition> = parse_gpt_entries(&table, &h)
                 .into_iter()
                 .filter(|p| {
                     read(&f, p.first_lba * lbs, 512).is_some_and(|b| is_slab_header(&b))
                 })
+                .collect();
+            let names: Vec<String> = parts
+                .iter()
                 .map(|p| {
                     if p.name.is_empty() {
                         format!("#{}", p.index)
@@ -264,9 +306,18 @@ mod linux {
                     }
                 })
                 .collect();
-            return describe_slabs(false, &slabs);
+            let slabs = parts
+                .iter()
+                .map(|p| SlabPart {
+                    partition: Some(p.index),
+                    name: p.name.clone(),
+                    role: slab_role(&p.type_guid).into(),
+                    offset_bytes: p.first_lba * lbs,
+                })
+                .collect();
+            return (describe_slabs(false, &names), slabs);
         }
-        None
+        (None, vec![])
     }
 }
 
@@ -322,7 +373,10 @@ mod tests {
         t.extend(entry(10, 5, "backwards"));
         let p = parse_gpt_entries(&t, &h);
         assert_eq!(p.len(), 2);
-        assert_eq!(p[0], GptPartition { index: 1, first_lba: 2048, name: "esp".into() });
+        assert_eq!((p[0].index, p[0].first_lba, p[0].name.as_str()), (1, 2048, "esp"));
+        assert_eq!(slab_role(&p[0].type_guid), "unknown");
+        assert_eq!(slab_role(&crate::gpt::TYPE_SLAB), "system");
+        assert_eq!(slab_role(&crate::gpt::TYPE_SLAB_DATA), "data");
         assert_eq!(p[1].index, 3);
         assert_eq!(p[1].name, "data");
     }

@@ -351,7 +351,12 @@ pub struct HealthReport {
     pub status: Option<HealthStatus>,
     pub temperature_c: Option<i32>,
     pub power_on_hours: Option<u64>,
+    /// The drive's own media-error count (NVMe log 0x02, ATA 187).
     pub media_errors: u64,
+    /// sysfs `ioerr_cnt`: commands that failed since boot, for any reason
+    /// (resets included). SCSI/SATA only; not media errors (#58).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_errors: Option<u64>,
     pub available_spare_pct: Option<u8>,
     /// NVMe percentage-used / SSD endurance-used. May exceed 100 per spec.
     pub wear_pct: Option<u8>,
@@ -359,6 +364,11 @@ pub struct HealthReport {
     pub critical_warning: u8,
     pub messages: Vec<String>,
     pub collected_at: Option<SystemTime>,
+    /// Why there is no fresh sample (#58): not sampled yet, the read timed
+    /// out or is hung, or none for longer than three intervals. None while
+    /// samples arrive. A null `collected_at` is never "no errors".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_collected: Option<String>,
     /// NVMe log 0x02 counters (#18); absent for SAS/SATA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nvme: Option<crate::smart::NvmeCounters>,
@@ -411,6 +421,14 @@ pub struct Drive {
     /// not readable yet: a 520-byte drive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contents: Option<String>,
+    /// The stormblock slabs on the disk, with their role (system/data) and
+    /// offset, read in discovery (#58).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slab_parts: Vec<crate::contents::SlabPart>,
+    /// The node's engine leaves this drive's slabs unused: it runs those
+    /// halves from the network (#58). Folded into the health verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_finding: Option<crate::engine::EngineFinding>,
     /// Offered for enrolment (#42): blank, healthy, out of the fleet, no
     /// designation, big enough. Set each monitor tick ([`Drive::offer`]);
     /// a console enrols it with one action, a DrivePolicy on its own.
@@ -781,6 +799,8 @@ mod tests {
             usable: true,
             in_use_by: None,
             contents: None,
+            slab_parts: vec![],
+            engine_finding: None,
             enrolable: false,
             wear_projection: None,
             format: None,

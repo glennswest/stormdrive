@@ -199,12 +199,13 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         let m = Metric::new("wear-out", p.days_left.to_string()).unit("d");
         metrics.push(if p.days_left < crate::wear::WARN_DAYS { m.tone("warn") } else { m.tone("muted") });
     }
-    // NVMe reports media errors; for SCSI/SATA the only counter we read
-    // is sysfs `ioerr_cnt` — commands that failed, for any reason — and
-    // calling that "media errors" overstated it (#2).
+    // The drive's own media-error count (NVMe log 0x02, ATA 187). The
+    // kernel's ioerr_cnt counts resets too: shown, not a warning (#2, #58).
     if d.health.media_errors > 0 {
-        let label = if d.kind == DriveKind::NvmeSsd { "media errs" } else { "io errs" };
-        metrics.push(Metric::new(label, d.health.media_errors.to_string()).tone("warn"));
+        metrics.push(Metric::new("media errs", d.health.media_errors.to_string()).tone("warn"));
+    }
+    if let Some(n) = d.health.io_errors.filter(|n| *n > 0) {
+        metrics.push(Metric::new("io errs", n.to_string()).tone("muted"));
     }
     // Why join/format/destructive are greyed out on an out-of-fleet drive:
     // somebody's data is on it (the node's own system disk).
@@ -623,6 +624,8 @@ mod tests {
             usable: true,
             in_use_by: None,
             contents: None,
+            slab_parts: vec![],
+            engine_finding: None,
             enrolable: false,
             wear_projection: None,
             format: None,

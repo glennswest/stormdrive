@@ -63,6 +63,9 @@ pub struct AppState {
     pub worker: crate::worker::Worker,
     /// Who may write (#45): bearer reviews, the admin token, audit.
     pub gate: crate::kubeauth::Gate,
+    /// The engine's own report of where the node's slabs run, as last read
+    /// (#58); None until it answers with one.
+    pub engine_slabs: RwLock<Option<crate::engine::EngineSlabs>>,
 }
 
 impl AppState {
@@ -194,6 +197,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives", get(list_drives))
         .route("/api/v1/drives/{id}", get(get_drive).delete(forget_drive))
         .route("/api/v1/drives/{id}/health", get(get_drive_health))
+        .route("/api/v1/drives/{id}/slabs", get(get_drive_slabs))
         .route("/api/v1/drives/{id}/locate", post(set_locate))
         // Parameter-less action routes: a stormview renderer invokes
         // method+path with no body, so every action needs a body-free form.
@@ -664,6 +668,29 @@ async fn get_drive_health(
         .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
     let trend = inv.trends.get(&d.id).cloned().unwrap_or_default();
     Ok(Json(json!({ "health": d.health, "trend": trend })))
+}
+
+/// The slabs on a drive three ways (#58): what is on the disk (partitions,
+/// role, offset), what the engine's slab listing puts on it (usage), and
+/// the engine's own report of where the node's halves run, with the
+/// finding when those disagree.
+async fn get_drive_slabs(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let inv = s.inventory.read().await;
+    let d = inv
+        .resolve(&id)
+        .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
+    let engine = s.engine_slabs.read().await.clone();
+    Ok(Json(json!({
+        "drive": d.id,
+        "name": d.name,
+        "on_disk": d.slab_parts,
+        "in_engine": d.usage.as_ref().map(|u| &u.slabs),
+        "engine": engine,
+        "finding": d.engine_finding,
+    })))
 }
 
 #[derive(Deserialize)]

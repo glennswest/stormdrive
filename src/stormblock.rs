@@ -396,6 +396,12 @@ impl StormBlockClient {
         Ok(items(v, "slabs"))
     }
 
+    /// GET /api/v1/health — the engine's own health; its `slabs` says where
+    /// the node's system and data halves run (stormblock#322/#344, #58).
+    pub async fn node_health(&self) -> anyhow::Result<Value> {
+        Ok(self.send(self.http.get(self.url("/api/v1/health"))).await?.error_for_status()?.json().await?)
+    }
+
     /// GET /api/v1/arrays — the engine's RAID sets with their members'
     /// state, drive and labels (stormblock#252). None: an engine without
     /// arrays (404).

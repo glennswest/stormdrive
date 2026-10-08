@@ -11,7 +11,13 @@ use crate::drive::{Drive, DriveKind};
 pub struct Sample {
     pub temperature_c: Option<i32>,
     pub power_on_hours: Option<u64>,
+    /// Errors the drive itself counts against its media: NVMe log 0x02,
+    /// ATA attribute 187 (reported uncorrectable). 0 when it reports none.
     pub media_errors: u64,
+    /// Commands the kernel saw fail on the device since boot (sysfs
+    /// `ioerr_cnt`, SCSI/SATA). Resets and aborts count too, so this is
+    /// not media errors and its growth alone is no warning (#58).
+    pub io_errors: Option<u64>,
     pub available_spare_pct: Option<u8>,
     pub wear_pct: Option<u8>,
     /// NVMe critical-warning bitfield (0 for non-NVMe).
@@ -41,6 +47,9 @@ pub struct SmartCounters {
     pub pending_sectors: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offline_uncorrectable: Option<u64>,
+    /// ATA 187: errors the drive could not correct on a host read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_uncorrectable: Option<u64>,
 }
 
 /// NVMe SMART/Health log (0x02) counters beyond what health decides on;

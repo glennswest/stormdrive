@@ -137,8 +137,13 @@ impl Damper {
     }
 }
 
+/// When the daemon started: a drive with no health sample for three
+/// intervals after that is reported (#58).
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 pub async fn run(state: Arc<AppState>) {
-    tokio::spawn(health_loop(state.clone()));
+    STARTED.get_or_init(std::time::Instant::now);
+    tokio::spawn(supervise_health(state.clone()));
     let mut fleet = crate::fleet::FleetState::default();
     let disc_int = state.config.discovery.interval_secs;
     let mon_int = state.config.monitor.interval_secs;
@@ -213,6 +218,7 @@ async fn tick(
     }
 
     refresh_offers(state).await;
+    stale_health(state).await;
 
     if !collect {
         state.persist().await;
@@ -224,6 +230,9 @@ async fn tick(
         if let Err(e) = refresh_usage(state).await {
             tracing::debug!("stormblock slab listing: {e:#}");
         }
+        if let Err(e) = refresh_engine(state).await {
+            tracing::debug!("stormblock health (slab report): {e:#}");
+        }
         if let Err(e) = reconcile_stormblock(state).await {
             tracing::debug!("stormblock reconcile skipped: {e:#}");
         }
@@ -231,6 +240,64 @@ async fn tick(
 
     state.persist().await;
     Ok(())
+}
+
+/// Health polling must not stop for good (#58: a drive whose health was
+/// never collected read as healthy). If the loop ever ends — a panic in
+/// it — it is restarted, loudly.
+async fn supervise_health(state: Arc<AppState>) {
+    loop {
+        let why = match tokio::spawn(health_loop(state.clone())).await {
+            Ok(()) => "ended".to_string(),
+            Err(e) => format!("died: {e}"),
+        };
+        tracing::error!("health polling {why}; restarting");
+        state.events.write().await.push(None, Severity::Error, "health", format!("health polling {why}; restarted"));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+/// Say why a present drive has no fresh health (#58): before its first
+/// sample, "due"; after three intervals without one, why, with a warning
+/// event the first time.
+async fn stale_health(state: &Arc<AppState>) {
+    let interval = state.config.monitor.interval_secs.max(1);
+    let up = STARTED.get().map(|t| t.elapsed().as_secs()).unwrap_or_default();
+    let stuck = state.poller.stats().stuck;
+    let now = SystemTime::now();
+    let mut events = vec![];
+    {
+        let mut inv = state.inventory.write().await;
+        for d in inv.drives.values_mut() {
+            if d.activity == Activity::Missing {
+                continue;
+            }
+            let age = d.health.collected_at.map(|t| now.duration_since(t).unwrap_or_default().as_secs());
+            if let Some(why) = stale_reason(age, up, interval, stuck.contains(&d.name)) {
+                if d.health.not_collected.is_none() && !why.starts_with("first health sample") {
+                    events.push((d.id, format!("{} ({} {}): {why}", d.name, d.model, d.serial)));
+                }
+                d.health.not_collected = Some(why);
+            }
+        }
+    }
+    let mut log = state.events.write().await;
+    for (id, msg) in events {
+        log.push(Some(id), Severity::Warning, "health", msg);
+    }
+}
+
+/// Why a drive has no fresh health, or None when it has. `age`: seconds
+/// since its last sample (None: never); `up`: seconds since start.
+pub fn stale_reason(age: Option<u64>, up: u64, interval: u64, stuck: bool) -> Option<String> {
+    let limit = 3 * interval;
+    let hung = if stuck { "; its health read is hung (see /api/v1/monitor)" } else { "" };
+    match age {
+        Some(a) if a <= limit => None,
+        Some(a) => Some(format!("last health sample {a} s ago (every {interval} s expected){hung}")),
+        None if up <= limit => Some(format!("first health sample due within {interval} s")),
+        None => Some(format!("no health sample in the {up} s since stormdrive started{hung}")),
+    }
 }
 
 /// Health polling (#15): every present drive once per interval at its own
@@ -294,13 +361,19 @@ async fn apply_outcome(
     // Baseline for growth detection: only a real prior sample counts —
     // a fresh drive's default 0 would turn its first reading into a
     // false "growing" warning.
-    let (prev, current) = {
+    let (prev, current, engine) = {
         let inv = state.inventory.read().await;
         let Some(d) = inv.drives.get(&id) else { return };
-        (d.health.collected_at.is_some().then_some(d.health.media_errors), d.health.status())
+        (d.health.collected_at.is_some().then_some(d.health.media_errors), d.health.status(), d.engine_finding.clone())
     };
-    let (candidate, why) = evaluate(&state.config.monitor, &sample, prev);
-    let effective = damper.apply(&state.config.monitor, id, current, candidate);
+    let (candidate, mut why) = evaluate(&state.config.monitor, &sample, prev);
+    let mut effective = damper.apply(&state.config.monitor, id, current, candidate);
+    // The engine leaving the drive's slabs unused (#58) is not damped: it
+    // comes from the engine's settled report, not one noisy read.
+    if let Some(f) = &engine {
+        effective = effective.max(f.severity);
+        why.push(f.message.clone());
+    }
 
     let mut wear_event = None;
     let mut inv = state.inventory.write().await;
@@ -311,11 +384,13 @@ async fn apply_outcome(
             temperature_c: sample.temperature_c,
             power_on_hours: sample.power_on_hours,
             media_errors: sample.media_errors,
+            io_errors: sample.io_errors,
             available_spare_pct: sample.available_spare_pct,
             wear_pct: sample.wear_pct,
             critical_warning: sample.critical_warning,
             messages: why.clone(),
             collected_at: Some(SystemTime::now()),
+            not_collected: None,
             nvme: sample.nvme,
             smart: sample.smart.clone(),
         };
@@ -324,6 +399,7 @@ async fn apply_outcome(
         // reason move.
         d.health.status = Some(effective);
         d.health.messages = why.clone();
+        d.health.not_collected = sample.messages.first().cloned();
     }
     // Health and designation stay separate: a health-Failed drive keeps
     // its operator designation; the summary card and the UI treat
@@ -533,6 +609,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                     d.usable = primary.usable;
                     d.in_use_by = primary.in_use_by.clone();
                     d.contents = primary.contents.clone();
+                    d.slab_parts = primary.slabs.clone();
                 }
                 d.last_seen = now;
                 if d.activity == Activity::Missing {
@@ -602,8 +679,10 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         usable: primary.usable,
                         in_use_by: primary.in_use_by.clone(),
                         contents: primary.contents.clone(),
+                        slab_parts: primary.slabs.clone(),
+                        engine_finding: None,
                         enrolable: false,
-            wear_projection: None,
+                        wear_projection: None,
                         format: None,
                         firmware_update: None,
                         location,
@@ -706,6 +785,50 @@ async fn refresh_usage(state: &Arc<AppState>) -> anyhow::Result<()> {
     for d in inv.drives.values_mut() {
         let last = d.usage.take();
         d.usage = Some(crate::usage::refresh(d, &slabs, volumes.as_deref(), last, now));
+    }
+    Ok(())
+}
+
+/// The engine's slab report against each drive's slabs (#58): a drive
+/// whose slabs the engine leaves unused gets an `engine_finding`, folded
+/// into its health verdict now (not only at the next sample), with an
+/// event when it appears, changes or clears.
+async fn refresh_engine(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let health = state.stormblock.node_health().await?;
+    let Some(report) = crate::engine::parse(&health) else { return Ok(()) };
+    *state.engine_slabs.write().await = Some(report.clone());
+    let mut events = vec![];
+    {
+        let mut inv = state.inventory.write().await;
+        for d in inv.drives.values_mut() {
+            if d.activity == Activity::Missing {
+                continue;
+            }
+            let f = crate::engine::finding(&d.name, &d.paths, &d.slab_parts, &report);
+            if f == d.engine_finding {
+                continue;
+            }
+            let who = format!("{} ({} {})", d.name, d.model, d.serial);
+            if let Some(old) = d.engine_finding.take() {
+                d.health.messages.retain(|m| *m != old.message);
+            }
+            match &f {
+                Some(nf) => {
+                    let sev = if nf.severity >= HealthStatus::Failing { Severity::Error } else { Severity::Warning };
+                    events.push((d.id, sev, format!("{who}: {}", nf.message)));
+                    if nf.severity > d.health.status() {
+                        d.health.status = Some(nf.severity);
+                    }
+                    d.health.messages.push(nf.message.clone());
+                }
+                None => events.push((d.id, Severity::Info, format!("{who}: the engine runs its slabs from this drive again"))),
+            }
+            d.engine_finding = f;
+        }
+    }
+    let mut log = state.events.write().await;
+    for (id, sev, msg) in events {
+        log.push(Some(id), sev, "engine", msg);
     }
     Ok(())
 }
@@ -846,6 +969,31 @@ mod tests {
         assert_eq!(evaluate(&cfg(), &s, None).0, HealthStatus::Good);
     }
 
+    /// #58: the Dell's "media errors growing 32 → 33" was the kernel's
+    /// ioerr_cnt (resets count too); the drive's own SMART had none.
+    #[test]
+    fn missing_health_says_why() {
+        assert_eq!(stale_reason(Some(30), 999, 60, false), None);
+        assert_eq!(stale_reason(None, 10, 60, false).unwrap(), "first health sample due within 60 s");
+        let never = stale_reason(None, 600, 60, true).unwrap();
+        assert!(never.starts_with("no health sample in the 600 s") && never.contains("hung"), "{never}");
+        assert!(stale_reason(Some(400), 999, 60, false).unwrap().starts_with("last health sample 400 s ago"));
+    }
+
+    #[test]
+    fn failed_commands_are_not_media_errors() {
+        let mut s = good_sample();
+        s.io_errors = Some(33);
+        let (st, why) = evaluate(&cfg(), &s, Some(0));
+        assert_eq!(st, HealthStatus::Good, "{why:?}");
+        // The drive's own count (ATA 187) is what grows into a warning.
+        let attrs = [crate::smart::scsi::Attribute { id: 187, prefail: false, value: 100, raw: 3 }];
+        crate::smart::scsi::apply_ata_smart(&attrs, &[], false, &mut s);
+        assert_eq!(s.media_errors, 3);
+        assert_eq!(s.smart.as_ref().unwrap().reported_uncorrectable, Some(3));
+        assert_eq!(evaluate(&cfg(), &s, Some(0)).0, HealthStatus::Warning);
+    }
+
     #[test]
     fn a_new_drive_in_a_missing_drives_bay_replaces_it() {
         let mk = |serial: &str, slot: &str, missing: bool, seen: u64| -> crate::drive::Drive {
@@ -896,6 +1044,7 @@ mod tests {
             usable: true,
             in_use_by: None,
             contents: None,
+            slabs: vec![],
         };
         // sdq and sda are the same physical drive through two IOMs.
         let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);

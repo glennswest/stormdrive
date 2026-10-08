@@ -142,8 +142,11 @@ pub fn apply_ata_smart(attrs: &[Attribute], thresholds: &[(u8, u8)], ssd: bool, 
         reallocated_sectors: raw(5),
         pending_sectors: raw(197),
         offline_uncorrectable: raw(198),
+        reported_uncorrectable: raw(187),
         predicted_failure: None,
     };
+    // The drive's own media-error count (#58); not the kernel's ioerr_cnt.
+    s.media_errors = raw(187).unwrap_or(0);
     let failing: Vec<String> = attrs
         .iter()
         .filter(|a| a.prefail)
@@ -261,9 +264,7 @@ mod linux {
             None | Some("running") => true,
             Some(_) => false,
         };
-        let media_errors = read_trim(&dev.join("ioerr_cnt"))
-            .map(|s| parse_ioerr(&s))
-            .unwrap_or(0);
+        let io_errors = read_trim(&dev.join("ioerr_cnt")).map(|s| parse_ioerr(&s));
         let mut messages = Vec::new();
         if let Some(s) = &state {
             if s != "running" {
@@ -272,7 +273,7 @@ mod linux {
         }
         let mut s = Sample {
             temperature_c: find_hwmon_temp(&dev),
-            media_errors,
+            io_errors,
             kernel_ok,
             messages,
             ..Default::default()

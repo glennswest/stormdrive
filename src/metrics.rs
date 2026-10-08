@@ -249,9 +249,10 @@ fn drive(o: &mut Out, d: &Drive) {
         }
     } else {
         // sysfs ioerr_cnt: commands the kernel saw fail, since boot. Not
-        // media errors; SCSI log sense / ATA SMART (grown defects,
-        // reallocated / pending sectors) is #22.
-        o.counter("stormdrive_drive_io_errors_total", "Commands that failed on the drive since boot (sysfs ioerr_cnt).", &l, h.media_errors as f64);
+        // media errors (#58); the drive's own counters are #22's.
+        if let Some(n) = h.io_errors {
+            o.counter("stormdrive_drive_io_errors_total", "Commands that failed on the drive since boot (sysfs ioerr_cnt).", &l, n as f64);
+        }
     }
     if let Some(u) = &d.usage {
         o.gauge("stormdrive_drive_used_bytes", "Bytes allocated in stormblock slabs on the drive.", &l, u.used_bytes as f64);
@@ -381,7 +382,7 @@ mod tests {
             d.health = HealthReport {
                 status: Some(HealthStatus::Good),
                 temperature_c: Some(31),
-                media_errors: 2,
+                io_errors: Some(2),
                 collected_at: Some(UNIX_EPOCH + std::time::Duration::from_secs(1_791_300_000)),
                 ..Default::default()
             };
