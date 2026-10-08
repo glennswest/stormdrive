@@ -438,14 +438,16 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #63: pin git dependencies to a rev (stormcentral#571, 2026-10-08)
+### #63: pin git dependencies to a rev (stormcentral#571, 2026-10-08) — DONE
 
 Golden builds write `SBOM/crates.csv` and refuse a git dependency not pinned
 to a `rev`. The only one is `stormview` (was `branch = "main"`).
 - [x] Cargo.toml `rev = "81ef1d2…"` (the commit Cargo.lock already had);
       Cargo.lock source `?rev=<sha>#<sha>` (838f48e). Moving stormview
       forward is now a deliberate rev bump
-- [ ] sc-build with `--locked` (proves the lock matches), golden
+- [x] build VM on 838f48e / 9bed9b8 with `--locked` (the lock matches):
+      build, 223 unit + chassis160 + kube + restart + suites + tls + 9,
+      clippy -D warnings clean; golden requested
 - Not in scope: `web/package.json` takes stormview `#main` from npm, but
   `package-lock.json` pins the commit and the SBOM rule is about crates
 
