@@ -21,6 +21,7 @@ pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("drives-listed", drives_listed(api)).await;
     r.run("drive-identity", drive_identity(api)).await;
     r.run("health-verdicts", health_verdicts(api)).await;
+    r.run("drive-slabs", drive_slabs(api)).await;
     r.run("summary-card", summary_card(api)).await;
     r.run("placement", placement(api)).await;
     r.run("components-feed", components_feed(api)).await;
@@ -79,6 +80,13 @@ async fn health_verdicts(api: &Api) -> Outcome {
     for d in &live {
         let v = d["health"]["status"].as_str().unwrap_or("unknown");
         ensure(VERDICTS.contains(&v), format!("{}: verdict {v:?}", s(d, "name")))?;
+        // #58: no sample is never silent — it says why.
+        if d["health"]["collected_at"].is_null() {
+            ensure(
+                d["health"]["not_collected"].as_str().is_some_and(|w| !w.is_empty()),
+                format!("{}: no health sample and no reason why", s(d, "name")),
+            )?;
+        }
     }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
     loop {
@@ -102,6 +110,38 @@ async fn health_verdicts(api: &Api) -> Outcome {
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
+}
+
+/// Every present drive answers /slabs (#58), and a drive whose slab
+/// partitions the engine runs from the network carries the finding.
+async fn drive_slabs(api: &Api) -> Outcome {
+    let ds = crate::drives(api).await?;
+    let live: Vec<&Value> = ds.iter().filter(|d| present(d)).collect();
+    if live.is_empty() {
+        return Err(Why::Skip("no present drives on this node".into()));
+    }
+    let (mut with, mut findings) = (0, vec![]);
+    for d in &live {
+        let v = api.get(&format!("api/v1/drives/{}/slabs", s(d, "id"))).await?.json("GET slabs")?;
+        let on_disk = v["on_disk"].as_array().ok_or_else(|| Why::Fail(format!("{}: on_disk is not a list", s(d, "name"))))?;
+        if on_disk.is_empty() {
+            continue;
+        }
+        with += 1;
+        let remote = v["engine"]["diskless"] == true || v["engine"]["system"] == "remote" || v["engine"]["data"] == "remote";
+        if remote {
+            ensure(!v["finding"].is_null(), format!("{}: slabs on the disk, engine runs remote, no finding", s(d, "name")))?;
+        }
+        if !v["finding"].is_null() {
+            findings.push(format!("{}: {}", s(d, "name"), v["finding"]["message"].as_str().unwrap_or("")));
+        }
+    }
+    let mut out = format!("{} drives answer, {with} with slab partitions", live.len());
+    if !findings.is_empty() {
+        // An unused local disk is stormdrive doing its job, not a failed test.
+        out.push_str(&format!("; reported: {}", findings.join("; ")));
+    }
+    Ok(out)
 }
 
 /// The stormd card: a known health word, and its Drives count is the list's.

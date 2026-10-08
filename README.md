@@ -64,8 +64,10 @@ are listed under [Not yet](#not-yet).
   - **NVMe:** Get Log Page 0x02 through `NVME_IOCTL_ADMIN_CMD`: critical
     warning bits, temperature, available spare, percentage used, power-on
     hours, media errors.
-  - **SAS/SATA:** from sysfs, `device/state`, `device/ioerr_cnt` (failed
-    commands, shown as "io errs") and the hwmon temperature. From the drive
+  - **SAS/SATA:** from sysfs, `device/state`, `device/ioerr_cnt` (commands
+    that failed since boot, resets included: `health.io_errors`, shown as
+    "io errs", never a warning and never media errors, #58) and the hwmon
+    temperature. From the drive
     itself (#22), one or two commands a sample:
     - SAS: LOG SENSE Informational Exceptions (0x2F: the drive's own failure
       prediction, and temperature), Temperature (0x0D), and on an SSD the
@@ -74,7 +76,8 @@ are listed under [Not yet](#not-yet).
       THRESHOLDS. That gives reallocated, pending and offline-uncorrectable
       sectors, temperature, power-on hours and SSD wear; a pre-fail
       attribute at or below its threshold is the drive predicting its own
-      failure.
+      failure. Attribute 187 (reported uncorrectable) is the drive's
+      `media_errors`.
 
     A predicted failure makes the drive `failing`; pending or
     offline-uncorrectable sectors make it `warning`. They are in
@@ -83,8 +86,28 @@ are listed under [Not yet](#not-yet).
     thresholds in `[monitor]`. A worse verdict must repeat
     `monitor.hysteresis` samples in a row before it sticks. A better one
     applies at once. Every change is an event.
+  - **No sample is never silent** (#58): `health.not_collected` says why
+    there is none (first sample due, the read timed out or is hung, or none
+    for three intervals), and three intervals without one is a warning
+    event. `collected_at: null` alone never means "no errors". The health
+    loop restarts itself, with an error event, if it ever stops.
+  - **Slabs the engine doesn't use** (#58): each monitor tick reads the
+    engine's `GET /api/v1/health` `slabs` report (where the node's system
+    and data halves run, and the boot's verdict on its own disk,
+    stormblock#344). A drive carrying stormblock slab partitions of a half
+    the engine runs from the network (`remote`, or the node `diskless`) gets
+    `engine_finding` and is `warning` ("suspect"); `failing` when the boot
+    says it took the disk and could not use it. The engine's reason is in
+    the message, and it is an `engine` event. A half mid flow-over
+    (`mixed`) is not a finding.
+    `GET /api/v1/drives/{id}/slabs` shows the three views: the slabs on the
+    disk (`on_disk`: partition, role from the GPT type, offset), the
+    engine's slabs on it (`in_engine`) and the engine's report.
   - **Trend:** SSDs keep a trend of (wear %, media errors), recorded when a
     value changes or once a day. `GET /api/v1/drives/{id}/health` returns it.
+    It lives in `data_dir`, so a reinstall that replaces `data_dir` starts it
+    again; the drive's own counters (ATA SMART, NVMe log) are on the drive
+    and survive both.
 - **Location** (`src/topology.rs`, `src/ses.rs`, `src/hba.rs`).
   - **SAS:** the HBA (SCSI host, PCIe address, driver), the shelf, the bay,
     the SAS address, the expander phy and the expander.
@@ -668,6 +691,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/drives` | every drive, with any running test/format/firmware run inlined |
 | `GET /api/v1/drives/{id}` · `DELETE` | one drive · forget a missing, out-of-fleet drive |
 | `GET /api/v1/drives/{id}/health` | health report + trend |
+| `GET /api/v1/drives/{id}/slabs` | slabs on the disk, the engine's slabs on it, the engine's slab report and the finding (#58) |
 | `POST /api/v1/drives/{id}/locate` | `{"on": bool}` |
 | `POST /api/v1/drives/{id}/fleet` | `{"action":"join","format_slab"?,"tier"?}` or `{"action":"leave","drain"?,"force"?}` |
 | `GET·POST·DELETE /api/v1/drives/{id}/drain` | status · start (`?leave=true` retires when empty) · cancel |

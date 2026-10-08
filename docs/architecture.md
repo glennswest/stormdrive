@@ -248,8 +248,10 @@ path failover is actually needed.
   (Reference implementation: stormblock `main.rs:2342`, which decodes the
   same page for must-gather.)
 - **SAS/SATA** (`smart/scsi.rs`). From sysfs: `device/state`,
-  `device/ioerr_cnt` (commands that failed, which the feed and UI label "io
-  errs", not media errors) and the hwmon temperature (drivetemp or the SAS
+  `device/ioerr_cnt` (commands that failed since boot, resets included:
+  `io_errors`, labelled "io errs"; not media errors and not a warning, #58 —
+  the Dell's "media errors growing 32 → 33" was this counter while the
+  drive's own logs had none) and the hwmon temperature (drivetemp or the SAS
   driver). Then the drive itself (#22), over SG_IO on its sg node (else
   `/dev/<name>`), with a 10 s timeout per command:
   - **not `ATA`:** LOG SENSE (cumulative) of Informational Exceptions
@@ -259,7 +261,8 @@ path failover is actually needed.
     (0x11) parameter 1, Percentage Used, on an SSD.
   - **vendor `ATA`:** ATA PASS-THROUGH(16) SMART READ DATA (D0h) and READ
     THRESHOLDS (D1h), with LBA 4Fh/C2h. Attributes 5/197/198 are the sector
-    counters, 194 the temperature, 9 power-on hours, and 233/231/177 an
+    counters, 187 (reported uncorrectable) the drive's `media_errors`, 194
+    the temperature, 9 power-on hours, and 233/231/177 an
     SSD's wear (100 − normalized). Any pre-fail attribute at or below its
     non-zero threshold is the predicted failure. That is the same verdict
     as SMART RETURN STATUS, without needing CK_COND register readback.
@@ -277,9 +280,34 @@ path failover is actually needed.
   - `warning`: NVMe volatile-backup or temperature bit, spare ≤
     `spare_warn_pct`, wear ≥ `wear_warn_pct`, temperature ≥ `temp_warn_c`
     (≥ `temp_crit_c` is still `warning`, with a different message), or
-    media errors higher than the previous sample's.
+    media errors (the drive's own count) higher than the previous sample's.
+  - The engine's finding (below) raises the verdict to its severity
+    without hysteresis: it comes from the engine's settled report.
   - A worse verdict must repeat `hysteresis` samples in a row before it
     sticks. A better one applies at once.
+- **No sample says why** (#58). `health.not_collected`: "first health
+  sample due within N s", the timeout / hung-read message, "last health
+  sample N s ago", or "no health sample in the N s since stormdrive
+  started" (plus "its health read is hung" when the poller has it stuck).
+  Three intervals without a sample is a `health` warning event, once. The
+  health loop runs under a supervisor that restarts it with an error event
+  if it ever ends.
+- **Slabs the engine doesn't use** (#58, `engine.rs`, pure). Discovery's
+  slab probe records each slab as `slab_parts {partition, name, role,
+  offset_bytes}`, the role from the GPT type GUID (`SLAB` = system,
+  `SLAB_DATA` = data; a whole-drive slab is `unknown` and stands for either
+  half). Each monitor tick reads the engine's `GET /api/v1/health` `slabs`
+  (`diskless`, `system`/`data` = local|remote|mixed|none, `local_disk
+  {state: taken|refused|failed|none, drive, reason}`). A drive whose slab
+  half the engine runs `remote` (or a `diskless` node) gets
+  `engine_finding {severity, roles, message}`: `warning` (suspect), or
+  `failing` when `local_disk` says the boot took this drive and `failed`.
+  The boot's reason goes into the message when it names this drive (or no
+  drive). The finding raises the verdict at once, rides in
+  `health.messages`, and is an `engine` event when it appears, changes or
+  clears. Owner (2026-10-08): the flow-over onto the local disk is
+  mandatory; a node that cannot take its own disk is a hardware fault to
+  put in front of the owner, not a quiet diskless run.
 - **Wear trending**: SSDs (and any drive reporting wear) keep a ring of
   (time, wear_pct, media_errors) samples (512) persisted with the inventory.
   A sample is recorded when either value changes, or daily when neither does
