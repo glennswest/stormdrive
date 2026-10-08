@@ -349,7 +349,7 @@ What one cycle does, per drive:
 | Transport | Per sample | At 160 drives, 60 s interval |
 |---|---|---|
 | NVMe | one admin command, Get Log Page 0x02 (512 B), 5 s command timeout | 160 admin commands a minute, ~2.7 a second, 8 at most in flight |
-| SAS/SATA | sysfs only (`device/state`, `ioerr_cnt`, hwmon); no I/O to the drive | 160 × ~4 sysfs reads a minute |
+| SAS/SATA | sysfs (`device/state`, `ioerr_cnt`, hwmon) + LOG SENSE 0x2F/0x0D/0x11 (SAS, ≤ 3 commands) or ATA SMART READ DATA + THRESHOLDS (SATA, 2 commands) (#22) | 160 × ~4 sysfs reads + ≤ 3 drive commands a minute |
 
 A discovery pass (every 30 s, and on hotplug) reads sysfs attributes per
 device. It sends drive I/O only for new or changed devices, plus a
