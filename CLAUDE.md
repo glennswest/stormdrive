@@ -438,7 +438,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #21: SIGTERM stops gracefully and persists (2026-10-07) — written, waits on a build
+### #21: SIGTERM stops gracefully and persists (2026-10-07) — DONE (v0.24.0)
 
 stormd and systemd stop the daemon with SIGTERM, which skipped the final
 `persist()` (only SIGINT was caught).
@@ -447,10 +447,10 @@ stormd and systemd stop the daemon with SIGTERM, which skipped the final
 - [x] `tests/restart.rs` `sigterm_stops_gracefully_and_persists`: SIGTERM to
       the real daemon → exits 0 within 10 s, events.json ends with the stop
 - [x] docs (README, architecture "Stopping"), changelog
-- [ ] **next:** build (with #22's bd63b9b), release v0.24.0 with #22, golden.
-      Blocked: build-VM jobs cancelled while queued (stormcentral#541)
+- [x] build VM on 945df7a and v0.24.0: restart harness (SIGTERM) passes;
+      golden `golden-stormdrive-0352752c1cbe`, stormcos#408
 
-### #22: SAS/SATA health — LOG SENSE and ATA SMART (2026-10-07) — IN PROGRESS
+### #22: SAS/SATA health — LOG SENSE and ATA SMART (2026-10-07) — DONE (v0.24.0)
 
 SAS/SATA health was sysfs only, so such a drive never reached `failing` on
 its own. Design (the issue's, no open decision):
@@ -472,11 +472,10 @@ Steps:
 - [x] build VM on 13cd19f: 217 unit (4 new) + harnesses pass; clippy failed
       on `poller::Outcome` growing past `large_enum_variant` (#52) → boxed
       in bd63b9b
-- [ ] **next:** build bd63b9b (clippy), release v0.24.0, golden, close #52 +
-      #22. Blocked 2026-10-07: every build-VM job (plain sc-build now routes
-      there too) is cancelled while queued — the master's drain
-      (stormcentral#535/#536, now stuck: stormcentral#541). Live: the
-      R230's WD (SATA behind mpt3sas) once a release carries it
+- [x] build VM on 945df7a and v0.24.0: 217 unit + harnesses, clippy
+      -D warnings clean (#52 fixed); golden `golden-stormdrive-0352752c1cbe`,
+      stormcos#408. Not on a real drive yet: the R230's WD (SATA behind
+      mpt3sas) once the release lands; SAS on the NetApp shelf (#30)
 
 ### #23: wear-out projection from the trend (2026-10-07) — DONE (v0.23.0)
 

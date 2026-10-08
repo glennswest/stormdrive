@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-08
+- **docs:** work plan: #21, #22, #52 built and released in v0.24.0 (golden-stormdrive-0352752c1cbe, stormcos#408)
+
 ## [v0.24.0] — 2026-10-08
 
 ### Added
