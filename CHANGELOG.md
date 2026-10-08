@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-08
+- **feat:** every remote call retries through one helper, the workspace crate `retry/` (`retry::with_backoff`): bounded tries and a whole-call deadline, exponential backoff with jitter, Retry-After honoured, transient failures (timeouts, refused/reset, 5xx, 408, 429) retried and real answers (4xx) returned at once, writes that may not repeat retried only when they never left; "succeeded on attempt N after X s" / "gave up after N attempts / X s" logged; policies `ENGINE`, `ENGINE_SLOW`, `KUBE`, `TEST` (#71)
+- **feat:** engine client: reads, label/overcommit PUTs, health reports, drain cancel and drive close (404 after a lost answer = done) retried; drive open, slab format and drain start retried only on connect failure; giving up is `retry::Infra` (`stormblock::is_infra`) (#71)
+- **feat:** REST: an engine that was not there through its retries is **503 `unavailable`** (kube routes `ServiceUnavailable`), a refusal from it stays 502 `stormblock` (#71)
+- **feat:** apiserver client: get/patch/delete, TokenReview/SubjectAccessReview and Drive creates retried; Event creates only on connect failure; `KubeError::is_infra()` (#71)
+- **feat:** test container: its calls to :9092 retry (reads; writes on connect failure only); a test stopped by infrastructure is reported `skip` with `"infrastructure": true`, counted in the summary, and the run exits 2 instead of 1 (#71)
+- **docs:** README "Remote calls and retries": policies and every call site (#71)
+
 ## [v0.26.0] — 2026-10-08
 
 ### Added

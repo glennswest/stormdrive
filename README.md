@@ -404,7 +404,8 @@ stormdrive's suites follow stormcentral's
   `test/Containerfile` (`FROM scratch`). `test/build.sh` builds the static
   musl binary on the build box.
 - **Output:** JSON lines on stdout, then a summary. Exit 0 means passed, 1 a
-  test failed, 2 could not run.
+  test failed, 2 could not run — including a test infrastructure stopped
+  (`"infrastructure": true`, see "Remote calls and retries").
 - **Target:** the suites drive the node's stormdrive at
   `https://STORM_NODE:9092` through its API (plain `http://` is tried when
   the node does not speak TLS yet). The node's certificate is checked
@@ -815,6 +816,68 @@ curl -s $C -H "$T" -X PUT --data-binary @image.lod $S/api/v1/firmware/images/ima
 curl -s $C -H "$T" -X POST $S/api/v1/firmware -H 'Content-Type: application/json' \
      -d '{"model":"ST1200MM0098","image":"image.lod"}'
 ```
+
+## Remote calls and retries (#71)
+
+Three clients leave the process; nothing else does (SG_IO, netlink, sysfs
+and `/dev` are local; there is no ssh, and DNS happens only inside the HTTP
+clients). Every one of their calls goes through one helper, the workspace
+crate `retry/` (`retry::with_backoff(policy, what, op, classify)`):
+
+- **bounded**: at most `attempts` tries, none started past the
+  whole-call `deadline`; each try's own timeout is cut to what is left;
+- **backoff with jitter**: `base · 2^(n-1)` capped at `max_delay`, then
+  half fixed + half random; a `Retry-After` is a floor;
+- **transient vs. answer**: timeouts, refused/reset connections, 5xx, 408
+  and 429 are retried; any other 4xx (and a validation error) is a real
+  answer, returned at once;
+- **idempotency**: a write a repeat could apply twice is retried only when
+  it never reached the server (connect failed) or was refused unprocessed
+  (429);
+- **logged**: `stormblock GET /api/v1/drives: succeeded on attempt 3 after
+  1.4 s`, or `… infrastructure: gave up after 4 attempts / 27.9 s: HTTP 503`
+  (warn);
+- **classified**: giving up is infrastructure — `retry::Infra` in the
+  engine client's error (`stormblock::is_infra`), `KubeError::is_infra()`
+  for the apiserver. The REST API answers an engine that was not there
+  with **503 `unavailable`** (kube routes: `ServiceUnavailable`), and a
+  refusal from it with 502 `stormblock`.
+
+| Policy | Used by | Tries | Base | Max delay | Deadline | One try |
+|---|---|---|---|---|---|---|
+| `ENGINE` | the engine (:9090) | 4 | 250 ms | 4 s | 30 s | 5 s |
+| `ENGINE_SLOW` | `GET /api/v1/volumes?placement=true` | 3 | 1 s | 5 s | 100 s | 30 s |
+| `KUBE` | the apiserver (gate reviews, controller) | 3 | 200 ms | 2 s | 20 s | 10 s |
+| `TEST` | the test container → the node's :9092 | 4 | 500 ms | 5 s | 150 s | 60 s |
+
+Call sites and what each repeats:
+
+| Call | File | Retried | Why |
+|---|---|---|---|
+| engine `GET` drives, slabs, drive slabs, health, arrays, drain status, volumes | `src/stormblock.rs` | yes | reads |
+| engine `PUT` labels, overcommit | `src/stormblock.rs` | yes | a whole value: the same twice |
+| engine `POST …/health` | `src/stormblock.rs` | yes | sets a state |
+| engine `DELETE …/drain` | `src/stormblock.rs` | yes | stopping a stopped drain is a no-op |
+| engine `DELETE /drives/{id}` (admin) | `src/stormblock.rs` | yes | a 404 after an earlier try that may have landed = closed |
+| engine `POST /drives` (open) | `src/stormblock.rs` | connect only | a second open is refused; the fleet loop's backoff and reconcile retry it |
+| engine `POST /slabs` (format, admin) | `src/stormblock.rs` | connect only | a format must not run twice |
+| engine `POST …/drain` | `src/stormblock.rs` | connect only | a running drain answers 409; the fleet tick retries pending drains (#43) |
+| apiserver `GET`, merge `PATCH`, `DELETE` | `src/kubeapi.rs` | yes | reads; a patch sets fields; callers take 404 as done |
+| apiserver TokenReview, SubjectAccessReview | `src/kubeapi.rs` | yes | nothing is stored |
+| apiserver create Drive | `src/controller.rs` → `create_retried` | yes | fixed name; 409 AlreadyExists is done |
+| apiserver create Event | `src/controller.rs` → `create` | connect only | a repeat is a second Event |
+| test container reads (`get`, `get_as`, `If-None-Match`, watch) | `test/src/api.rs` | yes | reads |
+| test container writes (`post`, `post_empty`, `delete`, `post_as`) | `test/src/api.rs` | connect only | they start things (a smoke test, a designation) a repeat would find busy |
+
+The engine's own 401 handling stays inside one try: a 401 re-reads the
+token and sends again at once (a rotated token, not a flaky engine).
+
+**The test container** reports a test that infrastructure stopped — the
+node's stormdrive not answering through `TEST`, a transport error on a write
+it would not repeat, or a 503/504 from stormdrive (its engine or apiserver
+was not there) — as `{"status": "skip", "infrastructure": true, …}`, counts
+it in the summary's `infrastructure`, and exits **2** (could not run), never
+1, unless a test really failed. Retries are logged on its stderr.
 
 ## How it ships
 

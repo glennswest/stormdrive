@@ -1222,6 +1222,17 @@ sends `drain: false`; to keep a failed drive from being drained, don't let
 it be reported `failed` (`push_health = false`, which also gives up the
 quarantine).
 
+### Retries (`retry/`, #71)
+
+Every engine call (and every apiserver and test-container call) goes
+through `retry::with_backoff` under a named policy (`ENGINE` 4 tries / 30 s,
+`ENGINE_SLOW` for the placement walk, `KUBE`, `TEST`). Reads and writes that
+set a value retry any transient failure; a drive open, slab format and drain
+start retry only a connection that never went out — the fleet loop's own
+backoff, pending-drain retry and reconcile are what repeat those. Giving up
+is a `retry::Infra` error: the REST API answers it 503 `unavailable`, not
+502. The README's "Remote calls and retries" lists every call site.
+
 ## Config (`/etc/stormdrive/stormdrive.toml`)
 
 Every key, with its default, is in the [README](../README.md#configuration)
