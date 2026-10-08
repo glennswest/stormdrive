@@ -438,7 +438,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #58: unused slabs and uncollected health read as healthy (P1, Dell sda, 2026-10-08) — IN PROGRESS
+### #58: unused slabs and uncollected health read as healthy (P1, Dell sda, 2026-10-08) — DONE (v0.25.0)
 
 The Dell ran diskless from forge (engine `slabs.system/data = remote`) while
 sda carried both slab partitions; stormdrive said nothing. Its health had
@@ -466,8 +466,17 @@ marked suspect/failed. Design (no open decision):
 - trend across installs: the drive's own counters (ATA SMART, NVMe) live on
   the drive; the inventory trend stays in data_dir
 Steps:
-- [ ] io_errors split · [ ] engine report + finding · [ ] not_collected +
-      supervision · [ ] /slabs route · [ ] tests, docs, changelog, release
+- [x] io_errors split · [x] engine report + finding · [x] not_collected +
+      supervision · [x] /slabs route · [x] tests, docs, changelog, release
+- [x] build VM on the v0.25.0 commit: 223 unit (6 new: engine findings ×4,
+      not_collected reasons, ioerr ≠ media errors) + harnesses, clippy
+      -D warnings clean, `web/rebuild.sh --check` identical; golden
+      `golden-stormdrive-4a5c915a3ae1`, stormcos#408. Not on the Dell yet:
+      it is under baremetalservices; short suite `drive-slabs` checks it
+      once a release runs there
+- Why the 0.23.0 Dell had `collected_at: null` was not found from the code
+  (the node was not reachable); whatever the cause, it now says why and
+  warns
 
 ### #21: SIGTERM stops gracefully and persists (2026-10-07) — DONE (v0.24.0)
 

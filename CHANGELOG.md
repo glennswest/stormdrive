@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-08
+- **docs:** work plan: #58 done in v0.25.0 (golden-stormdrive-4a5c915a3ae1)
+
 ## [v0.25.0] — 2026-10-08
 
 ### Added
