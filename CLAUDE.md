@@ -470,10 +470,11 @@ Design (the issue's, no open decision):
   infrastructure is reported `skip` with `"infrastructure": true` and the run
   exits 2 (test standard: 2 = could not run), never 1
 Steps:
-- [ ] retry crate + tests (fake failing N times per policy)
-- [ ] engine · [ ] kube · [ ] test runner
-- [ ] docs (README "Remote calls and retries" with the call-site table),
-      changelog, sc-build, release, golden
+- [x] retry crate + tests (fake failing N times per policy)
+- [x] engine (+ REST 503 `unavailable`) · [x] kube · [x] test runner
+- [x] docs (README "Remote calls and retries" with the call-site table,
+      architecture "Retries"), changelog
+- [ ] **next:** sc-build (build VM), v0.27.0, golden, close #71
 
 ### #64: drive history + hardware assets in system-data (P0, stormcos#456, 2026-10-08) — DONE (v0.26.0)
 
