@@ -35,6 +35,16 @@ fn api_version() -> String {
     format!("{GROUP}/{VERSION}")
 }
 
+/// The engine failed `what`: 503 ServiceUnavailable when it was not there
+/// for a whole retry policy (infrastructure, #71), 502 Upstream otherwise.
+fn upstream(what: &str, e: &anyhow::Error) -> Response {
+    if crate::stormblock::is_infra(e) {
+        status_error(StatusCode::SERVICE_UNAVAILABLE, "ServiceUnavailable", format!("{what}: {e:#}"))
+    } else {
+        status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("{what}: {e:#}"))
+    }
+}
+
 fn status_error(code: StatusCode, reason: &str, message: impl Into<String>) -> Response {
     (
         code,
@@ -225,7 +235,7 @@ async fn patch_drive(
             }
             if s.config.stormblock.drain_on_failing {
                 if let Err(e) = crate::fleet::request_drain(&s, did, "operator", true).await {
-                    return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("drain pending (retried each tick): {e:#}"));
+                    return upstream("drain pending (retried each tick)", &e);
                 }
             }
         }
@@ -249,7 +259,7 @@ async fn patch_drive(
                     )
                     .await
                     {
-                        return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("join: {e:#}"));
+                        return upstream("join", &e);
                     }
                     s.events.write().await.push(Some(did), Severity::Info, "fleet", format!("{}: joined the fleet (kube)", drive.name));
                 }
@@ -259,7 +269,7 @@ async fn patch_drive(
                     // Leaving through the resource always drains first: a
                     // declarative `fleet: out` must not strand data.
                     if let Err(e) = crate::fleet::start_drain(&s, did, "leave", true).await {
-                        return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("drain: {e:#}"));
+                        return upstream("drain", &e);
                     }
                 }
             }
@@ -270,12 +280,12 @@ async fn patch_drive(
     match spec.drain {
         Some(true) => {
             if let Err(e) = crate::fleet::start_drain(&s, did, "operator", false).await {
-                return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("drain: {e:#}"));
+                return upstream("drain", &e);
             }
         }
         Some(false) if drive.activity == Activity::Draining => {
             if let Err(e) = crate::fleet::cancel_drain(&s, did).await {
-                return status_error(StatusCode::BAD_GATEWAY, "Upstream", format!("cancel drain: {e:#}"));
+                return upstream("cancel drain", &e);
             }
         }
         Some(false) => {}

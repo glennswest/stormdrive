@@ -9,6 +9,7 @@
 
 use crate::config::StormBlockConfig;
 use crate::drive::DriveKind;
+use retry::{Idempotent, Policy};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,27 @@ const DEFAULT_TOKEN_FILES: &[&str] = &[
     "/etc/stormblock/api_token",
     "/var/lib/stormblock/api_token",
 ];
+
+/// One try's timeout for an ordinary engine call, and for the volume
+/// placement walk (the engine walks every extent map for it).
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(5);
+const ENGINE_SLOW_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Which credentials and policy an engine call uses.
+#[derive(Clone, Copy)]
+enum Call {
+    Ordinary,
+    /// Destructive on the engine (stormblock#274): the admin cascade.
+    Admin,
+    /// `ENGINE_SLOW`: the volume placement walk.
+    Slow,
+}
+
+/// The engine was not there (timeouts, refused, 5xx) for a whole retry
+/// policy (#71) — infrastructure, not an answer from it.
+pub fn is_infra(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<retry::Infra>().is_some()
+}
 
 /// Where the engine mints its admin token (stormblock#274: never under
 /// `/run/stormblock`, which every service mounts).
@@ -140,7 +162,7 @@ impl StormBlockClient {
         Self {
             cfg,
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
+                .timeout(ENGINE_TIMEOUT)
                 .build()
                 .expect("reqwest client"),
             token: Arc::new(RwLock::new(token)),
@@ -190,10 +212,10 @@ impl StormBlockClient {
         out
     }
 
-    /// A destructive verb: each credential in turn until one is not refused
-    /// (401/403). The last refusal is returned, and logged with what the
-    /// engine wants.
-    async fn send_admin(&self, req: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+    /// A destructive verb, one try: each credential in turn until one is not
+    /// refused (401/403). The last refusal is returned, and logged with what
+    /// the engine wants.
+    async fn send_admin_once(&self, req: reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
         let bearers = self.admin_bearers();
         let mut req = Some(req);
         let mut last = None;
@@ -221,14 +243,14 @@ impl StormBlockClient {
                 );
                 Ok(resp)
             }
-            None => Ok(req.expect("request unsent").send().await?),
+            None => req.expect("request unsent").send().await,
         }
     }
 
-    /// Every ordinary engine call goes through here (stormblock#107: all of
-    /// `/api/v1` needs `Authorization: Bearer`). A 401 re-reads the token
-    /// and, when it changed, retries once.
-    async fn send(&self, req: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+    /// An ordinary engine call, one try (stormblock#107: all of `/api/v1`
+    /// needs `Authorization: Bearer`). A 401 re-reads the token and, when it
+    /// changed, sends again at once: a rotated token, not a flaky engine.
+    async fn send_once(&self, req: reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
         let retry = req.try_clone();
         let used = self.bearer();
         let resp = with_bearer(req, used.as_deref()).send().await?;
@@ -239,7 +261,7 @@ impl StormBlockClient {
         match (retry, fresh) {
             (Some(req), Some(fresh)) if Some(&fresh) != used.as_ref() => {
                 tracing::info!("stormblock refused our token; retrying with the re-read one");
-                Ok(with_bearer(req, Some(fresh.as_str())).send().await?)
+                with_bearer(req, Some(fresh.as_str())).send().await
             }
             _ => {
                 tracing::warn!(
@@ -249,6 +271,48 @@ impl StormBlockClient {
                 Ok(resp)
             }
         }
+    }
+
+    /// Every engine call goes through here (#71): `retry::Policy::ENGINE`
+    /// (or `ENGINE_SLOW`), backoff with jitter, a whole-call deadline, each
+    /// try's timeout cut to what is left. `idem` says whether a try that may
+    /// have reached the engine can be repeated. Giving up on a transient
+    /// failure is a `retry::Infra` error (see [`is_infra`]); a real answer
+    /// (any status the classifier calls final) comes back as the response.
+    /// Also the number of tries it took.
+    async fn call(&self, how: Call, req: reqwest::RequestBuilder, idem: Idempotent) -> anyhow::Result<(reqwest::Response, u32)> {
+        let what = match req.try_clone().and_then(|r| r.build().ok()) {
+            Some(r) => format!("stormblock {} {}", r.method(), r.url().path()),
+            None => "stormblock".to_string(),
+        };
+        let (policy, usual) = match how {
+            Call::Ordinary | Call::Admin => (&Policy::ENGINE, ENGINE_TIMEOUT),
+            Call::Slow => (&Policy::ENGINE_SLOW, ENGINE_SLOW_TIMEOUT),
+        };
+        let tried = retry::with_backoff(
+            policy,
+            &what,
+            |a| {
+                // Engine requests carry JSON or no body: always cloneable.
+                let r = req.try_clone().expect("engine request body is cloneable").timeout(a.timeout(usual));
+                async move {
+                    match how {
+                        Call::Admin => self.send_admin_once(r).await,
+                        Call::Ordinary | Call::Slow => self.send_once(r).await,
+                    }
+                }
+            },
+            |r| retry::classify_response(r, idem),
+        )
+        .await;
+        if let Some(infra) = tried.gave_up {
+            return Err(anyhow::Error::new(infra));
+        }
+        Ok((tried.result?, tried.attempts))
+    }
+
+    async fn send(&self, req: reqwest::RequestBuilder, idem: Idempotent) -> anyhow::Result<reqwest::Response> {
+        Ok(self.call(Call::Ordinary, req, idem).await?.0)
     }
 
     pub fn enabled(&self) -> bool {
@@ -266,7 +330,7 @@ impl StormBlockClient {
     /// GET /api/v1/drives — stormblock's view of its open drives.
     pub async fn list_drives(&self) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.url("/api/v1/drives")))
+            .send(self.http.get(self.url("/api/v1/drives")), Idempotent::Yes)
             .await?
             .error_for_status()?
             .json()
@@ -301,8 +365,12 @@ impl StormBlockClient {
         if let Some(u) = uuid {
             body["uuid"] = Value::String(u.to_string());
         }
+        // Not retried once it may have reached the engine: a second open of
+        // the same path is refused, which would hide that the first worked.
+        // The fleet loop retries a failed add after its backoff, and
+        // reconcile adopts a drive the engine did open.
         Ok(self
-            .send(self.http.post(self.url("/api/v1/drives")).json(&body))
+            .send(self.http.post(self.url("/api/v1/drives")).json(&body), Idempotent::No)
             .await?
             .error_for_status()?
             .json()
@@ -328,7 +396,8 @@ impl StormBlockClient {
             .http
             .put(self.drive_url(id_or_path, "/labels"))
             .json(&serde_json::json!({ "labels": map }));
-        self.send(req)
+        // A PUT of the whole label set: safe to repeat.
+        self.send(req, Idempotent::Yes)
             .await?
             .error_for_status()?;
         Ok(())
@@ -354,7 +423,7 @@ impl StormBlockClient {
             "drive": { "uuid": uuid.to_string(), "wwn": wwn, "serial": serial, "path": path },
         });
         let resp = self
-            .send(self.http.put(self.drive_url(path, "/overcommit")).json(&body))
+            .send(self.http.put(self.drive_url(path, "/overcommit")).json(&body), Idempotent::Yes)
             .await?;
         if matches!(resp.status(), reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED) {
             return Ok(false);
@@ -367,9 +436,13 @@ impl StormBlockClient {
     /// on the engine (stormblock#274): the admin token or a storage-admin bearer.
     pub async fn delete_drive(&self, id_or_path: &str, force: bool) -> anyhow::Result<()> {
         let q = if force { "?force=true" } else { "" };
-        self.send_admin(self.http.delete(self.drive_url(id_or_path, q)))
-            .await?
-            .error_for_status()?;
+        // Retried: closing a closed drive is a 404, and a 404 after an
+        // earlier try may have reached the engine means that try closed it.
+        let (resp, tries) = self.call(Call::Admin, self.http.delete(self.drive_url(id_or_path, q)), Idempotent::Yes).await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND && tries > 1 {
+            return Ok(());
+        }
+        resp.error_for_status()?;
         Ok(())
     }
 
@@ -377,7 +450,7 @@ impl StormBlockClient {
     /// identity (stormblock#70 item 2). Empty means nothing lives there.
     pub async fn drive_slabs(&self, id_or_path: &str) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.drive_url(id_or_path, "/slabs")))
+            .send(self.http.get(self.drive_url(id_or_path, "/slabs")), Idempotent::Yes)
             .await?
             .error_for_status()?
             .json()
@@ -388,7 +461,7 @@ impl StormBlockClient {
     /// GET /api/v1/slabs — the whole pool, for the summary card.
     pub async fn list_slabs(&self) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.url("/api/v1/slabs")))
+            .send(self.http.get(self.url("/api/v1/slabs")), Idempotent::Yes)
             .await?
             .error_for_status()?
             .json()
@@ -399,14 +472,14 @@ impl StormBlockClient {
     /// GET /api/v1/health — the engine's own health; its `slabs` says where
     /// the node's system and data halves run (stormblock#322/#344, #58).
     pub async fn node_health(&self) -> anyhow::Result<Value> {
-        Ok(self.send(self.http.get(self.url("/api/v1/health"))).await?.error_for_status()?.json().await?)
+        Ok(self.send(self.http.get(self.url("/api/v1/health")), Idempotent::Yes).await?.error_for_status()?.json().await?)
     }
 
     /// GET /api/v1/arrays — the engine's RAID sets with their members'
     /// state, drive and labels (stormblock#252). None: an engine without
     /// arrays (404).
     pub async fn list_arrays(&self) -> anyhow::Result<Option<Vec<Value>>> {
-        let resp = self.send(self.http.get(self.url("/api/v1/arrays"))).await?;
+        let resp = self.send(self.http.get(self.url("/api/v1/arrays")), Idempotent::Yes).await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -417,13 +490,10 @@ impl StormBlockClient {
     /// GET /api/v1/volumes?placement=true — every volume with the slabs and
     /// drives holding it (stormblock v17.1, #136) and its consumer (v18.1).
     /// The engine walks every volume's extent map for it, so it gets longer
-    /// than the client's 5 s.
+    /// than the client's 5 s: 30 s a try, under `ENGINE_SLOW`.
     pub async fn list_volumes_placed(&self) -> anyhow::Result<Vec<Value>> {
-        let req = self
-            .http
-            .get(self.url("/api/v1/volumes?placement=true"))
-            .timeout(Duration::from_secs(30));
-        let v: Value = self.send(req).await?.error_for_status()?.json().await?;
+        let req = self.http.get(self.url("/api/v1/volumes?placement=true"));
+        let v: Value = self.call(Call::Slow, req, Idempotent::Yes).await?.0.error_for_status()?.json().await?;
         Ok(items(v, "volumes"))
     }
 
@@ -437,9 +507,13 @@ impl StormBlockClient {
             body["role"] = serde_json::json!(r);
         }
         let req = self.http.post(self.url("/api/v1/slabs")).json(&body);
+        // Not retried once it may have reached the engine: a second format
+        // of a drive that took the first is refused (or worse). The worker
+        // and the fleet loop report the failure; nothing repeats it blind.
         Ok(self
-            .send_admin(req)
+            .call(Call::Admin, req, Idempotent::No)
             .await?
+            .0
             .error_for_status()?
             .json()
             .await?)
@@ -460,8 +534,10 @@ impl StormBlockClient {
             .http
             .post(self.drive_url(id_or_path, "/health"))
             .json(&serde_json::json!({ "state": state, "reason": reason, "drain": drain }));
+        // Sets the drive's state to `state`: the same report twice is the
+        // same state.
         Ok(self
-            .send(req)
+            .send(req, Idempotent::Yes)
             .await?
             .error_for_status()?
             .json()
@@ -471,7 +547,10 @@ impl StormBlockClient {
     /// POST /api/v1/drives/{id}/drain — empty every slab on the drive.
     pub async fn start_drain(&self, id_or_path: &str) -> anyhow::Result<DrainStatus> {
         Ok(self
-            .send(self.http.post(self.drive_url(id_or_path, "/drain")))
+            // Not retried once it may have reached the engine (a drain
+            // already running answers 409): the fleet tick retries a pending
+            // drain and adopts one the engine already runs (#43).
+            .send(self.http.post(self.drive_url(id_or_path, "/drain")), Idempotent::No)
             .await?
             .error_for_status()?
             .json()
@@ -481,7 +560,7 @@ impl StormBlockClient {
     /// GET /api/v1/drives/{id}/drain — where the drain is.
     pub async fn drain_status(&self, id_or_path: &str) -> anyhow::Result<Option<DrainStatus>> {
         let resp = self
-            .send(self.http.get(self.drive_url(id_or_path, "/drain")))
+            .send(self.http.get(self.drive_url(id_or_path, "/drain")), Idempotent::Yes)
             .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -492,7 +571,7 @@ impl StormBlockClient {
     /// DELETE /api/v1/drives/{id}/drain — stop a drain; what moved stays moved.
     /// Ordinary on the engine (detach-like): the node token.
     pub async fn cancel_drain(&self, id_or_path: &str) -> anyhow::Result<()> {
-        self.send(self.http.delete(self.drive_url(id_or_path, "/drain")))
+        self.send(self.http.delete(self.drive_url(id_or_path, "/drain")), Idempotent::Yes)
             .await?
             .error_for_status()?;
         Ok(())
@@ -822,5 +901,83 @@ mod tests {
         });
         c.format_slab("/dev/sdb", "hdd", None).await.unwrap();
         assert_eq!(take(&seen), ["root"]);
+    }
+
+    /// #71: a flaky engine. Reads (and other idempotent calls) retry 5xx
+    /// until it answers; a write that may not repeat does not; an engine
+    /// that is not there at all ends in `retry::Infra`.
+    #[tokio::test]
+    async fn engine_calls_retry_transient_failures_by_idempotency() {
+        use axum::http::StatusCode;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let gets = Arc::new(AtomicU32::new(0));
+        let posts = Arc::new(AtomicU32::new(0));
+        let deletes = Arc::new(AtomicU32::new(0));
+        let (g, p, d) = (gets.clone(), posts.clone(), deletes.clone());
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/drives",
+                axum::routing::get(move || {
+                    let g = g.clone();
+                    async move {
+                        // Fails twice, then answers.
+                        if g.fetch_add(1, Ordering::SeqCst) < 2 {
+                            (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({})))
+                        } else {
+                            (StatusCode::OK, axum::Json(serde_json::json!({ "items": [{ "path": "/dev/sdb" }] })))
+                        }
+                    }
+                })
+                .post(move || {
+                    let p = p.clone();
+                    async move {
+                        p.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }
+                }),
+            )
+            .route(
+                "/api/v1/drives/{id}",
+                axum::routing::delete(move || {
+                    let d = d.clone();
+                    async move {
+                        // The first close worked but its answer was lost;
+                        // the retry finds the drive gone.
+                        if d.fetch_add(1, Ordering::SeqCst) == 0 { StatusCode::BAD_GATEWAY } else { StatusCode::NOT_FOUND }
+                    }
+                }),
+            )
+            .route("/api/v1/drives/{id}/labels", axum::routing::put(|| async { StatusCode::CONFLICT }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let c = StormBlockClient::new(StormBlockConfig { url, api_token: "t".into(), ..Default::default() });
+
+        assert_eq!(c.list_drives().await.unwrap().len(), 1);
+        assert_eq!(gets.load(Ordering::SeqCst), 3);
+
+        let e = c.add_drive("/dev/sdb", &[], None).await.unwrap_err();
+        assert_eq!(posts.load(Ordering::SeqCst), 1, "a non-idempotent write is sent once");
+        assert!(!is_infra(&e), "{e:#}");
+
+        c.delete_drive("/dev/sdb", false).await.unwrap();
+        assert_eq!(deletes.load(Ordering::SeqCst), 2);
+
+        // A real answer (409) is final.
+        assert!(!is_infra(&c.set_labels("/dev/sdb", &[], None).await.unwrap_err()));
+
+        // Nothing listening: every policy try is refused, then Infra.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let gone = format!("http://{}", l.local_addr().unwrap());
+        drop(l);
+        let c = StormBlockClient::new(StormBlockConfig { url: gone, api_token: "t".into(), ..Default::default() });
+        let e = c.list_drives().await.unwrap_err();
+        assert!(is_infra(&e), "{e:#}");
+        let i = e.downcast_ref::<retry::Infra>().unwrap();
+        assert_eq!(i.attempts, Policy::ENGINE.attempts);
+        assert_eq!(i.what, "stormblock GET /api/v1/drives");
+        // Connection refused never reached the engine: even a format retries.
+        let e = c.format_slab("/dev/sdb", "hdd", None).await.unwrap_err();
+        assert_eq!(e.downcast_ref::<retry::Infra>().unwrap().attempts, Policy::ENGINE.attempts);
     }
 }

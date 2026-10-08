@@ -151,11 +151,15 @@ impl ApiError {
             message: msg.into(),
         }
     }
-    fn upstream(msg: impl Into<String>) -> Self {
+    /// The engine failed `what`: 503 `unavailable` when it was not there
+    /// for a whole retry policy (infrastructure, #71: try again later), 502
+    /// `stormblock` when it answered with a refusal.
+    fn upstream(what: &str, e: &anyhow::Error) -> Self {
+        let infra = crate::stormblock::is_infra(e);
         Self {
-            status: StatusCode::BAD_GATEWAY,
-            code: "stormblock",
-            message: msg.into(),
+            status: if infra { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::BAD_GATEWAY },
+            code: if infra { "unavailable" } else { "stormblock" },
+            message: format!("{what}: {e:#}"),
         }
     }
     fn internal(msg: impl Into<String>) -> Self {
@@ -834,7 +838,7 @@ async fn fleet_action(
                 body.tier.clone(),
             )
             .await
-            .map_err(|e| ApiError::upstream(format!("join: {e:#}")))?;
+            .map_err(|e| ApiError::upstream("join", &e))?;
             s.events.write().await.push(
                 Some(did),
                 Severity::Info,
@@ -859,7 +863,7 @@ async fn fleet_action(
                     .stormblock
                     .drive_slabs(&drive.stormblock_path())
                     .await
-                    .map_err(|e| ApiError::upstream(format!("stormblock unreachable: {e:#}")))?;
+                    .map_err(|e| ApiError::upstream("listing the drive's slabs", &e))?;
                 let occupied = slabs.iter().any(|sl| {
                     let total = sl.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(0);
                     let free = sl.get("free_slots").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -869,7 +873,7 @@ async fn fleet_action(
                     if body.drain {
                         let rec = crate::fleet::start_drain(&s, did, "leave", true)
                             .await
-                            .map_err(|e| ApiError::upstream(format!("drain: {e:#}")))?;
+                            .map_err(|e| ApiError::upstream("drain", &e))?;
                         return Ok(Json(json!({
                             "membership": "fleet",
                             "draining": true,
@@ -886,7 +890,7 @@ async fn fleet_action(
             s.stormblock
                 .delete_drive(&drive.stormblock_path(), body.force)
                 .await
-                .map_err(|e| ApiError::upstream(format!("remove drive: {e:#}")))?;
+                .map_err(|e| ApiError::upstream("remove drive", &e))?;
             {
                 let mut inv = s.inventory.write().await;
                 if let Some(d) = inv.drives.get_mut(&did) {
@@ -923,7 +927,7 @@ async fn start_drain(
     let leave = q.get("leave").is_some_and(|v| v == "true" || v == "1");
     let rec = crate::fleet::start_drain(&s, did, "operator", leave)
         .await
-        .map_err(|e| ApiError::upstream(format!("drain: {e:#}")))?;
+        .map_err(|e| ApiError::upstream("drain", &e))?;
     Ok(Json(json!({ "id": did, "drain": rec, "then_leave": leave })))
 }
 
@@ -949,7 +953,7 @@ async fn cancel_drain(
     let did = resolve_id(&s, &id).await?;
     crate::fleet::cancel_drain(&s, did)
         .await
-        .map_err(|e| ApiError::upstream(format!("cancel drain: {e:#}")))?;
+        .map_err(|e| ApiError::upstream("cancel drain", &e))?;
     Ok(Json(json!({ "id": did, "cancelled": true })))
 }
 
