@@ -847,6 +847,7 @@ crate `retry/` (`retry::with_backoff(policy, what, op, classify)`):
 |---|---|---|---|---|---|---|
 | `ENGINE` | the engine (:9090) | 4 | 250 ms | 4 s | 30 s | 5 s |
 | `ENGINE_SLOW` | `GET /api/v1/volumes?placement=true` | 3 | 1 s | 5 s | 100 s | 30 s |
+| `ENGINE_FORMAT` | `POST /api/v1/slabs` (slab format, #72) | 4 | 250 ms | 4 s | 20 min | 15 min |
 | `KUBE` | the apiserver (gate reviews, controller) | 3 | 200 ms | 2 s | 20 s | 10 s |
 | `TEST` | the test container → the node's :9092 | 4 | 500 ms | 5 s | 150 s | 60 s |
 
@@ -860,7 +861,7 @@ Call sites and what each repeats:
 | engine `DELETE …/drain` | `src/stormblock.rs` | yes | stopping a stopped drain is a no-op |
 | engine `DELETE /drives/{id}` (admin) | `src/stormblock.rs` | yes | a 404 after an earlier try that may have landed = closed |
 | engine `POST /drives` (open) | `src/stormblock.rs` | connect only | a second open is refused; the fleet loop's backoff and reconcile retry it |
-| engine `POST /slabs` (format, admin) | `src/stormblock.rs` | connect only | a format must not run twice |
+| engine `POST /slabs` (format, admin) | `src/stormblock.rs` | connect only | a format must not run twice; one try may take 15 min (`ENGINE_FORMAT`): a try cut off is a format the engine abandons (#72) |
 | engine `POST …/drain` | `src/stormblock.rs` | connect only | a running drain answers 409; the fleet tick retries pending drains (#43) |
 | apiserver `GET`, merge `PATCH`, `DELETE` | `src/kubeapi.rs` | yes | reads; a patch sets fields; callers take 404 as done |
 | apiserver TokenReview, SubjectAccessReview | `src/kubeapi.rs` | yes | nothing is stored |

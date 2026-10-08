@@ -462,16 +462,17 @@ enrol"):
   sanitize. The 520→4096 FORMAT UNIT is the drive's own, opt-in per policy
   (`reformat`), background, per-HBA bounded, re-attached after a restart —
   but it is on the policy's enrol chain, which #72 says it must never be →
-  Decide issue (#50 asked for it)
+  #73 (Decide, needs-owner; #50 asked for it)
 - tests: smoke 16 MiB, destructive_sample 16 MiB whatever the size;
   read_scan is O(capacity) and explicit only (never on a policy/auto path)
 - sanitize / security erase / NVMe format: device-side, explicit steps
 Steps:
-- [ ] write_layout over a byte-counting target: 1 PiB test (bytes written,
-      seconds) · [ ] format_slab long timeout + stand-in engine test
-- [ ] tests: policy steps / test sizes constant at 1 PiB
-- [ ] docs (architecture table, README), changelog; stormblock#363 comment;
-      Decide issue (policy reformat); sc-build, version, golden
+- [x] write_layout over a byte-counting target: 1 PiB test (bytes written,
+      seconds) · [x] format_slab long timeout + stand-in engine test (580707b)
+- [x] tests: policy steps / test sizes constant at 1 PiB
+- [x] docs (architecture "Cost at enrol", README), changelog; stormblock#363
+      commented; #73 filed
+- [ ] sc-build, v0.27.1, golden, close #72
 
 ### #71: every remote call retries (code review, P1, 2026-10-08) — DONE (v0.27.0)
 

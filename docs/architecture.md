@@ -585,6 +585,31 @@ kept.
 - The page submits and follows jobs (Prepare, Jobs, #38); stormconsole
   sees the `prep` metric in the feed.
 
+### Cost at enrol: metadata only (#72)
+
+Owner's rule (2026-10-08): nothing on a create, enrol, install, import or
+replace path may cost O(capacity) — a 15 PB SSD, servers with hundreds of
+drives. What every path that touches a drive costs (bytes, whatever the
+size):
+
+| Path | Code | Bytes touched | Verdict |
+|---|---|---|---|
+| Discovery: READ CAPACITY, INQUIRY/VPD | `discovery/`, `scsi.rs` | a few CDBs | metadata |
+| Contents probe (slab/fs/RAID signatures) | `contents.rs` | LBA 0, the GPT, each partition's first blocks; cached per drive | metadata |
+| Worker `partition` | `worker.rs` `write_layout` | 4 MiB head + 4 MiB tail cleared, both GPT copies (~8 MiB) | metadata (tested at 1 PiB: bytes counted) |
+| Worker `enroll`, fleet join, `auto_add`, DrivePolicy enrol | `worker.rs`, `fleet.rs`, `controller.rs` | stormdrive: none (open + labels over HTTP). The engine's `POST /api/v1/slabs` zero-fills its whole slot table (~64 GiB per PiB) | **O(capacity) in the engine → stormblock#363** |
+| Tests `smoke`, `destructive_sample` | `drivetest.rs` | 16 MiB sampled | constant (tested at 1 PiB) |
+| Test `read_scan` | `drivetest.rs` | the whole surface | explicit only: an operator's test or worker step, never on a policy or auto path |
+| Worker `format` (FORMAT UNIT, NVMe Format NVM), `sanitize`, `security_erase` | `format.rs`, `erase.rs` | one command; the drive does the work | explicit, device-side, background, per-HBA bounded, re-attached after a restart |
+| DrivePolicy `reformat` before enrol (520-byte drives only) | `policy.rs` | the drive's own FORMAT UNIT (hours on an HDD) | opt-in per policy; on the policy's enrol chain → owner decision (#73) |
+
+stormdrive's side of enrolling is metadata only. The engine's slab format is
+not yet; until stormblock#363 makes it so, the engine client gives `POST
+/api/v1/slabs` one try of up to 15 min (`ENGINE_FORMAT`): a 5 s try cut off
+was a format the engine abandoned halfway, so a large drive never enrolled.
+A slow format still holds the fleet loop when `auto_add` is on; the worker
+runs it on its own lane.
+
 ### Sequencing — Design, not built
 
 There is no `sequence.rs`. What exists today is narrower:
@@ -1226,7 +1251,8 @@ quarantine).
 
 Every engine call (and every apiserver and test-container call) goes
 through `retry::with_backoff` under a named policy (`ENGINE` 4 tries / 30 s,
-`ENGINE_SLOW` for the placement walk, `KUBE`, `TEST`). Reads and writes that
+`ENGINE_SLOW` for the placement walk, `ENGINE_FORMAT` for a slab format —
+15 min a try, #72 — `KUBE`, `TEST`). Reads and writes that
 set a value retry any transient failure; a drive open, slab format and drain
 start retry only a connection that never went out — the fleet loop's own
 backoff, pending-drain retry and reconcile are what repeat those. Giving up
