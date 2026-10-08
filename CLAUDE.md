@@ -489,9 +489,10 @@ Steps:
       ×6, assets ×5, SAS error pages) + harnesses — short `system-data`
       passes against the VM's real DMI/cpuinfo/NICs (7 items) — clippy
       -D warnings clean, `web/rebuild.sh --check` identical
-- [ ] golden: the #63 one failed in stormcentral's SBOM step (`cargo
-      metadata --offline`, not a refused dependency) → stormcentral#589;
-      requested again on v0.26.0
+- [x] golden requested on v0.26.0: compiled, then stormcentral's SBOM step
+      failed in its own `cargo metadata --offline` (as #63's did; not a
+      refused dependency) → stormcentral#589. `build-changed` picks the
+      commits up once that is fixed. #64 closed
 - Live: waits on the system-data mount (stormblock#355, stormcos#456)
 
 ### #63: pin git dependencies to a rev (stormcentral#571, 2026-10-08) — DONE
