@@ -474,7 +474,7 @@ Steps:
       commented; #73 filed
 - [x] build VM on 580707b: 241 unit (4 new: 1 PiB partition bytes counted,
       slow slab format waited for once, policy metadata steps, sampled test
-      sizes) + harnesses, clippy -D warnings clean; v0.27.1, golden, #72 closed
+      sizes) + harnesses, clippy -D warnings clean; v0.27.1; golden `golden-stormdrive-0b400b144f7f`, stormcos#426; #72 closed
 - Engine side stays open: stormblock#363 (slot table zero-fill); #73 Decide
 
 ### #71: every remote call retries (code review, P1, 2026-10-08) — DONE (v0.27.0)
