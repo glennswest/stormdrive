@@ -3,7 +3,17 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-10-08
+## [v0.27.0] — 2026-10-08
+
+### Added
+- One retry helper for every remote call, the workspace crate `retry/`: bounded tries, a whole-call deadline, backoff with jitter, Retry-After, transient vs real answers, idempotency-aware, attempts logged; policies `ENGINE`, `ENGINE_SLOW`, `KUBE`, `TEST` (#71)
+- The engine, apiserver and test-container clients retry through it; giving up is classified infrastructure (`stormblock::is_infra`, `KubeError::is_infra`) (#71)
+
+### Changed
+- REST: an engine not there through its retries answers 503 `unavailable` (was 502) (#71)
+- Test container: a test stopped by infrastructure is a `skip` with `"infrastructure": true` and the run exits 2, not 1 (#71)
+
+### 2026-10-08 (in v0.27.0)
 - **feat:** every remote call retries through one helper, the workspace crate `retry/` (`retry::with_backoff`): bounded tries and a whole-call deadline, exponential backoff with jitter, Retry-After honoured, transient failures (timeouts, refused/reset, 5xx, 408, 429) retried and real answers (4xx) returned at once, writes that may not repeat retried only when they never left; "succeeded on attempt N after X s" / "gave up after N attempts / X s" logged; policies `ENGINE`, `ENGINE_SLOW`, `KUBE`, `TEST` (#71)
 - **feat:** engine client: reads, label/overcommit PUTs, health reports, drain cancel and drive close (404 after a lost answer = done) retried; drive open, slab format and drain start retried only on connect failure; giving up is `retry::Infra` (`stormblock::is_infra`) (#71)
 - **feat:** REST: an engine that was not there through its retries is **503 `unavailable`** (kube routes `ServiceUnavailable`), a refusal from it stays 502 `stormblock` (#71)

@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.26.0** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
+**Version: 0.27.0** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -442,7 +442,7 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### #71: every remote call retries (code review, P1, 2026-10-08) — IN PROGRESS
+### #71: every remote call retries (code review, P1, 2026-10-08) — DONE (v0.27.0)
 
 Owner, after the Dell's test images failed on one 30 s engine timeout:
 "sounds like it doesn't retry". Every call that leaves the process: the
@@ -474,7 +474,9 @@ Steps:
 - [x] engine (+ REST 503 `unavailable`) · [x] kube · [x] test runner
 - [x] docs (README "Remote calls and retries" with the call-site table,
       architecture "Retries"), changelog
-- [ ] **next:** sc-build (build VM), v0.27.0, golden, close #71
+- [x] build VM on 457efba: 237 unit (engine + kube retry tests) + retry 9
+      (each policy vs a fake failing N times, deadline, Retry-After, real
+      sockets) + test crate 11 + harnesses, clippy -D warnings clean; v0.27.0
 
 ### #64: drive history + hardware assets in system-data (P0, stormcos#456, 2026-10-08) — DONE (v0.26.0)
 
