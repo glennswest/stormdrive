@@ -633,8 +633,8 @@ mod tests {
         let d = drive();
         let oct = 1_791_417_600; // 2026-10-08
         let h = history(&root, "boot-a");
-        assert!(h.observe(&d, &sas(1, 100), HealthStatus::Healthy, oct).is_empty());
-        assert!(h.observe(&d, &sas(1, 100), HealthStatus::Healthy, oct + 60).is_empty(), "nothing moved");
+        assert!(h.observe(&d, &sas(1, 100), HealthStatus::Good, oct).is_empty());
+        assert!(h.observe(&d, &sas(1, 100), HealthStatus::Good, oct + 60).is_empty(), "nothing moved");
         let dir = root.join("history/drives/wwn-naa.5000c500a1b2c3d4");
         assert_eq!(std::fs::read_to_string(dir.join("2026-10.jsonl")).unwrap().lines().count(), 1);
 
@@ -642,7 +642,7 @@ mod tests {
         // baseline comes from the file; the growth is a finding.
         let h2 = history(&root, "boot-b");
         assert_eq!(h2.baseline_media_errors(&d), Some(1));
-        let f = h2.observe(&d, &sas(4, 101), HealthStatus::Healthy, oct + 120);
+        let f = h2.observe(&d, &sas(4, 101), HealthStatus::Good, oct + 120);
         assert!(f.iter().any(|f| f.counter == "media_errors" && f.from == 1 && f.to == 4 && f.other_boot));
         let recs = h2.read(&d, 10);
         assert_eq!(recs.len(), 2);
@@ -668,7 +668,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("sd-hist-{}-absent", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let h = history(&root, "b");
-        assert!(h.observe(&drive(), &sas(1, 1), HealthStatus::Healthy, 1).is_empty());
+        assert!(h.observe(&drive(), &sas(1, 1), HealthStatus::Good, 1).is_empty());
         assert!(!root.exists(), "never created");
         let st = h.status.lock().unwrap().clone();
         assert!(!st.active && st.reason.unwrap().contains("not mounted"));
