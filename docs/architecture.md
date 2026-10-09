@@ -797,14 +797,16 @@ The route table, request bodies and handle resolution are in the
   path with no body. The body-free join never formats a slab. That
   destructive choice needs the JSON body.
 - **Kubernetes-shaped resources** (`src/api/kube.rs`, stormblock#80):
-  `/apis/storage.storm.io/v1/{drives,enclosures}` with API discovery,
+  `/apis/storage.storm.io/v1/{drives,enclosures}` with API discovery
+  (`/apis`, `/apis/storage.storm.io`, `/apis/storage.storm.io/v1`),
   `?watch=1` (newline-delimited `{type, object}`), `labelSelector`, and
   `PATCH` of a Drive's writable spec (`designation`, `fleet`, `drain`,
   `locate`). Each writable field maps onto an existing REST verb. Every object
   is a projection of the inventory; there is no second store.
 - Errors use stormblock's `{error, code}` envelope.
 - **Writes need a storage-admin (#45, `kubeauth.rs`).** A middleware
-  classifies every non-GET into a `storage.storm.io` resource + verb and
+  classifies every non-GET (but a worker job dry run, gated as a read) into
+  a `storage.storm.io` resource + verb and
   checks the bearer: the node-local admin token, or TokenReview +
   SubjectAccessReview against the apiserver (cached a minute). The decision
   rides into the handler as a `Requester`; a worker job keeps it and the

@@ -177,12 +177,12 @@ Lifecycle is three separate fields:
 
 | | |
 |---|---|
-| Liveness · card | `GET /api/v1/health` `{status, version, node}` · `GET /api/v1/summary` (stormd card) |
-| Drives | `GET /api/v1/drives[/{id}]` · id = uuid, WWID, `/dev` path, name or serial |
-| Actions | `POST …/{id}/fleet` `locate` `designation` `overcommit` `test` `format` `firmware` · `GET/POST/DELETE …/{id}/drain` |
-| Batches | `POST /api/v1/worker/jobs` (the drive worker) · `POST /api/v1/format` · `POST /api/v1/firmware` · `POST /api/v1/shelves/{key}/format` |
+| Liveness · card | `GET /api/v1/health` `{status, version, node, writes, reads}` · `GET /api/v1/summary` (stormd card) |
+| Drives | `GET /api/v1/drives[/{id}]` · `DELETE` (forget) · `…/{id}/health` `slabs` `history` · id = uuid, WWID, `/dev` path, name or serial |
+| Actions | `POST …/{id}/fleet` `enroll` `locate` `designation` `overcommit` (also `PUT`) `test` `format` `firmware` (those three also `GET`) · `GET/POST/DELETE …/{id}/drain` |
+| Batches | `POST /api/v1/worker/jobs` (+ `{id}`, `cancel`, `resume`) · `POST /api/v1/format` · `POST /api/v1/firmware` (+ `images`) · `POST /api/v1/shelves/{key}/format` `firmware` (IOM) |
 | Where things are | `/api/v1/topology` · `/api/v1/shelves` · `/api/v1/hbas` · `/api/v1/placement` (generation + ETag → 304) |
-| Watchers | `/api/v1/events?since=` · `/api/v1/monitor` (poll cost) |
+| Watchers | `/api/v1/events?since=` · `/api/v1/monitor` (poll cost) · `/api/v1/history` · `/api/v1/assets` (system-data, #64) |
 | Renderers | `/api/v1/components` + `/ws/components` (stormview feed; body-free action routes) |
 | Kubernetes-shaped | `/apis/storage.storm.io/v1/{drives,enclosures}`, `?watch=1`, PATCH a Drive |
 | The page | `/`, `/ui`, `/ui/`, `/assets/app.{js,css}`; works under stormd's proxy prefix |

@@ -597,7 +597,9 @@ CA (the node CA vouches, nothing more is asked); or a Kubernetes bearer the
 apiserver allows `get` on `storage.storm.io` (`drives`, `enclosures`,
 `driveoperations` for jobs, `firmwareimages`; the release's `storage-viewer`
 role). No credential, or one nobody knows → 401; a known user without the
-role → 403. Health and the page's code (`/assets/*`) are open; the page's
+role → 403. Health is open on any connection; the page's code
+(`/assets/*`, `/ui/assets/*`) is open over TLS (plain HTTP gets 403
+`tls_required` for it like anything else); the page's
 shell (`/`, `/ui`), asked with no credential, is answered 401 *with the
 page*, which then signs in.
 
@@ -608,9 +610,11 @@ page*, which then signs in.
   apiserver who it is (TokenReview) and whether that user may act
   (SubjectAccessReview on `storage.storm.io`). Format, sanitize, partition,
   enroll, firmware, tests, fleet join/leave and worker jobs are `create
-  driveoperations`; designation, overcommit, locate, drain, cancels are
-  `update drives/<id>`; forget is `delete drives/<id>`; shelf locate is
-  `update enclosures/<key>`; firmware images are `create`/`delete
+  driveoperations`; designation, overcommit, locate, drain and
+  cancelling a test are `update drives/<id>`; cancelling or resuming a
+  worker job is `update driveoperations/<job>`; forget is `delete
+  drives/<id>`; shelf locate is `update enclosures/<key>`; shelf format and
+  shelf (IOM) firmware are `create driveoperations`; firmware images are `create`/`delete
   firmwareimages`. The release's `storage-admin` role allows all of it,
   `storage-viewer` none of it. Answers are cached a minute;
 - or a **client certificate** from the node CA: its CN is the user and each
@@ -721,17 +725,16 @@ All JSON on :9092, over TLS with a credential
 ([above](#who-may-read-or-change-a-drive-19-45)). Errors are `{"error": "...", "code": "not_found" |
 "bad_request" | "conflict" | "stormblock" | "internal" | "unauthorized" |
 "forbidden" | "unavailable" | "tls_required"}`. Every non-GET needs a
-storage-admin. A drive `{id}` is
+storage-admin, except a worker job dry run (gated as a read). A drive `{id}` is
 its DriveId, WWID (any case), `/dev` path or kernel name, or serial, looked up
 in that order. A shelf `{key}` is its logical id (with or without `0x`, any
 case), serial, shelf id, or an SES device's SCSI id.
 
 | Method and path | What |
 |---|---|
-| `GET /api/v1/health`, `/healthz` | health; the only paths open with no credential and over plain HTTP |
+| `GET /api/v1/health`, `/healthz` | `{status, version, node, writes, reads}` — liveness, how writes are decided, whether anonymous reads are served; the only paths open over plain HTTP, and with no credential besides the page's assets |
 | `GET /`, `/ui`, `/ui/` | the embedded page; works behind a proxy prefix (401 with the page when no credential) |
-| `GET /assets/app.{js,css}`, `/ui/assets/…` | the page's two assets |
-| `GET /api/v1/health` | `{status, version, node, writes}` — liveness, and how writes are decided |
+| `GET /assets/app.{js,css}`, `/ui/assets/…` | the page's two assets (open over TLS) |
 | `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
 | `GET /api/v1/monitor` | health-poll cost, stuck drives, last discovery pass |
 | `GET /metrics` | Prometheus text: per-drive SMART, temperature, wear, errors, last poll; shelf sensors; the poller (see below) |
@@ -765,6 +768,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/placement`, `GET …/placement/{id}` | where each drive is; `generation`, ETag, `?since=` / `If-None-Match` → 304 |
 | `GET /api/v1/events?since=<seq>` | `{latest_seq, started, persisted, events}`; seq continues across restarts (#25) |
 | `GET /api/v1/components`, `GET /ws/components` | stormview feed (drives, shelves, HBAs); the socket pushes on change, checked every 2 s |
+| `GET /apis`, `/apis/storage.storm.io`, `/apis/storage.storm.io/v1` | API discovery for kubectl-style clients |
 | `GET /apis/storage.storm.io/v1/{drives,enclosures}[/{name}]` | Kubernetes-shaped `Drive`/`Enclosure`; `?watch=1`, `labelSelector`; `PATCH` a Drive's spec (designation, fleet, drain, locate) |
 
 Body-free forms, for stormview renderers that POST with no body:
@@ -788,7 +792,7 @@ one fits. Every drive series carries `device`, `serial`, `model`,
 | `smartctl_device_power_on_seconds` | NVMe |
 | `smartctl_device_percentage_used`, `_available_spare`, `_available_spare_threshold` | NVMe wear |
 | `smartctl_device_critical_warning`, `_media_errors`, `_num_err_log_entries`, `_power_cycle_count`, `_bytes_read`, `_bytes_written` | NVMe log 0x02 |
-| `smartctl_device_capacity_bytes`, `smartctl_device_block_size{blocks_type}` | geometry (logical as the drive reports it, 520 included) |
+| `smartctl_device_capacity_bytes`, `smartctl_device_block_size{blocks_type}` | geometry; `blocks_type` `logical` (as the drive reports it, 520 included) and `physical` |
 | `stormdrive_drive_info{id,wwn,kind,firmware,membership,designation,activity,owner}` | 1 per drive |
 | `stormdrive_drive_health_status{status}` | 1 for the current verdict |
 | `stormdrive_drive_io_errors_total` | SAS/SATA: sysfs `ioerr_cnt`, failed commands since boot (not media errors) |
@@ -801,7 +805,7 @@ one fits. Every drive series carries `device`, `serial`, `model`,
 | `stormdrive_drive_volumes`, `_volumes_degraded` | volumes with legs on the drive, and those whose slabs here are draining/quarantined/failed/missing (#26); absent until the engine reports placement |
 | `stormdrive_enclosure_info`, `_ok`, `_last_scan_timestamp_seconds` | per shelf |
 | `stormdrive_enclosure_element_ok`, `_temperature_celsius`, `_fan_rpm`, `_volts`, `_amps` `{type,index}` | per installed SES element |
-| `stormdrive_poll_*`, `stormdrive_discovery_seconds`, `stormdrive_build_info` | the daemon |
+| `stormdrive_poll_*`, `stormdrive_discovery_seconds`, `stormdrive_build_info{version,node}` | the daemon |
 
 A missing drive keeps `smartctl_device`, `stormdrive_drive_info` and its
 last-poll time; its readings go. Grown defects on SAS HDDs (READ DEFECT
