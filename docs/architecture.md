@@ -1,7 +1,7 @@
 # StormDrive Architecture
 
-**Status:** checked against the code at v0.16.0 (93fb677), 2026-09-28.
-First checked at v0.15.0 (#7). The first
+**Status:** checked against the code at v0.27.1 (d92805f), 2026-10-09.
+First checked at v0.15.0 (#7), then v0.16.0. The first
 version was written 2026-08-26 as a design against the stormblock review
 ([stormblock-review.md](stormblock-review.md)). A section marked
 **Design — not built** describes intent the code does not have yet. Every
@@ -110,6 +110,12 @@ Drive {
     block_size, physical_block_size: u32,  // from READ CAPACITY: 520 on NetApp drives
     usable: bool,              // false = kernel refused the sector size
     in_use_by: Option<String>, // a stormblock slab found on the disk
+    contents: Option<String>,  // filesystem / slab / RAID on the disk or a GPT partition (#42)
+    slab_parts: Vec<SlabPart>, // stormblock slab partitions on the disk (#58)
+    engine_finding: Option<EngineFinding>, // engine runs those roles remote, or refused/failed the disk (#58)
+    enrolable: bool,           // offered: blank, healthy, out of fleet (#42)
+    wear_projection: Option<WearProjection>, // days to wear-out from the trend (#23)
+    fleet_partition: Option<u32>,          // the worker enrolled a partition (#5)
     location: Location,
     membership, designation, activity,     // see below
     overcommit: Overcommit,    // {enabled, ratio}, operator-set (#13)
@@ -117,9 +123,11 @@ Drive {
     usage: Option<Usage>,      // from stormblock's slab listing (#12)
     format: Option<FormatRecord>, firmware_update: Option<FirmwareRecord>,
     drain: Option<DrainRecord>, replaces: Option<DriveId>,
-    pushed_labels, pushed_health,          // what stormblock last accepted
+    pushed_labels, pushed_health, pushed_overcommit, // what stormblock last accepted
     first_seen, last_seen: SystemTime,
 }
+// Derived, not stored: owner() = free | stormblock | stormraid | foreign (#45),
+// stormblock_path() = the enrolled partition or the whole disk.
 Location {                         // controller → shelf → bay hierarchy
     controller: Option<Controller>,  // { scsi_host, pcie_addr, driver }
     shelf: Option<Shelf>,            // { id, logical_id, vendor, model, serial,
@@ -133,13 +141,18 @@ Location {                         // controller → shelf → bay hierarchy
 Membership  = out | fleet          // is the drive handed to stormblock?
 Designation = none | reserved | spare | failed   // operator-set; applies
                                                  // both in fleet and out
-Activity    = idle | testing | draining | formatting | updating_firmware | missing
+Activity    = idle | testing | draining | formatting | sanitizing | updating_firmware | missing
 HealthStatus = unknown | good | warning | failing | failed
 HealthReport {
-    status, temperature_c, power_on_hours, media_errors,
-    available_spare_pct, wear_pct,            // NVMe available spare / percentage used
+    status, temperature_c, power_on_hours,
+    media_errors,                             // the drive's own count (NVMe log 0x02, ATA 187)
+    io_errors: Option<u64>,                   // sysfs ioerr_cnt: failed commands, never a warning (#58)
+    available_spare_pct, wear_pct,            // NVMe available spare / percentage used; SAS/SATA SSD wear
     critical_warning: u8,                     // NVMe bitfield, 0 elsewhere
     messages: Vec<String>, collected_at,
+    not_collected: Option<String>,            // why there is no sample (#58)
+    nvme: Option<NvmeCounters>,               // the rest of log 0x02 (#18)
+    smart: Option<SmartCounters>,             // SAS LOG SENSE / ATA SMART (#22, #64)
 }
 ```
 
@@ -689,9 +702,8 @@ health-gated, abort-on-regression.
   drives are refused unless `force`. One, many, or every drive of a
   model (`POST /api/v1/firmware {drives|model, image}`), validated
   all-or-nothing before any starts. The last update is persisted on the
-  drive (`firmware_update`). **Not built:** a redundancy check against
-  stormblock before a fleet drive resets (is a rebuild running? is the
-  volume already degraded?).
+  drive (`firmware_update`). A data-serving drive waits for its volumes to
+  be redundant before the reset and after (#24, above).
 
 ### Thermal
 There is no `thermal.rs`. What exists:
@@ -1081,7 +1093,8 @@ rustkube-node publishes the resulting headroom to the scheduler
 
 ### The placement view (`/api/v1/placement`, #10)
 What rustkube-node is to attach to each PV (rustkube-node#60, open — not
-in rustkube-node yet) next to
+in rustkube-node yet; the PVs themselves are served by stormblock's
+built-in driver, stormdrive only says where their drives are) next to
 stormblock's per-volume placement (stormblock#136, v17.1). stormblock names
 a volume's drives by `wwn` (the raw sysfs `wwid`, `naa.…`/`eui.…`/`uuid.…`)
 and `serial`; every record here carries both, so the join needs no device
@@ -1274,14 +1287,21 @@ convention), and CLI flags override the file.
 - A static musl binary, `x86_64-unknown-linux-musl`, built by `sc-build`
   and, for release, by stormcentral into a golden.
 - **On stormcos:** a stormd-based service golden. stormcos's
-  `service_golden` recipe writes the config (`listen_addr` 0.0.0.0:9092,
-  `data_dir` /var/lib/stormdrive) and a stormd config with an HTTP liveness
-  probe on `/api/v1/health`. The container gets:
+  `service_golden` recipe writes the config from stormcentral's registry
+  entry (`listen_addr` 0.0.0.0:9092, `data_dir` /var/lib/stormdrive,
+  `[api] allow_anonymous = true` for the #19 transition, `[kubernetes]`
+  with the node apiserver and `controller = false` until stormcos#369) and
+  a stormd config with an HTTP liveness probe on `/api/v1/health`. The
+  container gets:
   - the host network;
   - the host's `/dev`;
   - the host's `/sys`, read-only, which blocks sysfs LED and rescan writes
     (stormcos#166);
-  - `/run/stormblock` for the engine token.
+  - `/run/stormblock` for the engine token;
+  - `/data/stormcert` for the serving pair, the node CA and stormdrive's
+    apiserver token (the pair itself: stormcos#352);
+  - `/data/system-data` for drive history and assets, once stormcos mounts
+    it (stormcos#456); until then history is off.
 
   It is started on every node profile. See the README's "How it ships".
 - **Elsewhere:** the systemd unit in `deploy/systemd/` (After
@@ -1293,8 +1313,13 @@ convention), and CLI flags override the file.
 
 ## Testing
 
-- **Unit tests beside the code** (`cargo test` over the workspace: 154 in
-  the daemon, 9 in `test/`, plus the `tests/suites.rs` harness). A GPT the
+- **Unit tests beside the code** (`cargo test` over the workspace: 241 in
+  the daemon at v0.27.1, plus `retry/`'s and `test/`'s), and integration
+  tests that run the real daemon: `tests/suites.rs` (the three suites),
+  `tests/kube.rs` (stand-in apiserver: gate, DriveOperation controller,
+  DrivePolicy), `tests/restart.rs` (restart recovery, SIGTERM),
+  `tests/tls.rs` (TLS and credentials on :9092) and `tests/chassis160.rs`
+  (a 160-bay NVMe chassis as a sysfs tree, #31). A GPT the
   worker writes is also read back by `sfdisk --json` / `--verify` where the
   build box has util-linux:
   - on synthetic data: the threshold engine and damper, identity

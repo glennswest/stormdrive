@@ -68,7 +68,8 @@ Group **storage** (stormcentral's relationships graph).
 
 Also read by **stormconsole**'s drive plugin (every node's `:9092`) and
 by rustkube-node's planned PV placement mirror (`/api/v1/placement`,
-rustkube-node#60 — not in rustkube-node yet).
+rustkube-node#60 — not in rustkube-node yet). PVCs are served by
+stormblock's built-in driver; stormdrive only says where their drives are.
 
 ---
 
