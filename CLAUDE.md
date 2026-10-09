@@ -74,6 +74,8 @@ src/
   discovery/      sysfs enumeration, classification, probe cache [Linux]
   hotplug.rs      NETLINK_KOBJECT_UEVENT listener → debounced discovery pass
   contents.rs     slab probe (STRMSLAB at LBA 0 / GPT partition starts) → in_use_by
+  engine.rs       the engine's own slab report (health `slabs`) vs the slab
+                  partitions on each drive → engine_finding (#58)
   smart/          health samples: NVMe Get Log Page 0x02; SAS/SATA sysfs + LOG
                   SENSE 0x2F/0x0D/0x11 or ATA SMART (#22)
   poller.rs       health scheduler: per-drive phase, bounded, timed out, costed
@@ -91,8 +93,14 @@ src/
                   jobs.json, restart recovery, prep phase
   erase.rs        NVMe Format NVM / Sanitize, SCSI SANITIZE (build + parse)
   gpt.rs          one-partition GPT with stormblock's slab type GUIDs
-  firmware.rs     image store + WRITE BUFFER / NVMe download+commit jobs
+  firmware.rs     image store + WRITE BUFFER / NVMe download+commit jobs,
+                  redundancy gate before a data-serving drive resets (#24)
+  iomfw.rs        shelf IOM firmware: SES Download Microcode page 0x0E (#35)
   drivetest.rs    smoke / read_scan / destructive_sample
+  wear.rs         wear-out projection from the wear trend (#23)
+  policy.rs       DrivePolicy: match nodes + drives → worker steps (#50)
+  metrics.rs      Prometheus /metrics from cached state (#18)
+  tls.rs          :9092 TLS from the stormcert pair; plain = health only (#19)
   stormblock.rs   engine client (:9090, bearer token): drives, labels, slabs,
                   health, drain, overcommit
   fleet.rs        the loop: labels, health push, overcommit push, drains →
@@ -108,11 +116,16 @@ src/
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} (stormblock#80)
   kubeapi.rs      apiserver client (reqwest): TokenReview, SAR, objects, Events (#45)
   kubeauth.rs     the write gate: classify → bearer review / admin token, audit (#45)
-  controller.rs   Drive objects + DriveOperations in the apiserver (#45)
+  controller.rs   Drive objects, DriveOperations (#45) and DrivePolicies (#50)
+                  in the apiserver
+retry/            workspace crate: one backoff helper for every remote call (#71)
 test/             test container (#11): /test short|medium|long, pick.rs = safety
-tests/suites.rs   the three suites against this daemon on every cargo test
+tests/            suites.rs (the three suites against this daemon on every
+                  cargo test), kube.rs (stand-in apiserver: gate, controller,
+                  DrivePolicy), restart.rs, tls.rs, chassis160.rs (#31)
 web/              the page: Svelte 5 + stormview DataGrid (#6); web/dist is
-                  committed and embedded; rebuild on dev with web/rebuild.sh
+                  committed and embedded; rebuilt through sc-build with
+                  web/rebuild.sh (`SC_BUILD_VM=1` on a build VM)
 ```
 
 Not in the tree (design only, see docs/architecture.md): a sequencer, a
@@ -262,13 +275,14 @@ Consequences:
 
 ### Phase 1e: NetApp shelf management + 520→4096 reformat (2026-09-05) — code DONE (v0.7.0/0.8.0); live pass open
 
-Glenn fired up the first NetApp shelf on **stormblock1**: LSI SAS3008
-(mpt3sas) → NETAPP DS22412IOM12A (DS224C, IOM12), single path today.
-Drives: SEAGATE ST1200MM0098 at **520-byte sectors** (kernel: "Unsupported
-sector size 520" → sd attaches with 0 blocks) and NETAPP X425_HCBEP1T2A10
-already at 512. Discovery skipped size-0 devices, so the 520s were
-invisible. Three asks: shelf info, manage the shelves, reformat 1..n drives
-to 4096.
+The first NetApp shelf (DS224C class, IOM12) goes on **stormblock1**
+(C2NR0Q2, LSI SAS3008 / SAS9300-4i4e, mpt3sas), single path. Its drives
+are an **unknown set of 520-byte drives** (kernel: "Unsupported sector size
+520" → sd attaches with 0 blocks) — owner, 2026-10-08 (#30, #70): they are
+*not* Seagates; don't assume a model, size or count, the dry run lists what
+is in the bays. Discovery skipped size-0 devices, so 520s were invisible.
+As of 2026-10-09 the shelf is not plugged in ("waiting for stability", #30).
+Three asks: shelf info, manage the shelves, reformat 1..n drives to 4096.
 
 - [x] `scsi.rs`: SG_IO plumbing + sense decoding (portable parsers, tests)
 - [x] Discovery sees unusable-sector drives: READ CAPACITY(16) is the
@@ -291,17 +305,16 @@ to 4096.
 - [x] components feed + kube Enclosure status carry shelf elements
 - [x] docs, changelog, v0.7.0 (73 tests, clippy clean, smoke-tested on
       dev: READ CAPACITY over sg, format validation, UI)
-- [ ] Live pass on stormblock1 (needs the node's address from Glenn):
-      SES pages from the DS22412 IOM12, bay map via page 0x0A vs mpt3sas
-      bay_identifier, a real 520→4096 format on one Seagate ST1200MM0098,
-      then the shelf-wide batch
+- [ ] Live pass on stormblock1 (C2NR0Q2; reformat to 4096 approved, #30):
+      SES pages from the IOM12, bay map via page 0x0A vs mpt3sas
+      bay_identifier, dry run listing what is in the bays, a real 520→4096
+      format on one drive, then the shelf-wide batch
 - [x] Phase 1e-fw: firmware update (Glenn 2026-09-05: "can we also update
       firmware?") — Phase 5 pulled forward: image store, WRITE BUFFER
       0x0E/0x0F (0x07 fallback), NVMe download+commit, one/many/by-model,
       fleet drives serialised; UI upload + update. v0.8.0 (80 tests,
       clippy clean, image store smoke-tested on dev). Not yet run against
-      a real drive: needs a vendor image for the ST1200MM0098 / X425 on
-      stormblock1
+      a real drive: needs a vendor image for whatever the shelf holds (#29)
 
 ### #7: docs rewritten from the code (2026-09-28) — DONE
 
@@ -441,6 +454,16 @@ Steps:
       closed. Live use waits on stormcos#302 (CRDs + credential) and
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
+
+### Docs from the code, since 2026-10-02 (2026-10-09) — IN PROGRESS
+
+Owner: README, docs/ and CLAUDE.md say what the code does today (config
+keys + defaults, ports, APIs, how it ships); a promise the code does not
+keep becomes an issue. Same pass as #7.
+- [x] CLAUDE.md: #70 (shelf drives not Seagates), v0.22.0 items marked
+      built, module map (engine.rs, iomfw.rs, policy.rs, wear.rs, retry/)
+- [ ] README / architecture / presentation vs config.rs, api/, metrics.rs
+- [ ] issues for promises the code does not keep; changelog; push
 
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 
@@ -753,7 +776,7 @@ a member when stormdrive reports its drive `failed`/`missing`.
 Steps:
 - [x] report missing · [x] arrays client + pure wanted-bays · [x] SES fault
       control + tick · [x] tests, docs, changelog
-- [ ] **next:** sc-build (never run: stormcentral#521); live: a NetApp shelf
+- [x] built and verified in v0.22.0 (e743cbf, build VM). Live: a NetApp shelf
       laid out as sets on stormblock1 (#30)
 
 ### #40: a test step in the drive worker (2026-10-07) — DONE (v0.22.0)
@@ -774,7 +797,7 @@ the tab stopped the rest. Design (the issue's, no open decision):
 Steps:
 - [x] step + guard + run + tests · [x] CRD, page (bulk + Prepare) + JS tests
 - [x] docs, changelog
-- [ ] **next:** sc-build (never run: stormcentral#521) + web dist with #26's
+- [x] built and verified in v0.22.0 (e743cbf, build VM), web dist with #26's (72624ee)
 
 ### #35: shelf (IOM) firmware via SES Download Microcode (2026-10-07) — DONE (v0.22.0)
 
@@ -798,9 +821,9 @@ no open decision — the image source is #29, the live shelf #30):
 Steps:
 - [x] iomfw.rs pure + tests · [x] Linux run · [x] orchestration + API + gate
 - [x] docs, changelog
-- [ ] **next:** sc-build (never run: stormcentral#521); live: a real shelf
+- [x] built and verified in v0.22.0 (e743cbf, build VM). Live: a real shelf
       (#30) and a NetApp IOM12 image (#29). Not in the page or the feed
-      (an action needs an image name)
+      (an action needs an image name) → #60
 
 ### #42: offer blank drives; enrol by policy on a node with a data slab (2026-10-07) — DONE (v0.22.0)
 
@@ -821,8 +844,8 @@ Steps:
 - [x] API (+ `POST /api/v1/drives/{id}/enroll`), kube, feed (metric +
       Enrol action) · [x] policy requireDataSlab · [x] tests, docs,
       changelog (1558a8b)
-- [ ] **next:** sc-build (never run: stormcentral#521), then the release with
-      #26/#50/#36. The page does not show `enrolable` yet (the feed does)
+- [x] built and verified in v0.22.0 (e743cbf, build VM). The page does not show
+      `enrolable` yet (the feed does) → #55
 
 ### #36: ATA SECURITY ERASE for SATA drives without SANITIZE (2026-10-07) — DONE (v0.22.0)
 
@@ -848,10 +871,9 @@ Design (the issue's, no open decision):
 Steps:
 - [x] erase.rs ATA + tests · [x] worker step, guard, record, recover
 - [x] CRD, page form (+ JS test), docs, changelog (b7c567a)
-- [ ] **next:** sc-build (never run: dev.g8.lo gone, stormcentral#521), web
-      dist with #26's, v0.22.0, golden. Live: a spare SATA drive with the
+- [x] built and verified in v0.22.0 (e743cbf, build VM). Live: a spare SATA drive with the
       Security feature set and no Sanitize (the issue: "test on a spare
-      SATA drive first") — none here yet
+      SATA drive first") — none here yet (#57)
 
 ### #50: DrivePolicy — per-node tier, reformat + enrol by policy (stormcos#251, 2026-10-07) — DONE (v0.22.0)
 
@@ -884,10 +906,8 @@ Steps:
 - [x] CRD + rbac + example · [x] kube harness (Refused unstamped / bob,
       Invalid, other node + unmatched labels untouched, alice Active)
 - [x] docs, changelog (ab35310, 21a0e13)
-- [ ] **next:** sc-build has never run on it — dev.g8.lo is gone
-      (stormcentral#521). When it works: `cargo test --workspace` + clippy,
-      fix what fails, then v0.22.0 (with #26's web/dist), golden, close #50.
-      Not on a real shelf: the format/partition/enroll steps wait on #30
+- [x] built and verified in v0.22.0 (e743cbf, build VM); #50 closed. Not on a real
+      shelf: the format/partition/enroll steps wait on #30
 
 ### #26: the volumes on each drive, from the engine's placement (stormconsole#29, 2026-10-06) — DONE (v0.22.0)
 
@@ -912,11 +932,9 @@ stormconsole `crates/plugins/stormblock/src/placement.rs`.
       tls + 9, clippy -D warnings clean. The web half of that job died in
       npm itself ("Exit handler never called!"); then dev.g8.lo went away
       (retired, stormcentral#517/#521)
-- [ ] **next:** once sc-build works again (stormcentral#521): `web/rebuild.sh`
-      (JS + page tests incl. the new volumes pane), commit web/dist, v0.22.0,
-      golden, close #26
-- [ ] tests (reduction, absent vs empty, worst state, carry-over), docs
-      (README, architecture "Per-drive usage"), changelog, v0.22.0, golden
+- [x] built and verified in v0.22.0 (e743cbf, build VM): `web/rebuild.sh` (JS +
+      page tests incl. the volumes pane), web/dist (72624ee); tests, docs
+      (README, architecture "Per-drive usage"), changelog; #26 closed
 
 ### #46: slab format + drive close need the admin token or a storage-admin bearer (stormblock#274, 2026-10-06) — DONE (v0.21.1)
 
@@ -1362,8 +1380,8 @@ with stable id. Found:
 - [x] Threshold engine → health state machine, hysteresis
 - [x] Wear trending: persisted samples (on change or daily)
 - [x] Wear-out projection — #23
-- [x] Event ring + `GET /api/v1/events` (newest 512 persisted, #25 —
-      written, unbuilt)
+- [x] Event ring + `GET /api/v1/events` (newest 512 persisted, #25,
+      v0.22.0)
 - [x] Prometheus `/metrics` (#18, v0.19.0)
 - [x] `GET /api/v1/summary` for the stormd card
 
@@ -1397,7 +1415,8 @@ with stable id. Found:
 - [x] Fleet drives one at a time, health-gated
 - [x] Redundancy check via stormblock before a fleet drive resets (no
       rebuild in flight, volume not already degraded) — #24
-- [ ] Shelf (IOM) firmware via SES download microcode page 0x0E — #35 (written, unbuilt)
+- [x] Shelf (IOM) firmware via SES download microcode page 0x0E — #35
+      (v0.22.0; API only, page is #60; not run on a real IOM: #29, #30)
 
 ### Phase 6: Thermal management
 - [x] Per-drive + per-enclosure thermal view (health temps, SES shelf panel)
