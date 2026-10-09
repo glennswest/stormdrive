@@ -468,6 +468,7 @@ stormdrive [--config PATH] [--listen ADDR] [--data-dir DIR]
 | `--config` | `/etc/stormdrive/stormdrive.toml` | config file; a missing file means all defaults |
 | `--listen` | from config | overrides `listen_addr` |
 | `--data-dir` | from config | overrides `data_dir` |
+| `--version`, `--help` | | print and exit |
 
 `RUST_LOG` sets the log filter (default `info`). SIGINT or SIGTERM (what
 stormd and systemd send) stops it gracefully: a `stopping` event, then the
@@ -482,13 +483,16 @@ for locate LEDs and rescans.
 are read from `src/config.rs`, and
 [deploy/stormdrive.example.toml](deploy/stormdrive.example.toml) lists them
 all. The daemon refuses to start on an unparseable `listen_addr`, a zero
-interval, a zero `max_concurrent`/`sample_timeout_secs`, `hysteresis = 0` or
-`history.keep_months = 0`.
+interval (`discovery`, `monitor`, `kubernetes`), a zero
+`max_concurrent`/`sample_timeout_secs`, `hysteresis = 0`,
+`history.keep_months = 0`, a zero `worker.max_per_hba` or
+`worker.enroll_per_domain`, an `api.admin_gate` other than `enforce`/`audit`,
+or only one of `api.tls_cert_file`/`tls_key_file` set.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `listen_addr` | `0.0.0.0:9092` | API, UI and feed |
-| `data_dir` | unset | inventory + firmware images; unset = in memory, no image store |
+| `data_dir` | unset | `inventory.json`, `events.json`, `jobs.json`, `audit.log` and the firmware image store; unset = in memory, no image store |
 | `node_name` | hostname | reported in `/api/v1/health`, placement, feed |
 | `discovery.interval_secs` | `30` | full rescan (hotplug rescans sooner) |
 | `discovery.exclude` | `[]` | extra `*` patterns on kernel names; built-ins always apply |
@@ -520,9 +524,9 @@ interval, a zero `max_concurrent`/`sample_timeout_secs`, `hysteresis = 0` or
 | `api.tls_key_file` | `/data/stormcert/stormdrive.key` | its key |
 | `api.client_ca_files` | `["/data/stormcert/ca.crt"]` | client certificates are verified against these (the node CA), read at start; a missing file is skipped |
 | `api.allow_anonymous` | `false` | **transition only:** plain HTTP and reads with no credential are served as before #19; a credential that is sent is still checked, and writes keep the gate |
-| `kubernetes.api_url` | `""` | the apiserver; empty = `$STORMDRIVE_KUBE_API`, then in-cluster. None = only the admin token writes, no CRD objects |
-| `kubernetes.ca_file` | `""` | its CA; empty = `$STORMDRIVE_KUBE_CA`, then the service account's |
-| `kubernetes.token_file` | `""` | stormdrive's own credential (re-read every call); empty = `$STORMDRIVE_KUBE_TOKEN_FILE`, then the service account's |
+| `kubernetes.api_url` | `""` | the apiserver; empty = `$STORMDRIVE_KUBE_API`, then in-cluster (`https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT`, port default `443`, only when the service-account token exists). None = only the admin token writes, no CRD objects |
+| `kubernetes.ca_file` | `""` | its CA; empty = `$STORMDRIVE_KUBE_CA`, then the service account's (`/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`) |
+| `kubernetes.token_file` | `""` | stormdrive's own credential (re-read every call); empty = `$STORMDRIVE_KUBE_TOKEN_FILE`, then the service account's (`…/serviceaccount/token`) |
 | `kubernetes.insecure` | `false` | skip TLS verification (lab only) |
 | `kubernetes.controller` | `true` | keep `Drive` objects, run this node's `DriveOperation`s and the `DrivePolicy`s that select it |
 | `kubernetes.interval_secs` | `5` | between controller passes |

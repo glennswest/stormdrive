@@ -2,7 +2,8 @@
 # A missing file is fine: every value below shows its default.
 
 listen_addr = "0.0.0.0:9092"
-# Inventory + trend history persist here; unset = in-memory only.
+# inventory.json (with trends), events.json, jobs.json, audit.log and the
+# firmware image store live here; unset = in-memory only, no image store.
 data_dir = "/var/lib/stormdrive"
 # node_name = ""            # default: hostname
 
@@ -78,5 +79,5 @@ api_url = ""                # https://<apiserver>:6443; empty = $STORMDRIVE_KUBE
 ca_file = ""                # empty = $STORMDRIVE_KUBE_CA, then the service account's ca.crt
 token_file = ""             # stormdrive's own credential (auth-delegator + stormdrive-controller); empty = $STORMDRIVE_KUBE_TOKEN_FILE, then the service account's
 insecure = false            # skip TLS verification (lab only)
-controller = true           # keep Drive objects, run this node's DriveOperations
+controller = true           # keep Drive objects, run this node's DriveOperations and the DrivePolicies that select it
 interval_secs = 5           # between controller passes
