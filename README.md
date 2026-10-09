@@ -24,7 +24,7 @@ HBAs, SAS shelves (SES), PCIe slots                     │  inventory.json
           drain, overcommit (Bearer token)        stormblock :9090
 ```
 
-## What it does today (v0.18.0)
+## What it does today (v0.27.1)
 
 Everything below is in the code on `main`. Items the code does **not** do yet
 are listed under [Not yet](#not-yet).
@@ -379,8 +379,9 @@ as root:
 
 ```bash
 git push
-sc-build                      # cargo build && cargo test on dev.g8.lo, scratch dir, deleted after
+sc-build                      # cargo build && cargo test on the build box, scratch volume, deleted after
 sc-build 'cargo clippy --workspace --all-targets -- -D warnings'
+SC_BUILD_VM=1 sc-build        # the same on a fresh build VM (dev.g8.lo is retired, stormcentral#521)
 ```
 
 The drive paths (sysfs, SG_IO, ioctls, netlink) are behind
@@ -391,9 +392,15 @@ portable tests only. What ships is the release build:
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-The unit tests live beside the code (133 at v0.16.0). Page parsers, sense
-decoding, the threshold engine, placement hashing and the token lookup are
-tested on synthetic data. A stand-in engine covers the stormblock client.
+The unit tests live beside the code (241 at v0.27.1), plus the `retry/`
+crate's own and the test crate's. Page parsers, sense decoding, the
+threshold engine, placement hashing and the token lookup are tested on
+synthetic data. A stand-in engine covers the stormblock client. The
+integration tests in `tests/` run the real daemon: `suites.rs` (the three
+suites, below), `kube.rs` (a stand-in apiserver: the write gate, the
+DriveOperation controller, DrivePolicy), `restart.rs` (recovery after a
+restart, SIGTERM), `tls.rs` (:9092's TLS and credentials) and
+`chassis160.rs` (a simulated 160-bay NVMe chassis, #31).
 
 ### Test containers (`test/`, #11)
 
@@ -419,8 +426,8 @@ stormdrive's suites follow stormcentral's
 
 | Suite | Budget | What it proves |
 |---|---|---|
-| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled; system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); card, placement (+304), feed, kube Drives, events, HBAs, the page, `/metrics` (every drive by serial) |
-| `medium` | < 30 min | 404 envelope, malformed requests refused (400); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost, page under `/ui/` |
+| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled, or the reason it is not; slabs on each disk vs the engine's report (`drive-slabs`, #58); system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); card, placement (+304), feed, kube Drives, events, HBAs, the page, `/metrics` (every drive by serial) |
+| `medium` | < 30 min | 404 envelope, malformed requests refused (400); reads with no or a bogus credential refused (`reads-need-a-credential`, #19); writes without a storage-admin refused (`writes-need-storage-admin`, #45); malformed worker jobs refused, dry run only (`worker-refusals`); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost, page under `/ui/` |
 | `long` | the night window | waves until the window ends: 4 + drives/8 API readers (4–64) and a smoke test on every idle, usable drive; p50/p95, errors, drives left busy, stuck or timed-out health reads, event growth. A wave slower than 2× the first (+250 ms), or leaving residue, fails |
 
 **Never destructive.** The suites run on real machines with real drives,
@@ -441,11 +448,12 @@ drive-touching checks skip there; they meet real drives on the test machines
 
 **The page** is Svelte + Vite in `web/`. Its build, `web/dist`, is committed
 and embedded with `include_str!`, so cargo alone builds the daemon. The
-build runs on dev, never on this machine:
+build runs through `sc-build` (prefix `SC_BUILD_VM=1` for a build VM),
+never on this machine:
 
 ```bash
-git push && web/rebuild.sh          # npm ci + npm test + vite build on dev → web/dist, web/package-lock.json
-git push && web/rebuild.sh --check  # rebuild on dev and fail unless the committed web/dist matches
+git push && web/rebuild.sh          # npm install + npm test + vite build + page test → web/dist, web/package-lock.json
+git push && web/rebuild.sh --check  # npm ci, the same tests, fail unless the committed web/dist matches
 ```
 
 `npm test` runs `node --test` over `web/src/lib/model.js`: grouping,
@@ -896,8 +904,15 @@ component list`). Its golden is built by
 `service_golden` recipe. That recipe builds the musl binary and puts it in a
 stormd-based golden with:
 
-- `/etc/stormdrive/stormdrive.toml` setting `listen_addr = "0.0.0.0:9092"`
-  and `data_dir = "/var/lib/stormdrive"`;
+- `/etc/stormdrive/stormdrive.toml`, which is the registry entry's config
+  text (`stormcentral component edit stormdrive`), today: `listen_addr =
+  "0.0.0.0:9092"`, `data_dir = "/var/lib/stormdrive"`, `[api]
+  allow_anonymous = true` (the #19 transition, until stormcos#352 and
+  stormconsole#49 ship: #56), and `[kubernetes]` with `api_url =
+  "https://127.0.0.1:6443"`, `ca_file = "/data/stormcert/ca.crt"`, `token_file
+  = "/data/stormcert/stormdrive.token"` (the `kube-system/stormdrive`
+  storage-admin token) and `controller = false` (until the release installs
+  the CRDs and the controller role: stormcos#369);
 - stormd running `/usr/sbin/stormdrive --config /etc/stormdrive/stormdrive.toml`,
   restarted on exit, with an HTTP liveness probe on `/api/v1/health`, and
   stormd's own API on :9192.
@@ -908,12 +923,14 @@ A commit reaches a node only through that path:
 2. stormcos composes the golden into a release.
 3. Nodes clone the release copy-on-write. Nothing pulls an image.
 
-`Cargo.lock` pins the one git dependency, `stormview` (branch `main`). A fix
-there arrives only after `cargo update -p stormview` and a commit here. How
+The one git dependency, `stormview`, is pinned to a `rev` in `Cargo.toml`
+(#63; golden builds refuse an unpinned git dependency). A fix there arrives
+only with a deliberate rev bump here. How
 goldens and releases work is written up in stormcos
 [`docs/goldens.md`](https://github.com/glennswest/stormcos/blob/main/docs/goldens.md).
 
-The crate is a Cargo workspace (`.` and `test/`, both default members). The
+The crate is a Cargo workspace (`.`, `test/` and `retry/`, all default
+members). The
 recipe's release build therefore also compiles the test binary, but the
 golden carries only `/usr/sbin/stormdrive`. The test image is built
 separately by stormcentral from `test/Containerfile`.
@@ -923,7 +940,12 @@ the host network, the host's `/dev`, the host's `/sys` **read-only**, its
 data volume at `/var/lib/stormdrive`, and the engine token from
 `/run/stormblock` (`STORMBLOCK_TOKEN_FILE`). The read-only `/sys` means that
 in the golden, sysfs locate LEDs and the post-format rescan fail. SES and
-SG_IO paths work (stormcos#166).
+SG_IO paths work (stormcos#166; a writable `/sys` is in stormpump and ships
+with a release that carries it, #54). The serving pair and node CA are read
+from `/data/stormcert` (the defaults of `[api] tls_*`; the pair itself is
+stormcos#352), and drive history + assets go to `/data/system-data` once
+stormcos mounts it into the unit (stormcos#456, stormblock#355); until then
+`GET /api/v1/history` says it is off.
 
 The node's HTTPRoute publishes it by name (`drive.storm1.g8.lo` in stormcos
 `deploy/manifests/85-routes.yaml`). stormconsole on :9094 reads its
@@ -934,18 +956,23 @@ for installs outside stormcos.
 
 ## Not yet
 
-These are documented as design only; the code does not do them:
+Built, but not running in the golden yet:
 
-- `DriveOperation`s and `DrivePolicy`s run only once stormcos installs the
-  CRDs and gives stormdrive a credential (stormcos#302); the requester stamp
+- `DriveOperation`s and `DrivePolicy`s: the registry config has
+  `[kubernetes] controller = false` until the release installs the CRDs and
+  the controller role (stormcos#369). stormdrive's credential is in the
+  registry `[kubernetes]` (stormcos#296) and the requester stamp
   (rustkube#210) has shipped
+- drive history and assets: written once system-data is mounted
+  (stormcos#456)
+
+Design only; the code does not do them:
+
 - a node-wide sequencer for every disruptive operation (the firmware
   redundancy gate itself is #24, built)
-- in the drive worker: ATA SECURITY ERASE for SATA drives without ATA
-  Sanitize (#36); the scheduling default is
-  your decision (#37)
-- SES shelf (IOM) firmware (#35) is built but has never met a real shelf
-  or image (#30, #29)
+- the page: shelf (IOM) firmware (#60, API only) and offered drives (#55,
+  feed only)
+- waiting on your decision: the drive worker's scheduling default (#37)
 - waiting on your decision:
   - thermal actuation (#32)
   - drive crypto: SED, crypto erase (#33)
@@ -959,7 +986,8 @@ Built but never exercised on real hardware:
   the ATA security erase, GPT on a real disk, BLKRRPART, enroll through a partition) are tested on
   synthetic data. The GPT layout is also checked by `sfdisk --verify` on a
   file. On real drives: #30.
-- **The NetApp shelf path:** SES, the 520 → 4096 format, phy/expander (#30).
+- **The NetApp shelf path:** SES, the 520 → 4096 format, phy/expander, IOM
+  firmware (#35; no image yet, #29) (#30).
 - **160-bay NVMe:** verified by simulation only (#31, `tests/chassis160.rs`);
   no real chassis is planned.
 - **The test containers on a test machine:** #28.
