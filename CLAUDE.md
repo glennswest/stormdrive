@@ -455,15 +455,21 @@ Steps:
       rustkube#210 (requester stamp) for DriveOperations; the first real
       520→4096 is #30
 
-### Docs from the code, since 2026-10-02 (2026-10-09) — IN PROGRESS
+### Docs from the code, since 2026-10-02 (2026-10-09) — DONE
 
 Owner: README, docs/ and CLAUDE.md say what the code does today (config
 keys + defaults, ports, APIs, how it ships); a promise the code does not
 keep becomes an issue. Same pass as #7.
 - [x] CLAUDE.md: #70 (shelf drives not Seagates), v0.22.0 items marked
       built, module map (engine.rs, iomfw.rs, policy.rs, wear.rs, retry/)
-- [ ] README / architecture / presentation vs config.rs, api/, metrics.rs
-- [ ] issues for promises the code does not keep; changelog; push
+- [x] README / architecture / presentation vs config.rs, api/, metrics.rs:
+      config keys + defaults all matched (validation list, env, paths
+      completed); routes all exist (open paths, verbs, discovery added);
+      metrics all match; v0.27.1 everywhere; golden config + mounts
+- [x] no promise found that the code does not keep: the gaps are
+      deployment (controller off → stormcos#369; anonymous reads → #56;
+      system-data mount → stormcos#456; /sys ro → #54), all tracked;
+      changelog; #70 closed
 
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 

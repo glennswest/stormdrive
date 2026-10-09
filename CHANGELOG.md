@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-09
+- **docs:** README, docs/architecture.md, docs/presentation.md and CLAUDE.md refreshed from the code for everything since 2026-10-02 (v0.18.0 → v0.27.1): every config validation rule, `data_dir` contents, the in-cluster apiserver env and service-account paths; open paths (page assets over TLS only), test/job cancel and resume verbs, health's `reads`, API discovery routes, `block_size{blocks_type="physical"}`; what the golden's registry config sets (`allow_anonymous`, `[kubernetes]` with `controller = false` until stormcos#369) and its `/data/stormcert` and `/data/system-data` mounts; stormview pinned to a rev (#63); `retry/` in the workspace; every suite and integration test; the build VM; the drive model (contents, slab parts, engine finding, enrolable, wear projection, io_errors, not_collected); the firmware redundancy gate is built (#24); the deck's "planned" list now holds only what isn't built; PVCs are served by stormblock's built-in driver; the NetApp shelf's drives are not Seagates (#70)
+
 ## [v0.27.1] — 2026-10-08
 
 ### Fixed

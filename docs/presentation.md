@@ -9,7 +9,7 @@ description: Physical drive management for a storage node — purpose and functi
 <!--
 Render: npx @marp-team/marp-cli docs/presentation.md          (HTML)
         npx @marp-team/marp-cli --pdf docs/presentation.md    (PDF)
-Every claim here is checkable against the code as of v0.17.0 (src/, web/)
+Every claim here is checkable against the code as of v0.27.1 (src/, web/)
 and the docs rewritten from it (#7). README.md is the full reference;
 docs/architecture.md says how each part works.
 -->
@@ -29,7 +29,7 @@ section.dense li { margin: 0; }
 Physical drive management for the Storm ecosystem: one Rust daemon per
 storage node, REST + page + feed on **:9092**
 
-v0.17.0 · github.com/glennswest/stormdrive
+v0.27.1 · github.com/glennswest/stormdrive
 
 ---
 
@@ -129,17 +129,25 @@ Lifecycle is three separate fields:
 - **Health:**
   - each drive is sampled once a minute at its own phase, ≤8 reads at once,
     and a hung drive doesn't stall the rest;
-  - NVMe: SMART log 0x02. SAS/SATA: sysfs state, I/O errors, temperature;
+  - NVMe: SMART log 0x02. SAS: LOG SENSE (informational exceptions,
+    temperature, SSD wear, error counters). SATA: ATA SMART attributes
+    and thresholds. Failed commands (`io_errors`) are kept apart from
+    media errors;
+  - the engine's own slab report: a disk whose slabs the engine runs
+    remote, or refused, is suspect (#58);
   - verdict good / warning / failing / failed from config thresholds, with
     hysteresis; every change is an event;
-  - SSD wear trend recorded on change or daily.
+  - SSD wear trend recorded on change or daily, projected to days to
+    wear-out (#23).
 - **Fleet hand-off to stormblock:**
   - join = register with labels (`shelf`, `bay`, `hba`, `pcie_slot`) and
     the stable uuid, optionally with a slab and a tier (NVMe hot, SSD warm,
     HDD cool);
   - Failing/Failed is pushed so stormblock quarantines the drive's legs, then
     **drain → empty → leave, locate LED on, "safe to pull"**;
-  - per-drive **usage** (slabs, used, free) and **overcommit** setting.
+  - per-drive **usage** (slabs, used, free, the volumes on it) and
+    **overcommit** setting;
+  - a failed RAID-set member's bay gets its **fault LED** (#44).
 
 ---
 
@@ -156,13 +164,18 @@ Lifecycle is three separate fields:
     first.
 - **The drive worker** (v0.17.0): one request takes a selection (drives, a
   shelf and bays, a model, "all unusable") through format → sanitize →
-  partition → enroll. It is parallel per HBA, enrolls one at a time per
-  shelf, refuses any drive holding data unless named by id, WWN or serial,
-  and survives a restart.
+  partition → enroll, plus ATA security erase and a test step. It is
+  parallel per HBA, enrolls one at a time per shelf, refuses any drive
+  holding data unless named by id, WWN or serial, and survives a restart.
+  Enrolling writes metadata only, whatever the drive's size (#72).
+- **DrivePolicy** (CRD): per node, which drives get which tier, reformat
+  first if 520-byte; blank healthy drives are **offered** (#42, #50).
 - **Firmware:** an image store, WRITE BUFFER for SAS/SATA, Download + Commit
   for NVMe.
   - One drive, a list, or every drive of a model.
-  - Out-of-fleet drives in parallel, fleet drives one at a time.
+  - Out-of-fleet drives in parallel, fleet drives one at a time, each
+    waiting until its volumes are redundant (#24).
+  - Shelf IOM firmware through SES, one IOM at a time (#35, API only).
 - **The page** (v0.16.0, Svelte + stormview DataGrid), built for hundreds of
   drives:
   - shelves, HBAs and NVMe are rows, each with its drives nested;
@@ -191,7 +204,7 @@ Lifecycle is three separate fields:
 Errors are `{error, code}`, stormblock's shape. `/metrics` serves
 per-drive SMART, temperature, wear and errors in Prometheus text (#18).
 TLS from the node's stormcert pair; nothing answers anonymously but
-health (#19).
+health (#19) — once the golden drops its `allow_anonymous` transition (#56).
 
 ---
 
@@ -207,10 +220,14 @@ health (#19).
   - `listen_addr` 0.0.0.0:9092 · `data_dir` (unset = in memory)
   - `[discovery]` interval 30 s, include/exclude patterns, `manage_mounted`
   - `[monitor]` 60 s; temp 55/70 °C; spare 20/10 %; wear 80/95 %;
-    hysteresis 3; 8 in flight; 10 s timeout
+    hysteresis 3; 8 in flight; 10 s timeout; wear-out warning 180 days
   - `[stormblock]` url, `auto_add` (off), `push_health`, `drain_on_failing`,
     `tier_map`, token
-  - `[firmware]` 32 KiB chunks, 256 MiB image cap
+  - `[api]` TLS pair + client CA from `/data/stormcert`, `admin_gate`
+  - `[kubernetes]` apiserver, credential, `controller`
+  - `[firmware]` 32 KiB chunks, 256 MiB image cap, 30 min redundancy wait
+  - `[worker]` 8 per HBA, 1 enrol per domain, offer ≥ 1 GiB
+  - `[history]` `/data/system-data`, hourly heartbeat, 24 months
 - **Engine token:** config, then `$STORMBLOCK_API_TOKEN`, then the first
   readable token file. It is re-read while absent and on a 401.
 - **Health:** `/api/v1/health` is the stormd liveness probe.
@@ -225,16 +242,20 @@ health (#19).
 - **Golden kind: service.**
   - `stormcentral component build stormdrive` runs stormcos's
     `service_golden`: a static musl binary in a stormd container golden.
-  - The config there sets `listen_addr` 0.0.0.0:9092 and `data_dir`
-    /var/lib/stormdrive.
+  - The config there (stormcentral's registry) sets `listen_addr`
+    0.0.0.0:9092, `data_dir` /var/lib/stormdrive, `allow_anonymous`
+    (TLS transition, #56) and `[kubernetes]` with `controller = false`
+    until the CRDs ship (stormcos#369).
 - **Starts on every node profile** (`boot.d/40-services`).
   - Host network, host `/dev`, host `/sys` (read-only: stormcos#166),
-    its own data and log volumes, the engine token from `/run/stormblock`.
+    its own data and log volumes, the engine token from `/run/stormblock`,
+    `/data/stormcert`; `/data/system-data` once mounted (stormcos#456).
   - stormd restarts it and probes `/api/v1/health`.
 - **Updated** only as a golden composed into a stormcos release; nodes
   clone the release copy-on-write, and a commit alone reaches nothing.
-- **Built** with `sc-build` on dev: cargo only, since `web/dist` is
-  committed (`web/rebuild.sh` rebuilds it on dev).
+- **Built** with `sc-build` (a build VM since dev.g8.lo retired): cargo
+  only, since `web/dist` is committed (`web/rebuild.sh` rebuilds it).
+- **Remote calls retry** by idempotency, with backoff and a deadline (#71).
 - **Reached** at `drive.<node>` (HTTPRoute), in stormconsole's drive view,
   and directly on `:9092`.
 
@@ -244,8 +265,10 @@ health (#19).
 
 | Planned | Issue |
 |---|---|
-| Drive worker: ATA security erase · scheduling default · a test step | #36 · decision #37 · #40 |
-| Shelf (IOM) firmware · a vendor firmware image source | #35 · #29 |
+| Drive worker scheduling default | decision #37 |
+| A vendor firmware image source | decision #29 |
+| The page: shelf IOM firmware · offered drives | #60 · #55 |
+| Configuration kept across installs · what was done to a drive in its history | #67 · #68 |
 | Thermal actuation · drive crypto · burn-in before joining | your decision: #32 · #33 · #34 |
 
 ---
@@ -254,22 +277,24 @@ health (#19).
 
 ## Status
 
-- **v0.20.0** (October 2026). Each release's golden and release request
+- **v0.27.1** (October 2026). Each release's golden and release request
   are recorded in CLAUDE.md's work plan and in CHANGELOG.md.
-- **Tested:** 176 unit tests, model/page tests (212 drives), and the
-  daemon run against a stand-in apiserver and a seeded restart, on dev.
+- **Tested:** 241 unit tests, model/page tests (212 drives), and the
+  daemon run against a stand-in apiserver, a seeded restart, TLS, and a
+  simulated 160-bay chassis, on a build VM.
   The test containers (short, medium, long) run against the real daemon
   on every build (#11).
 - **Not yet run on a test machine:** C2NR0Q2's apiserver doesn't come up
   (stormcentral#63), tracked in #28.
-- **Live:** on a Dell R230, one SATA drive behind mpt3sas (v0.11.0). It
+- **Live:** on a Dell R230, one SATA drive behind mpt3sas (v0.11.0; it
+  runs 0.27.1 today). It
   found the stormcos system disk's slabs and marked the disk in use, with
   join, format and the destructive test disabled.
 - **Not yet run on real hardware:**
   - the NetApp shelf (SES pages, 520 → 4096 formats): #30;
   - a firmware image: #29;
-  - a 160-bay chassis: #31;
+  - a 160-bay chassis (simulated only, #31);
   - a drain under I/O load: #30.
-- **Issues that matter most:** #5 drive worker ·
-  #30 the shelf live pass · stormcos#166 (read-only `/sys` blocks LEDs and
-  rescans in the golden).
+- **Issues that matter most:** #67 configuration lost on install ·
+  #65 every SES enclosure a shelf · #30 the shelf live pass ·
+  stormcos#166 (read-only `/sys` blocks LEDs and rescans in the golden).
