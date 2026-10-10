@@ -497,11 +497,17 @@ decision):
   verify block length **and** PROT_EN/P_TYPE after.
 - Live needs: the release on the Dell, the controller on (stormcos#369).
 Steps:
-- [ ] pi.rs parsers + plan + tests · [ ] Linux probe, Drive.supports, route
-- [ ] Step::Format protection, guard, format.rs FMTPINFO + reset watch +
-      verify prot · [ ] kube status supports/currentFormat/plannedFormat,
+- [x] pi.rs parsers + plan + tests · [x] Linux probe, Drive.supports, route
+- [x] Step::Format protection, guard, format.rs FMTPINFO + reset watch +
+      verify prot · [x] kube status supports/currentFormat/plannedFormat,
       spec.format kept
-- [ ] docs, changelog, build, release, golden; contract on stormconsole#131
+- [x] docs, changelog; build VM on a36d297 (v0.28.0): clippy -D warnings
+      --locked, 257 unit + harnesses; `web/rebuild.sh --check` 14 JS + 3
+      page, dist identical; contract on stormconsole#131; stormcos#369
+      told (CRDs with `protection`, controller on). Golden requested
+- [ ] Live: probe bay 0 on the Dell once v0.28.0 is there (anonymous
+      `GET /api/v1/drives/ca0aa25f…/supports`), post it; the owner formats
+      from the console (stormconsole#131) once stormcos#369 ships
 
 ### #81: NetApp DS224C (IOM12) shelf management (P1, 2026-10-10) — in progress
 
