@@ -482,7 +482,11 @@ Probe + plan + PI format step shipped with #85 (v0.28.0). Left here:
       0.27.1, drives' own uncorrected 0 (sdp 3) → not media errors, not
       the 520 drives; `GET /api/v1/scsi/not-good` counts our own non-GOOD
       commands to compare once released
-- [ ] build, v0.28.1, golden; live: read `supports` + not-good on the Dell
+- [x] build VM on ec6c56c / 7f99c95: clippy -D warnings --locked, 260 unit
+      + harnesses; v0.29.0; golden `golden-stormdrive-77ac96cc716d`
+      (second try: a build-VM NIC platform failure), stormcos#426; shipped
+- [ ] live, once installed: `supports` per shelf drive, `kind` sas_hdd,
+      `/api/v1/scsi/not-good` vs `io_errors` — post on #82
 - Formats on the Dell's shelf are gated on stormblock#391 (owner) and run
   from the console (#85)
 
