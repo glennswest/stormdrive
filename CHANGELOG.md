@@ -4,6 +4,11 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-10
+- **feat:** what a drive can be formatted to (#85, `pi.rs`): INQUIRY PROTECT, VPD 0x86 SPT, 0xB4 block lengths × PI types, 0xB1 rotation, MODE SENSE block length, READ CAPACITY PROT_EN/P_TYPE → `Drive.supports`; probed in discovery and by `GET /api/v1/drives/{id}/supports`; a plan (spec.format when offered, else 4096+PI1 → 512+PI1 → 4096 → 512, 4096 never assumed without VPD 0xB4)
+- **feat:** Drive objects carry `status.supports`, `currentFormat`, `plannedFormat`; `spec.format {blockSize, protection}` (the user's, never overwritten) feeds the plan (#85)
+- **feat:** the worker's format step takes `protection: none|type1` (DriveOperation and REST): FORMAT UNIT FMTPINFO, refused unless the probe says the drive offers it; the result is verified by READ CAPACITY PROT_EN/P_TYPE (#85)
+- **feat:** a format watches the HBA's `ioc_reset_count`: a controller reset is recorded on the run, raised as an event, and no new format starts until stormdrive restarts; progress is read every 30 s (#85)
+- **fix:** SES enclosure element: FAILURE / WARNING INDICATION read from the right bits (byte 2 bits 1/0, byte 3 bits 1/0 requested), shown as flags; byte 3's power-off duration bits are no longer taken for a fault. The DS224C's fault LED reads lit (#86, #81)
 - **feat:** NetApp DS224C (IOM12) shelf management (#81), from the shelf on the Dell: SES descriptors kept as `attributes` (`KEY=VALUE;`); NetApp vendor elements named (0x83 IOM expander, 0x85 IOM Ethernet); chassis serial from the enclosure element (VPD 0x80 is the IOM's); help text (0x03), thresholds (0x05) and supported pages (0x00) read; `/api/v1/shelves` gains `summary` (shelf ID, IOMs with path seen, PSUs, connectors cabled to which HBA, multipath verdict, `problems`) and `help_text`
 - **feat:** `GET /api/v1/shelves/{key}/diagnostics[/{page}]`: any SES diagnostic page raw, read only (#81)
 - **feat:** `POST /api/v1/shelves/{key}/bays/{bay}/power {on}`: SES DEVICE OFF, a drive operation, refused for a fleet / data-holding / busy drive (#81)

@@ -99,7 +99,41 @@ async fn api_resources() -> Json<Value> {
 
 // ---------------------------------------------------------------- drives
 
+/// `spec.format` on a Drive object: `{blockSize, protection}` (#85).
+pub fn wanted_format(spec: &Value) -> Option<(u32, crate::pi::Protection)> {
+    let f = spec.get("format")?;
+    let bs = f.get("blockSize").or_else(|| f.get("block_size"))?.as_u64()? as u32;
+    let prot = serde_json::from_value(f.get("protection").cloned().unwrap_or(json!("none"))).ok()?;
+    Some((bs, prot))
+}
+
+/// `status.currentFormat` + `status.plannedFormat` (#85): what the drive is
+/// now, and what it would be formatted to — `want` (spec.format) when the
+/// drive offers it, else #82's preference. `plannedFormat.error` says why
+/// there is no plan (not probed, not offered).
+pub fn format_status(d: &Drive, want: Option<(u32, crate::pi::Protection)>) -> (Value, Value) {
+    let current = match &d.supports {
+        Some(s) => json!({ "blockSize": s.current_block_size, "protection": s.protection_now(), "protType": s.current_prot_type }),
+        None => json!({ "blockSize": d.block_size }),
+    };
+    let planned = match &d.supports {
+        None => json!({ "error": "not probed yet (SCSI drives only)" }),
+        Some(s) => match crate::pi::plan(s, want) {
+            Ok(p) => serde_json::to_value(p).unwrap_or_default(),
+            Err(e) => json!({ "error": e }),
+        },
+    };
+    (current, planned)
+}
+
 pub fn drive_object(d: &Drive, node: &str) -> Value {
+    drive_object_with(d, node, None)
+}
+
+/// The Drive object with `spec.format` (from the apiserver object) taken
+/// into the plan.
+pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Protection)>) -> Value {
+    let (current_format, planned_format) = format_status(d, want);
     let key = d.id.0.to_string();
     let mut labels = BTreeMap::new();
     labels.insert("storm.io/component".to_string(), "stormdrive".to_string());
@@ -151,6 +185,9 @@ pub fn drive_object(d: &Drive, node: &str) -> Value {
             "drain": d.drain,
             "usage": d.usage,
             "prep": crate::worker::prep(d, None),
+            "supports": d.supports,
+            "currentFormat": current_format,
+            "plannedFormat": planned_format,
             "overcommit": d.overcommit,
             "pushedLabels": d.pushed_labels,
             "firstSeen": d.first_seen.duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0),

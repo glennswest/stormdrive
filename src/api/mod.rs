@@ -206,6 +206,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}", get(get_drive).delete(forget_drive))
         .route("/api/v1/drives/{id}/health", get(get_drive_health))
         .route("/api/v1/drives/{id}/slabs", get(get_drive_slabs))
+        .route("/api/v1/drives/{id}/supports", get(get_drive_supports))
         .route("/api/v1/drives/{id}/history", get(get_drive_history))
         // app-system-data (#64): drive history status, this boot's assets.
         .route("/api/v1/history", get(history_status))
@@ -689,6 +690,59 @@ async fn get_drive_health(
 /// role, offset), what the engine's slab listing puts on it (usage), and
 /// the engine's own report of where the node's halves run, with the
 /// finding when those disagree.
+#[derive(Deserialize)]
+struct SupportsQuery {
+    /// `4096+type1`, `512`, … — plan this format instead of the preference.
+    #[serde(default)]
+    want: Option<String>,
+}
+
+/// `GET /api/v1/drives/{id}/supports[?want=4096+type1]` (#85): probe the
+/// drive now — INQUIRY, VPD 0x00/0x86/0xB1/0xB4, MODE SENSE, READ
+/// CAPACITY(16), all reads — keep the answer on the drive, and say what it
+/// would be formatted to.
+async fn get_drive_supports(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<SupportsQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let d = s.inventory.read().await.resolve(&id).cloned().ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
+    if d.kind == crate::drive::DriveKind::NvmeSsd {
+        return Err(ApiError::bad_request("NVMe: the PI probe is SCSI only".to_string()));
+    }
+    if matches!(d.activity, Activity::Formatting | Activity::Sanitizing | Activity::Missing) {
+        return Err(ApiError::conflict(format!("{}: {:?}, not probed now", d.name, d.activity).to_lowercase()));
+    }
+    let want = match q.want.as_deref() {
+        None => None,
+        Some(w) => Some(parse_want(w).ok_or_else(|| ApiError::bad_request(format!("want {w:?}: 4096, 512, 4096+type1 or 512+type1")))?),
+    };
+    let path = crate::scsi::sg_path_for_block(&d.name).unwrap_or_else(|| d.path.clone());
+    let sup = tokio::task::spawn_blocking(move || crate::pi::probe(&path))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(ApiError::bad_request)?;
+    if let Some(x) = s.inventory.write().await.drives.get_mut(&d.id) {
+        x.supports = Some(sup.clone());
+    }
+    let plan = match crate::pi::plan(&sup, want) {
+        Ok(p) => json!(p),
+        Err(e) => json!({ "error": e }),
+    };
+    Ok(Json(json!({ "drive": d.id, "name": d.name, "bay": d.location.bay, "model": d.model, "supports": sup, "plannedFormat": plan })))
+}
+
+/// `4096+type1` → (4096, Type1); `512` → (512, None).
+fn parse_want(w: &str) -> Option<(u32, crate::pi::Protection)> {
+    let (bs, prot) = w.split_once('+').unwrap_or((w, "none"));
+    let prot = match prot {
+        "none" => crate::pi::Protection::None,
+        "type1" | "pi1" => crate::pi::Protection::Type1,
+        _ => return None,
+    };
+    Some((bs.parse().ok()?, prot))
+}
+
 async fn get_drive_slabs(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

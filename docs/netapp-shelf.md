@@ -174,3 +174,63 @@ What the format does is set by #82:
 So probe each drive first (VPD 0x86, 0xB4, 0xB1), then choose 4096+PI,
 512+PI or plain sizes per drive. The real run also needs a storage-admin
 bearer: the shelf's drives are writes, and the gate enforces.
+
+## Formatting with protection information (#85)
+
+The owner formats from the console. stormdrive provides the probe, the
+plan and the safe run. The session never sends a format.
+
+1. **Probe** (reads only). Discovery probes once per geometry, and
+   `GET /api/v1/drives/{id}/supports` probes on demand. Together they
+   read:
+   - standard INQUIRY PROTECT;
+   - VPD 0x00, 0x86 (SPT: PI types), 0xB1 (rotation) and 0xB4 (each block
+     length with the PI types offered at it);
+   - the MODE SENSE block descriptor;
+   - READ CAPACITY(16) PROT_EN and P_TYPE.
+
+   The result is `Drive.supports`.
+2. **Plan.** A `spec.format {blockSize, protection}` on the `Drive` object
+   is used when the drive offers it. Otherwise the first the drive offers
+   of 4096+PI type 1, 512+PI type 1, 4096, 512 (#82). Without VPD 0xB4,
+   only 512 (and 512+PI1 when SPT lists type 1) counts as offered. The plan
+   never guesses 4096. The Drive object shows `status.supports`,
+   `status.currentFormat` and `status.plannedFormat` (or `.error`).
+3. **Approve and run** with a `DriveOperation`. The apiserver stamps its
+   requester, which must be a storage-admin; the worker checks that again
+   before the step. Run it with `dryRun: true` first, then for real:
+
+   ```yaml
+   apiVersion: storage.storm.io/v1
+   kind: DriveOperation
+   metadata: { name: format-bay0 }
+   spec:
+     node: <node>
+     select: { drives: [ca0aa25f-8cfd-5174-8c39-716f4233160c] }
+     steps: [{ op: format, blockSize: 512, protection: type1 }]
+     dryRun: true
+   ```
+
+   The worker refuses a PI step for a drive that has not been probed, or
+   that does not offer that length with that PI type.
+4. **The run:**
+   - an event before the first command;
+   - MODE SELECT of the block length;
+   - FORMAT UNIT with FMTDATA, IMMED and FMTPINFO (10b for type 1, PFU 0).
+     If IMMED is refused with PI asked for, the run fails rather than
+     falling back to a format nobody chose;
+   - TEST UNIT READY every 30 s for progress;
+   - the drive's HBA `ioc_reset_count` (mpt3sas), read every 30 s.
+
+   A controller reset during the run is recorded on the run and raised as
+   an event. After it, no new format starts until stormdrive restarts.
+   When the format ends:
+   - the kernel rescans;
+   - READ CAPACITY(16) must show the asked block length **and** the asked
+     protection (PROT_EN / P_TYPE), or the run fails.
+
+   Progress and result show in the DriveOperation status, and in Events.
+
+The kernel cannot be kept off the drive while it runs: `/sys` is read-only
+in the golden, so stormdrive cannot unbind sd. A 520-byte drive has 0
+blocks in sd anyway, so nothing does I/O to it.

@@ -39,7 +39,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
 
-use crate::api::kube::{drive_object, GROUP, VERSION};
+use crate::api::kube::{GROUP, VERSION};
 use crate::api::AppState;
 use crate::kubeapi::{KubeApi, KubeUser};
 use crate::kubeauth::{Access, Requester};
@@ -77,7 +77,12 @@ pub fn label_value(v: &str) -> Option<String> {
 /// The Drive object as the apiserver gets it: the served projection with
 /// label values made valid (`/dev/sda` is not one; the path is in status).
 pub fn apiserver_drive(d: &crate::drive::Drive, node: &str) -> Value {
-    let mut v = drive_object(d, node);
+    apiserver_drive_with(d, node, None)
+}
+
+/// The same, planning the format the object's `spec.format` asks for.
+pub fn apiserver_drive_with(d: &crate::drive::Drive, node: &str, want: Option<(u32, crate::pi::Protection)>) -> Value {
+    let mut v = crate::api::kube::drive_object_with(d, node, want);
     let labels: BTreeMap<String, String> = v["metadata"]["labels"]
         .as_object()
         .map(|m| m.iter().filter(|(k, _)| *k != "storm.io/path").filter_map(|(k, x)| Some((k.clone(), label_value(x.as_str()?)?))).collect())
@@ -198,9 +203,19 @@ impl Controller {
     /// Make this node's Drive objects match the inventory.
     async fn drives(&mut self) -> Result<(), String> {
         let node = self.state.node_name.clone();
+        // The objects as they are: `spec.format` is the user's (#85); the
+        // merge-patch below never writes it, and the plan reads it.
+        let sel = format!("storm.io/component=stormdrive,storm.io/node={}", label_value(&node).unwrap_or_default());
+        let list = self.kube.get(&format!("{}?labelSelector={}", path("drives", None), urlencode(&sel))).await.map_err(|e| format!("listing Drives: {e}"))?;
+        let wants: HashMap<String, (u32, crate::pi::Protection)> = list["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| Some((i["metadata"]["name"].as_str()?.to_string(), crate::api::kube::wanted_format(&i["spec"])?)))
+            .collect();
         let objs: Vec<Value> = {
             let inv = self.state.inventory.read().await;
-            inv.drives.values().map(|d| apiserver_drive(d, &node)).collect()
+            inv.drives.values().map(|d| apiserver_drive_with(d, &node, wants.get(&d.id.0.to_string()).copied())).collect()
         };
         let mine: HashSet<String> = objs.iter().filter_map(|o| o["metadata"]["name"].as_str().map(str::to_string)).collect();
         for o in objs {
@@ -215,8 +230,6 @@ impl Controller {
             self.written.insert(name, (fp, Instant::now()));
         }
         // Objects of this node whose drive was forgotten.
-        let sel = format!("storm.io/component=stormdrive,storm.io/node={}", label_value(&node).unwrap_or_default());
-        let list = self.kube.get(&format!("{}?labelSelector={}", path("drives", None), urlencode(&sel))).await.map_err(|e| format!("listing Drives: {e}"))?;
         for item in list["items"].as_array().into_iter().flatten() {
             let Some(name) = item["metadata"]["name"].as_str() else { continue };
             if item["metadata"]["labels"]["storm.io/node"].as_str() != label_value(&node).as_deref() {
