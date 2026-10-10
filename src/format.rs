@@ -408,7 +408,7 @@ async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, res
     };
     // Kept history (#68). A worker step records its own action (with the
     // requester); this is for the REST format routes and a re-attach.
-    let worker_owned = state.worker.jobs.lock().unwrap().values().any(|j| j.drives.iter().any(|dj| dj.drive == drive.id && dj.state == crate::worker::DjState::Running));
+    let worker_owned = state.worker.running_on(drive.id);
     if !worker_owned {
         crate::history::send(crate::history::Item::Action(
             drive.id,

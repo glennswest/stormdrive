@@ -593,6 +593,11 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// A worker job is running a step on this drive right now.
+    pub fn running_on(&self, id: DriveId) -> bool {
+        self.jobs.lock().unwrap().values().any(|j| j.drives.iter().any(|dj| dj.drive == id && dj.state == DjState::Running))
+    }
+
     /// Load `<data_dir>/jobs.json` (missing = none).
     pub fn load(data_dir: Option<&str>) -> Self {
         let path = data_dir.map(|d| PathBuf::from(d).join("jobs.json"));
