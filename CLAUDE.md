@@ -594,7 +594,11 @@ Steps:
       approval per drive) (c7dc1c6)
 - [ ] owner (16:48Z): post the hot-add list (bay, time, model, format,
       foreign data) once all 24 bays are full — 17 at 18:50Z
-- [ ] sc-build, release, golden; the live format waits on #82 (which
+- [x] build VM on c7dc1c6 (260 unit + harnesses, clippy clean); v0.30.1
+      (8192252), golden `golden-stormdrive-d7ee6bdab492`, stormcos#426;
+      status on #81, proposed after stormcos#426
+- [ ] live: decode vs the real shelf once installed; hot-add list; dry run
+      posted; the format via the console (#85), gated on stormblock#391 (which
       format: 4096+PI probe) and a storage-admin bearer → #30
 
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
