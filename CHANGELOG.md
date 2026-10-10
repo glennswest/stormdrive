@@ -3,6 +3,10 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#81)
+- **fix:** a drive sd cannot read (520/528-byte sectors) was taken as blank: discovery and the worker's destroy guard now read its first 128 blocks through SG at its own sector size (READ(16)); anything not all-zero is its `contents` ("foreign data … not blank; strings: …"), so a NetApp drive with an ONTAP label needs naming in `destroy` before a format, and DrivePolicy skips it (#81)
+- **feat:** shelf drive rows carry `contents` (#81)
+
 ## [v0.30.0] — 2026-10-10
 
 ### Breaking

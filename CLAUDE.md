@@ -588,6 +588,12 @@ Steps:
   'cargo clippy --workspace --all-targets -- -D warnings && cargo test
   --workspace'` (fix what it finds), comment + golden (the page and its
   shelf pane went with #84)
+- [x] foreign data on 520-byte drives: sd never reads them, so they read
+      blank; READ(16) of the first 128 blocks through SG in discovery and
+      in the worker's guard → `contents`, destroy naming (owner: overwrite
+      approval per drive) (c7dc1c6)
+- [ ] owner (16:48Z): post the hot-add list (bay, time, model, format,
+      foreign data) once all 24 bays are full — 17 at 18:50Z
 - [ ] sc-build, release, golden; the live format waits on #82 (which
       format: 4096+PI probe) and a storage-admin bearer → #30
 
