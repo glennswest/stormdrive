@@ -3,14 +3,13 @@
   // elements, shelf-wide actions) or an HBA (the firmware it runs).
   import HealthDot from 'stormview/components/HealthDot.svelte'
   import { post } from './lib/api.js'
-  import { sesDot } from './lib/model.js'
+  import { sesDot, iomLine, psuLine, connectorLine, sensorElement } from './lib/model.js'
 
   let { group: g, act, onprepare } = $props()
   const r = $derived(g.report)
   const needs = $derived(g.drives.filter((d) => d.needs_reformat && d.membership !== 'fleet').length)
-  const elements = $derived(
-    (r?.elements || []).filter((e) => !e.overall && !['not_installed', 'unsupported'].includes(e.status)),
-  )
+  const sm = $derived(r?.summary)
+  const elements = $derived((r?.elements || []).filter(sensorElement))
 
   function value(e) {
     if (e.temperature_c != null) return `${e.temperature_c} °C`
@@ -32,8 +31,11 @@
     <dl>
       <dt>status</dt><dd><HealthDot health={sesDot(r.status)} /> {r.status}</dd>
       <dt>logical id</dt><dd class="mono">{r.key}</dd>
-      {#if r.shelf.serial}<dt>serial</dt><dd class="mono">{r.shelf.serial}</dd>{/if}
+      {#if sm?.shelf_id}<dt>shelf ID</dt><dd class="mono">{sm.shelf_id}</dd>{/if}
+      {#if sm?.serial || r.shelf.serial}<dt>serial</dt><dd class="mono">{sm?.serial || r.shelf.serial}</dd>{/if}
+      {#if sm?.part_number}<dt>part</dt><dd class="mono">{sm.part_number}</dd>{/if}
       <dt>paths</dt><dd>{r.paths} {#each r.esps || [] as p}<span class="mono small"> {p.scsi_id}</span>{/each}</dd>
+      {#if sm?.multipath}<dt>multipath</dt><dd class="small">{sm.multipath.note}</dd>{/if}
       <dt>PSU</dt><dd>{r.power_supplies.ok}/{r.power_supplies.total}</dd>
       <dt>fans</dt><dd>{r.fans.ok}/{r.fans.total}</dd>
       <dt>slots</dt><dd>{r.slots.ok}/{r.slots.total}</dd>
@@ -45,7 +47,38 @@
       <button class="danger" disabled={!needs} onclick={reformat}>Reformat {needs || ''} → 4096…</button>
       <button onclick={() => onprepare({ shelf: g.key }, g.label)}>Prepare shelf…</button>
     </div>
-    <h3>Elements</h3>
+    {#if sm?.problems?.length || r.help_text}
+      <h3>Problems</h3>
+      {#each sm?.problems || [] as p}
+        <div class="el">
+          <HealthDot health={sesDot(p.status)} size={8} />
+          <span>{p.element}</span>
+          <span>{p.status}</span>
+          <span class="dim small">{(p.flags || []).join(', ')}</span>
+          {#if p.sas_address}<span class="mono small">{p.sas_address}</span>{/if}
+        </div>
+      {/each}
+      {#if r.help_text}<div class="small">The shelf says: {r.help_text}</div>{/if}
+    {/if}
+    {#if sm?.ioms?.length}
+      <h3>IOMs</h3>
+      {#each sm.ioms as i}
+        <div class="el"><HealthDot health={i.installed ? sesDot(i.status) : 'unknown'} size={8} /><span>{iomLine(i)}</span></div>
+      {/each}
+    {/if}
+    {#if sm?.power_supplies?.length}
+      <h3>Power</h3>
+      {#each sm.power_supplies as p}
+        <div class="el"><HealthDot health={p.installed ? sesDot(p.status) : 'unknown'} size={8} /><span>{psuLine(p)}</span></div>
+      {/each}
+    {/if}
+    {#if sm?.connectors?.some((c) => c.installed)}
+      <h3>SAS ports</h3>
+      {#each sm.connectors.filter((c) => c.installed) as c}
+        <div class="el"><HealthDot health={sesDot(c.status)} size={8} /><span>{connectorLine(c)}</span></div>
+      {/each}
+    {/if}
+    <h3>Sensors</h3>
     {#each elements as e}
       <div class="el">
         <HealthDot health={sesDot(e.status)} size={8} />

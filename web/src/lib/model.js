@@ -44,6 +44,33 @@ export function sesDot(s) {
   )
 }
 
+// ------------------------------------------------------- shelf summary (#81)
+
+const join = (parts) => parts.filter(Boolean).join(' · ')
+
+// One line per IOM, PSU and SAS connector from `/api/v1/shelves` `summary`.
+export function iomLine(i) {
+  if (!i.installed) return `IOM ${i.index} · not installed`
+  const path = i.path === true ? 'path ✓' : i.path === false ? 'no path' : null
+  return join([`IOM ${i.index}`, i.status, i.firmware && `FW ${i.firmware}`, i.serial && `SN ${i.serial}`, path, i.answering && 'answering'])
+}
+
+export function psuLine(p) {
+  if (!p.installed) return `PSU ${p.index} · not installed`
+  return join([`PSU ${p.index}`, p.status, p.watts && `${p.watts} W`, p.firmware && `FW ${p.firmware}`, p.serial && `SN ${p.serial}`, ...(p.flags || [])])
+}
+
+export function connectorLine(c) {
+  const to = c.attached_to || c.attached_sas_address
+  return join([`port ${c.index}`, c.kind, to ? `→ ${to}` : 'not cabled'])
+}
+
+// Sensor elements worth a line in the pane: a reading, or a bad status.
+export function sensorElement(e) {
+  if (e.overall || ['not_installed', 'unsupported'].includes(e.status)) return false
+  return e.temperature_c != null || e.rpm != null || e.volts != null || e.amps != null || !['ok', 'info'].includes(e.status)
+}
+
 // ------------------------------------------------------------ eligibility
 
 const BUSY = ['testing', 'formatting', 'sanitizing', 'updating_firmware', 'draining']

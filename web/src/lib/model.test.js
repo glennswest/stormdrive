@@ -14,6 +14,10 @@ import {
   formatTarget,
   healthDot,
   human,
+  iomLine,
+  psuLine,
+  connectorLine,
+  sensorElement,
 } from './model.js'
 
 const drive = (over = {}) => ({
@@ -120,4 +124,25 @@ test('days to wear-out read as days and a date (#23)', () => {
   assert.equal(wearOut({ days_left: 412, wear_out_unix: 1_790_000_000 + 412 * 86400, rate_pct_per_day: 0.0333 }), 'in 412 days (2027-11-07), 0.033 %/day')
   assert.equal(wearOut({ days_left: 0, wear_out_unix: 1_790_000_000, rate_pct_per_day: 1 }), 'now (rated endurance reached)')
   assert.equal(wearOut(null), '')
+})
+
+test('shelf summary lines (#81, the DS224C on the Dell)', () => {
+  assert.equal(
+    iomLine({ index: 0, installed: true, status: 'ok', firmware: '0401', serial: '032026007488', path: true, answering: true }),
+    'IOM 0 · ok · FW 0401 · SN 032026007488 · path ✓ · answering',
+  )
+  assert.equal(iomLine({ index: 1, installed: true, status: 'ok', firmware: '0401', path: false }), 'IOM 1 · ok · FW 0401 · no path')
+  assert.equal(iomLine({ index: 1, installed: false }), 'IOM 1 · not installed')
+  assert.equal(psuLine({ index: 0, installed: true, status: 'ok', watts: 913, firmware: '0111', serial: 'PSQ1' }), 'PSU 0 · ok · 913 W · FW 0111 · SN PSQ1')
+  assert.equal(psuLine({ index: 1, installed: false }), 'PSU 1 · not installed')
+  assert.equal(
+    connectorLine({ index: 0, kind: 'Mini SAS HD 4x receptacle (SFF-8644)', attached_sas_address: '500605b00dacc340', attached_to: 'host0 0000:01:00.0' }),
+    'port 0 · Mini SAS HD 4x receptacle (SFF-8644) · → host0 0000:01:00.0',
+  )
+  assert.equal(connectorLine({ index: 3 }), 'port 3 · not cabled')
+  assert.ok(sensorElement({ status: 'ok', temperature_c: 30 }))
+  assert.ok(!sensorElement({ status: 'ok', overall: true, temperature_c: 30 }))
+  assert.ok(!sensorElement({ status: 'ok' }), 'an ok element with no reading is in the summary instead')
+  assert.ok(sensorElement({ status: 'noncritical', bay: 5 }))
+  assert.ok(!sensorElement({ status: 'unsupported' }))
 })
