@@ -471,6 +471,38 @@ keep becomes an issue. Same pass as #7.
       system-data mount → stormcos#456; /sys ro → #54), all tracked;
       changelog; #70 closed
 
+### #85: one shelf drive formatted from the console — probe, PI, safe format (P0, 2026-10-10) — in progress
+
+Owner: "We will have to take a risk. Format a single drive"; then "I want to
+do those thru ui": **the session does not send the format.** Bay 0 drive
+(`ca0aa25f-…`, sdb, ST1200MM0098 at 520) is the first. Design (no open
+decision):
+- **Probe** (`src/pi.rs`, read-only): standard INQUIRY PROTECT, VPD 0x00,
+  0x86 (SPT), 0xB0, 0xB1 (rotation), 0xB4 (block lengths × PI types), MODE
+  SENSE block descriptor, READ CAPACITY(16) PROT_EN/P_TYPE →
+  `Drive.supports`; in discovery's probe cache; `GET
+  /api/v1/drives/{id}/supports` probes live.
+- **Plan** (pure): `spec.format` on the Drive object when the drive offers
+  it, else #82's rule 4096+PI1 → 512+PI1 → 4096 → 512 → `status.supports`,
+  `status.currentFormat`, `status.plannedFormat {blockSize, protection,
+  reason}`.
+- **Approval** = a DriveOperation (the apiserver stamps its requester; a
+  Drive annotation would carry no trustworthy identity): `steps: [{op:
+  format, blockSize, protection: none|type1}]`, dry run first. That is the
+  console's contract (stormconsole#131).
+- **Safe format:** PI via FORMAT UNIT FMTPINFO (type 1 = 10b, PFU 0), IMMED,
+  a format-intent event before the first command, TUR progress every 30 s;
+  mpt3sas `ioc_reset_count` of the drive's host watched: a reset → warning
+  event, recorded on the run, and no new format starts until restart;
+  verify block length **and** PROT_EN/P_TYPE after.
+- Live needs: the release on the Dell, the controller on (stormcos#369).
+Steps:
+- [ ] pi.rs parsers + plan + tests · [ ] Linux probe, Drive.supports, route
+- [ ] Step::Format protection, guard, format.rs FMTPINFO + reset watch +
+      verify prot · [ ] kube status supports/currentFormat/plannedFormat,
+      spec.format kept
+- [ ] docs, changelog, build, release, golden; contract on stormconsole#131
+
 ### #81: NetApp DS224C (IOM12) shelf management (P1, 2026-10-10) — in progress
 
 The shelf is on the Dell (C2NR0Q2, mpt3sas host0): `NETAPP DS22412IOM12A`,
