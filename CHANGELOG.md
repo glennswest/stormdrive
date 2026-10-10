@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.30.1] — 2026-10-10
+
+### Fixed
+- A 520-byte drive's first blocks are read through SG: foreign data (ONTAP labels) shows as `contents` and must be named in `destroy` before a format (#81)
+
 ### 2026-10-10 (#81)
 - **fix:** a drive sd cannot read (520/528-byte sectors) was taken as blank: discovery and the worker's destroy guard now read its first 128 blocks through SG at its own sector size (READ(16)); anything not all-zero is its `contents` ("foreign data … not blank; strings: …"), so a NetApp drive with an ONTAP label needs naming in `destroy` before a format, and DrivePolicy skips it (#81)
 - **feat:** shelf drive rows carry `contents` (#81)
