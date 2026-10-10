@@ -471,6 +471,23 @@ keep becomes an issue. Same pass as #7.
       system-data mount → stormcos#456; /sys ro → #54), all tracked;
       changelog; #70 closed
 
+### #84: stormdrive serves no page; its UI is stormconsole's drive plugin (owner BUG, 2026-10-10) — in progress
+
+Owner: "stormdrive should be part of stormui, as a plugin." A component
+serves an API and a components feed, not its own app UI.
+- [ ] remove `web/` (Svelte page, dist, rebuild.sh), the `/`, `/ui`,
+      `/assets/*` routes and the page's auth exceptions (open assets, 401
+      with the shell); `/` answers 404 like any unknown path
+- [ ] tests: page checks out of the test container (short `page`, medium
+      `page_ui`), tls harness, api unit test; `deploy/stormd-ui.toml` keeps
+      the summary card only
+- [ ] docs (README, architecture, presentation, CLAUDE.md module map,
+      version locations), changelog
+- [ ] what moves: rack map/filters/grouping, drive pane, Prepare + Jobs,
+      firmware store, shelf pane (#81), sign-in → stormconsole#131; #55 and
+      #60 move there (closed here), #41 obsolete
+- [ ] build, release, golden
+
 ### #82: 4096+PI1 where offered; probe first; kind; io_errors (P1, 2026-10-10) — in progress
 
 Probe + plan + PI format step shipped with #85 (v0.28.0). Left here:
