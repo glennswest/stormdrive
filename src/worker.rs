@@ -718,8 +718,10 @@ pub struct Request {
 /// What [`guard`] needs beyond the record: the drive's contents (a slab or a
 /// filesystem), mounts, NVMe namespaces sharing the controller.
 pub async fn context(state: &Arc<AppState>, d: &Drive) -> Context {
-    let path = d.path.clone();
-    let holds = tokio::task::spawn_blocking(move || crate::contents::holds(&path)).await.ok().flatten();
+    let (path, name, usable, bs) = (d.path.clone(), d.name.clone(), d.usable, d.block_size);
+    // A drive sd cannot read is read through SG at its own sector size
+    // (#81): foreign data on a 520-byte drive must be named in `destroy`.
+    let holds = tokio::task::spawn_blocking(move || crate::contents::holds_drive(&path, &name, usable, bs)).await.ok().flatten();
     let siblings = if d.kind == DriveKind::NvmeSsd {
         let ctrl = crate::erase::nvme_names(&d.name).map(|c| c.0);
         let inv = state.inventory.read().await;

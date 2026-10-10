@@ -1389,7 +1389,7 @@ async fn shelf_drives(s: &AppState, key: &str) -> Vec<serde_json::Value> {
                 "id": d.id, "name": d.name, "bay": d.location.bay, "vendor": d.vendor, "model": d.model,
                 "serial": d.serial, "firmware": d.firmware, "kind": d.kind, "wwid": d.wwid,
                 "block_size": d.block_size, "physical_block_size": d.physical_block_size,
-                "usable": d.usable, "needs_reformat": d.needs_reformat(),
+                "usable": d.usable, "needs_reformat": d.needs_reformat(), "contents": d.contents,
                 "capacity_bytes": d.capacity_bytes, "membership": d.membership, "designation": d.designation,
                 "activity": d.activity, "health": d.health.status(),
             })

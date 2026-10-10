@@ -347,6 +347,13 @@ pub mod cdb {
             None => [0x12, 0x00, 0x00, hi, lo, 0],
         }
     }
+    /// READ(16) of `blocks` logical blocks from `lba` (#81: a 520-byte
+    /// drive's first blocks, which sd will not read).
+    pub fn read16(lba: u64, blocks: u32) -> [u8; 16] {
+        let l = lba.to_be_bytes();
+        let n = blocks.to_be_bytes();
+        [0x88, 0, l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7], n[0], n[1], n[2], n[3], 0, 0]
+    }
     pub fn read_capacity16(alloc: u32) -> [u8; 16] {
         let a = alloc.to_be_bytes();
         [0x9e, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, a[0], a[1], a[2], a[3], 0, 0]
@@ -585,6 +592,14 @@ impl Device {
     pub fn vpd(&self, page: u8) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; 1024];
         let n = self.io(&cdb::inquiry(Some(page), 1024), Dir::FromDevice, &mut buf, T_SHORT)?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+
+    /// READ(16): `blocks` × `block_len` bytes from `lba`.
+    pub fn read16(&self, lba: u64, blocks: u32, block_len: u32) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; blocks as usize * block_len as usize];
+        let n = self.io(&cdb::read16(lba, blocks), Dir::FromDevice, &mut buf, T_SHORT)?;
         buf.truncate(n);
         Ok(buf)
     }

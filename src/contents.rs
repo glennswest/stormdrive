@@ -166,6 +166,58 @@ pub fn holds(path: &str) -> Option<String> {
     }
 }
 
+/// Blocks read at the start of a drive the kernel cannot read (#81).
+pub const RAW_BLOCKS: u32 = 128;
+
+/// What the first blocks of a drive sd cannot read hold (#81: a NetApp
+/// 520-byte drive, which may carry an ONTAP label). Read through SG at the
+/// drive's own sector size. Blank (all zero) → None. Anything else is
+/// somebody's data — "foreign data (520-byte sectors): first 128 blocks
+/// not blank; strings: "…"" — with up to three printable runs of 6+
+/// characters as a hint of whose. Not a format identification.
+pub fn describe_raw(buf: &[u8], block_len: u32) -> Option<String> {
+    if buf.iter().all(|b| *b == 0) {
+        return None;
+    }
+    let mut strings: Vec<String> = vec![];
+    let mut run = String::new();
+    for &b in buf.iter().chain(std::iter::once(&0u8)) {
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':' | b'/') {
+            run.push(b as char);
+            continue;
+        }
+        if run.len() >= 6 && !strings.contains(&run) && strings.len() < 3 {
+            strings.push(run.clone());
+        }
+        run.clear();
+    }
+    let blocks = buf.len() / block_len.max(1) as usize;
+    let mut s = format!("foreign data ({block_len}-byte sectors): first {blocks} blocks not blank");
+    if !strings.is_empty() {
+        s.push_str(&format!("; strings: {}", strings.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", ")));
+    }
+    Some(s)
+}
+
+/// [`describe_raw`] of a drive through its sg node: READ(16) of the first
+/// [`RAW_BLOCKS`] blocks at `block_len`. None when blank or unreadable.
+pub fn raw_holds(sg: &str, block_len: u32) -> Option<String> {
+    let dev = crate::scsi::Device::open(sg).ok()?;
+    let buf = dev.read16(0, RAW_BLOCKS, block_len).ok()?;
+    describe_raw(&buf, block_len)
+}
+
+/// What a drive holds, whichever way it can be read: through the block
+/// device when the kernel can ([`holds`]), else through SG at the drive's
+/// own sector size ([`raw_holds`]).
+pub fn holds_drive(path: &str, name: &str, usable: bool, block_size: u32) -> Option<String> {
+    if usable {
+        return holds(path);
+    }
+    let sg = crate::scsi::sg_path_for_block(name).unwrap_or_else(|| path.to_string());
+    raw_holds(&sg, block_size)
+}
+
 /// stormraid's superblock (copy A at block 0 of every member; stormraid
 /// `src/format.rs` SB_MAGIC).
 pub const STORMRAID_MAGIC: &[u8; 8] = b"STORMRD1";
@@ -343,6 +395,20 @@ mod tests {
             e[56 + 2 * i..58 + 2 * i].copy_from_slice(&u.to_le_bytes());
         }
         e
+    }
+
+    #[test]
+    fn raw_blocks_of_an_unreadable_drive() {
+        assert_eq!(describe_raw(&vec![0u8; 520 * 4], 520), None, "blank");
+        let mut b = vec![0u8; 520 * 4];
+        b[16..30].copy_from_slice(b"NETAPP_LABEL_A");
+        b[600..606].copy_from_slice(b"RAID_V");
+        b[700..703].copy_from_slice(b"abc");
+        let d = describe_raw(&b, 520).unwrap();
+        assert_eq!(d, "foreign data (520-byte sectors): first 4 blocks not blank; strings: \"NETAPP_LABEL_A\", \"RAID_V\"");
+        let mut c = vec![0u8; 520];
+        c[3] = 0xff;
+        assert_eq!(describe_raw(&c, 520).unwrap(), "foreign data (520-byte sectors): first 1 blocks not blank");
     }
 
     #[test]

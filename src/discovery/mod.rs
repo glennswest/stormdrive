@@ -359,6 +359,12 @@ mod linux {
             };
             let contents = if sectors > 0 {
                 crate::contents::holds(&node(&name))
+            } else if answered && name.starts_with("sd") && block_size > 0 {
+                // sd will not read it (520/528-byte sectors): look through
+                // SG at the drive's own sector size (#81, ONTAP labels).
+                let sg = crate::scsi::sg_path_in(&sys.join("block").join(&name).join("device/scsi_generic").to_string_lossy())
+                    .unwrap_or_else(|| node(&name));
+                crate::contents::raw_holds(&sg, block_size)
             } else {
                 None
             };

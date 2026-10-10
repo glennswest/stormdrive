@@ -149,6 +149,24 @@ INQUIRY revision (`esps[].revision`). Both read 0401 here.
 | Sanitize | SANITIZE (0x48) block / crypto / overwrite, IMMED | worker `sanitize` step |
 | Firmware | WRITE BUFFER (0x3B) mode 0x0E/0x0F (0x07 fallback); READ BUFFER descriptor | firmware update, never automatic |
 
+## Foreign data on a 520-byte drive
+
+The kernel's sd gives a 520-byte drive 0 blocks and never reads it, so
+before #81 stormdrive saw nothing on it and called it blank. NetApp drives
+usually come out of a filer with an ONTAP label. From #81:
+- discovery reads the first 128 blocks through SG, at the drive's own
+  sector size (READ(16); reads only);
+- anything that is not all zeros is the drive's `contents`, for example
+  `foreign data (520-byte sectors): first 128 blocks not blank; strings:
+  "…"`. Up to three printable strings are kept as a hint of whose data it
+  is. This does not identify the format.
+
+The worker's guard reads the drive the same way before a destructive step.
+A drive with foreign data is refused unless `destroy` names it by stable
+id, WWN or serial: the per-drive overwrite approval the owner asked for. A
+DrivePolicy skips such a drive. The shelf's drive rows show `contents` per
+bay.
+
 ## The 520 → 4096 live pass (#30)
 
 A dry run against the live shelf (0.27.1, 2026-10-10) refused nothing. This
