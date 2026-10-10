@@ -469,7 +469,7 @@ keep becomes an issue. Same pass as #7.
       system-data mount → stormcos#456; /sys ro → #54), all tracked;
       changelog; #70 closed
 
-### #84: stormdrive serves no page; its UI is stormconsole's drive plugin (owner BUG, 2026-10-10) — in progress
+### #84: stormdrive serves no page; its UI is stormconsole's drive plugin (owner BUG, 2026-10-10) — DONE (v0.30.0)
 
 Owner: "stormdrive should be part of stormui, as a plugin." A component
 serves an API and a components feed, not its own app UI.
@@ -486,6 +486,8 @@ serves an API and a components feed, not its own app UI.
       #60 move there (closed here), #41 obsolete
 - [x] build VM on 4ae0dc9: clippy -D warnings --locked, 13 test binaries
       (259 unit; #87 was the TLS harness still expecting `/` = 200); v0.30.0
+      (67d925d); golden `golden-stormdrive-d4496a83d83d`, stormcos#426; #84
+      closed
 
 ### #82: 4096+PI1 where offered; probe first; kind; io_errors (P1, 2026-10-10) — in progress
 
