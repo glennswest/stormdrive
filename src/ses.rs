@@ -242,8 +242,8 @@ pub struct Thresholds {
 /// One element's four threshold bytes → [`Thresholds`] (sensors only).
 pub fn decode_thresholds(element_type: u8, b: [u8; 4]) -> Option<Thresholds> {
     let (unit, f): (&str, fn(u8) -> Option<f32>) = match element_type {
-        ET_TEMPERATURE => ("°C", |v| (v != 0).then(|| v as f32 - 20.0)),
-        ET_VOLTAGE | ET_CURRENT => ("% of nominal", |v| (v != 0).then(|| v as f32 / 2.0)),
+        ET_TEMPERATURE => ("°C", |v| (v != 0).then_some(v as f32 - 20.0)),
+        ET_VOLTAGE | ET_CURRENT => ("% of nominal", |v| (v != 0).then_some(v as f32 / 2.0)),
         _ => return None,
     };
     if b == [0; 4] {
