@@ -767,8 +767,11 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` |
 | `GET·POST /api/v1/firmware` | all runs · `{"image","drives"?,"model"?,"force"?}` |
 | `GET /api/v1/firmware/images`, `GET·PUT·DELETE …/images/{name}` | image store; PUT takes the raw image |
-| `GET /api/v1/shelves`, `GET …/shelves/{key}` | SES identity, status, elements, slots, drives |
+| `GET /api/v1/shelves`, `GET …/shelves/{key}` | SES identity, status, elements (with descriptor `attributes`, thresholds), slots, drives (vendor, model, firmware, sector size); `summary`: shelf ID, chassis serial, IOMs, PSUs, connectors, multipath, `problems`; `help_text` (#81, docs/netapp-shelf.md) |
+| `GET /api/v1/shelves/{key}/diagnostics` | the diagnostic pages each ESP answers (page 0x00) |
+| `GET /api/v1/shelves/{key}/diagnostics/{page}?esp=` | one page raw as hex (`0a`, `0x80`): RECEIVE DIAGNOSTIC RESULTS only — `sg_ses -p N -r` |
 | `POST /api/v1/shelves/{key}/locate` | `{"on":bool,"bay"?}` |
+| `POST /api/v1/shelves/{key}/bays/{bay}/power` | `{"on":bool}` — SES DEVICE OFF; a drive operation; refused while the bay's drive is in the fleet, holds data or is busy (#81) |
 | `GET·POST /api/v1/shelves/{key}/firmware` | `{"image","allow_path_loss"?}` — the shelf's IOMs, one at a time (#35); GET: each IOM's revision + the run |
 | `POST /api/v1/shelves/{key}/format` | `{"block_size","all"?}` — out-of-fleet drives that need it |
 | `GET /api/v1/topology` | controller → shelf → drive tree, with HBA firmware |

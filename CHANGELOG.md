@@ -3,6 +3,15 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10
+- **feat:** NetApp DS224C (IOM12) shelf management (#81), from the shelf on the Dell: SES descriptors kept as `attributes` (`KEY=VALUE;`); NetApp vendor elements named (0x83 IOM expander, 0x85 IOM Ethernet); chassis serial from the enclosure element (VPD 0x80 is the IOM's); help text (0x03), thresholds (0x05) and supported pages (0x00) read; `/api/v1/shelves` gains `summary` (shelf ID, IOMs with path seen, PSUs, connectors cabled to which HBA, multipath verdict, `problems`) and `help_text`
+- **feat:** `GET /api/v1/shelves/{key}/diagnostics[/{page}]`: any SES diagnostic page raw, read only (#81)
+- **feat:** `POST /api/v1/shelves/{key}/bays/{bay}/power {on}`: SES DEVICE OFF, a drive operation, refused for a fleet / data-holding / busy drive (#81)
+- **feat:** drives carry their INQUIRY `vendor`; shelf drive rows carry vendor, firmware, kind, physical sector size; a worker dry run lists shelf, bay, vendor, model, serial, firmware, kind, sector size and capacity per drive (#81)
+- **feat:** SAS health reads the grown defect count (READ DEFECT DATA(12) header) — `smart.grown_defects`, `stormdrive_drive_grown_defects`, a history finding when it grows (#81)
+- **fix:** an overall SES element (all zero bytes: "unsupported") no longer reads as a problem: `problems` lists individual elements only (#81)
+- **docs:** docs/netapp-shelf.md — the DS224C element map, why it reads noncritical (bay 5), multipath (two IOMs, one cabled; the SAS9300-4i4e has one external port), every SCSI command stormdrive sends to shelves and drives (#81)
+
 ### 2026-10-09
 - **docs:** README, docs/architecture.md, docs/presentation.md and CLAUDE.md refreshed from the code for everything since 2026-10-02 (v0.18.0 → v0.27.1): every config validation rule, `data_dir` contents, the in-cluster apiserver env and service-account paths; open paths (page assets over TLS only), test/job cancel and resume verbs, health's `reads`, API discovery routes, `block_size{blocks_type="physical"}`; what the golden's registry config sets (`allow_anonymous`, `[kubernetes]` with `controller = false` until stormcos#369) and its `/data/stormcert` and `/data/system-data` mounts; stormview pinned to a rev (#63); `retry/` in the workspace; every suite and integration test; the build VM; the drive model (contents, slab parts, engine finding, enrolable, wear projection, io_errors, not_collected); the firmware redundancy gate is built (#24); the deck's "planned" list now holds only what isn't built; PVCs are served by stormblock's built-in driver; the NetApp shelf's drives are not Seagates (#70)
 

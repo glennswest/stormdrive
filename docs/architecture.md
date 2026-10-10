@@ -459,10 +459,22 @@ logical id. It is refreshed every discovery tick, kept in `AppState`,
 and feeds `/api/v1/shelves`, the topology tree, the components feed, the
 kube `Enclosure`, the summary card and the UI's shelf panel. Events fire
 when a shelf appears/disappears, its overall status moves, or an element
-goes bad or recovers. Control is IDENT (bay and shelf locate LEDs) built
-from a fresh status page, so the generation code matches and no other
-request bit rides along, plus the IOM firmware download (#35, below,
-under Firmware). Each ESP path carries its IOM's revision (sysfs `rev`).
+goes bad or recovers. Control is IDENT (bay and shelf locate LEDs),
+FAULT (#44) and a bay's DEVICE OFF (#81), each built from a fresh status
+page, so the generation code matches and no other request bit rides
+along, plus the IOM firmware download (#35, below, under Firmware). Each
+ESP path carries its IOM's revision (sysfs `rev`).
+
+Since #81 it also reads, when page 0x00 lists them, help text (0x03) and
+thresholds (0x05), and keeps a `KEY=VALUE;` descriptor (NetApp's style) as
+`attributes`. `shelfview.rs` turns a report into what an operator asks
+about: shelf ID, chassis serial, the IOMs (installed, which answers, its
+expander address, whether this node has a path through it), PSUs,
+connectors (cabled to what), a one-line multipath verdict, and
+`problems` — the individual elements that are not OK. Overall elements
+(all zero on a DS224C: "unsupported" = no summary) never count. The
+DS224C's element map and every command sent are in
+[netapp-shelf.md](netapp-shelf.md).
 
 ### HBAs (`hba.rs`)
 
