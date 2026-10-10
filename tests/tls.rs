@@ -148,14 +148,11 @@ async fn nothing_answers_anonymously_but_health() {
     let h: Value = plain.get(d.http("/api/v1/health")).send().await.unwrap().json().await.unwrap();
     assert_eq!(h["reads"]["anonymous"], false);
 
-    // TLS, no credential: health, the page's code, and a 401 page that signs in.
+    // TLS, no credential: health only. No page any more (#84): "/" and
+    // the old asset paths are refused like any read.
     let anon = common::client(&ca, None);
     assert_eq!(status(&anon, &d.https("/api/v1/health"), None).await, 200);
-    assert_eq!(status(&anon, &d.https("/assets/app.js"), None).await, 200);
-    let shell = anon.get(d.https("/")).send().await.unwrap();
-    assert_eq!(shell.status().as_u16(), 401);
-    assert!(shell.headers()["content-type"].to_str().unwrap().starts_with("text/html"));
-    for p in ["/api/v1/drives", "/metrics", "/api/v1/placement", "/api/v1/components", "/api/v1/worker/jobs", "/apis/storage.storm.io/v1/drives", "/api/v1/summary"] {
+    for p in ["/", "/ui/", "/assets/app.js", "/api/v1/drives", "/metrics", "/api/v1/placement", "/api/v1/components", "/api/v1/worker/jobs", "/apis/storage.storm.io/v1/drives", "/api/v1/summary"] {
         let r = anon.get(d.https(p)).send().await.unwrap();
         assert_eq!(r.status().as_u16(), 401, "anonymous {p}");
         assert_eq!(r.json::<Value>().await.unwrap()["code"], "unauthorized", "{p}");
@@ -168,11 +165,11 @@ async fn nothing_answers_anonymously_but_health() {
     // Bearers the apiserver reviews: a viewer reads, and may not write.
     assert_eq!(status(&anon, &d.https("/api/v1/drives"), Some("alice-token")).await, 200);
     assert_eq!(status(&anon, &d.https("/metrics"), Some("alice-token")).await, 200);
-    assert_eq!(status(&anon, &d.https("/"), Some("alice-token")).await, 200);
+    assert_eq!(status(&anon, &d.https("/"), Some("alice-token")).await, 404, "no page (#84)");
     assert_eq!(post_status(&anon, &d.https("/api/v1/drives/nope/designation/spare"), Some("alice-token")).await, 403);
     assert_eq!(status(&anon, &d.https("/api/v1/drives"), Some("bob-token")).await, 403);
     assert_eq!(status(&anon, &d.https("/api/v1/drives"), Some("made-up")).await, 401);
-    // A bad bearer on the page is the API's 401, not the sign-in page.
+    // A bad bearer is the API's 401 envelope.
     let r = anon.get(d.https("/")).bearer_auth("made-up").send().await.unwrap();
     assert_eq!(r.status().as_u16(), 401);
     assert_eq!(r.json::<Value>().await.unwrap()["code"], "unauthorized");

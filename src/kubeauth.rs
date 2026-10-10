@@ -163,17 +163,6 @@ pub fn is_health(path: &str) -> bool {
     matches!(path, "/api/v1/health" | "/healthz")
 }
 
-/// The page's code: the shell (`/`, `/ui`) is answered 401 with the page to
-/// a caller with no credential — it signs in — and the assets are served to
-/// anyone. Neither holds a drive's data.
-pub fn is_page_asset(path: &str) -> bool {
-    path.starts_with("/assets/") || path.starts_with("/ui/assets/")
-}
-
-pub fn is_page_shell(path: &str) -> bool {
-    matches!(path, "/" | "/ui" | "/ui/")
-}
-
 /// The gate's answer for one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -512,8 +501,6 @@ mod tests {
         assert_eq!(read_access("/api/v1/firmware/images"), Access::new("firmwareimages", "get", None));
         assert!(is_health("/api/v1/health") && is_health("/healthz"));
         assert!(!is_health("/api/v1/health/x") && !is_health("/api/v1/drives") && !is_health("/metrics"));
-        assert!(is_page_shell("/") && is_page_shell("/ui/") && !is_page_shell("/api"));
-        assert!(is_page_asset("/assets/app.js") && is_page_asset("/ui/assets/app.css") && !is_page_asset("/api/v1/assets"));
     }
 
     fn gate_with(token: Option<&str>, anonymous: bool) -> Gate {

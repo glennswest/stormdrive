@@ -31,7 +31,6 @@ pub async fn run(env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("shelves", shelves(api)).await;
     r.run("nvme-health", nvme(api)).await;
     r.run("monitor-cost", monitor(api)).await;
-    r.run("page-under-ui", page_ui(api)).await;
     r.run("worker-refusals", worker_refusals(api)).await;
     Ok(())
 }
@@ -71,7 +70,7 @@ async fn writes_need_admin(api: &Api, env: &Env) -> Outcome {
 }
 
 /// Nothing answers anonymously but health (#19, stormcos#81): with no
-/// credential a read is 401 (the page's shell too, which then signs in), a
+/// credential a read is 401 (`/` too: there is no page, #84), a
 /// made-up bearer is 401 whatever the node allows, and plain HTTP answers
 /// health only. A node on `allow_anonymous` (the transition) skips the
 /// anonymous half.
@@ -90,11 +89,8 @@ async fn reads_need_credential(api: &Api) -> Outcome {
         status_is(&r, &[401], &format!("{path} with no credential"))?;
         ensure(r.body["code"] == "unauthorized", format!("{path}: envelope {}", r.text))?;
     }
-    let shell = api.get_as("", None).await?;
-    status_is(&shell, &[401], "the page with no credential")?;
-    ensure(shell.content_type.starts_with("text/html"), "the page's 401 is not the page")?;
-    status_is(&api.get_as("assets/app.js", None).await?, &[200], "the page's code")?;
-    let mut detail = "no credential → 401 on drives, metrics, placement, feed, jobs, page; health and assets open".to_string();
+    status_is(&api.get_as("", None).await?, &[401], "/ with no credential")?;
+    let mut detail = "no credential → 401 on drives, metrics, placement, feed, jobs, /; health open".to_string();
     if let Some(rest) = api.base().strip_prefix("https://") {
         let plain = Api::new(&format!("http://{rest}"), &Default::default(), None, None);
         status_is(&plain.get("api/v1/health").await?, &[200], "health over plain HTTP")?;
@@ -423,17 +419,6 @@ async fn monitor(api: &Api) -> Outcome {
     let stuck = v["stuck"].as_array().map(Vec::len).unwrap_or(0);
     ensure(stuck == 0, format!("stuck drives: {}", v["stuck"]))?;
     Ok(format!("{} samples, {} timeouts, avg {} ms", v["samples"], v["timeouts"], v["avg_sample_ms"]))
-}
-
-/// The page's assets also load under /ui/ (what the page at /ui/ asks for).
-async fn page_ui(api: &Api) -> Outcome {
-    api.need((0, 16, 0), "the web/dist page")?;
-    let ui = api.get("ui/").await?;
-    status_is(&ui, &[200], "GET /ui/")?;
-    let js = api.get("ui/assets/app.js").await?;
-    status_is(&js, &[200], "GET /ui/assets/app.js")?;
-    status_is(&api.get("assets/nope.js").await?, &[404], "GET /assets/nope.js")?;
-    Ok("/ui/ and /ui/assets/app.js served; unknown assets 404".into())
 }
 
 /// The drive worker (#5), without running anything: malformed jobs are

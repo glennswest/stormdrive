@@ -29,7 +29,6 @@ pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("kube-drives", kube_drives(api)).await;
     r.run("events", events(api)).await;
     r.run("hbas", hbas(api)).await;
-    r.run("page", page(api)).await;
     r.run("metrics", metrics(api)).await;
     Ok(())
 }
@@ -263,19 +262,6 @@ async fn hbas(api: &Api) -> Outcome {
     let hbas = v["hbas"].as_array().ok_or_else(|| Why::Fail("no hbas array".into()))?;
     ensure(hbas.iter().all(|h| !s(h, "pcie_addr").is_empty()), "an HBA with no PCIe address")?;
     Ok(format!("{} HBAs", hbas.len()))
-}
-
-/// The page and its two assets are served.
-async fn page(api: &Api) -> Outcome {
-    let index = api.get("").await?;
-    ensure(index.status == 200 && index.content_type.starts_with("text/html"), format!("GET /: {} {}", index.status, index.content_type))?;
-    api.need((0, 16, 0), "the web/dist page")?;
-    ensure(index.text.contains("./assets/app.js"), "the page does not load ./assets/app.js")?;
-    for (asset, ty) in [("assets/app.js", "text/javascript"), ("assets/app.css", "text/css")] {
-        let a = api.get(asset).await?;
-        ensure(a.status == 200 && a.content_type.starts_with(ty) && !a.text.is_empty(), format!("GET /{asset}: {} {}", a.status, a.content_type))?;
-    }
-    Ok("page, app.js, app.css".into())
 }
 
 /// `/metrics` (#18) is Prometheus text, and every drive the node has is in

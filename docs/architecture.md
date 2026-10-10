@@ -12,7 +12,7 @@ and how the golden ships are in the [README](../README.md).
 
 ```
                 stormd (per-container supervisor + newer UI)
-                   │  [process.ui] proxy + summary card
+                   │  [process.ui] summary card
                    ▼
 ┌──────────────────────────────┐        ┌─────────────────────────────┐
 │  stormdrive  :9092           │  REST  │  stormblock  :9090          │
@@ -429,8 +429,7 @@ half that.
   - a pull disappears on the next pass;
   - a drive pushed into the same slot `replaces` the missing one.
 
-  Poller phasing at 160 drives and the page at 160 rows have their own
-  tests. Real LEDs, hotplug interrupts and NVMe admin commands wait for
+  Poller phasing at 160 drives has its own test. Real LEDs, hotplug interrupts and NVMe admin commands wait for
   real hardware: the NetApp shelf (#30).
   `DELETE /api/v1/drives/{id}` forgets a missing, out-of-fleet drive's
   record and trend, so years of swaps in 160 bays do not pile up. The feed
@@ -457,7 +456,7 @@ elements), element descriptors (0x07: names), additional element status
 `ShelfReport` per shelf, merging the two IOMs of a dual-path shelf by
 logical id. It is refreshed every discovery tick, kept in `AppState`,
 and feeds `/api/v1/shelves`, the topology tree, the components feed, the
-kube `Enclosure`, the summary card and the UI's shelf panel. Events fire
+kube `Enclosure` and the summary card. Events fire
 when a shelf appears/disappears, its overall status moves, or an element
 goes bad or recovers. Control is IDENT (bay and shelf locate LEDs),
 FAULT (#44) and a bay's DEVICE OFF (#81), each built from a fresh status
@@ -607,8 +606,9 @@ kept.
     `restart` warning event names the drive. `draining` (the fleet loop
     resumes it) and `missing` are left alone. `main` awaits all of this
     before the monitor and the API start.
-- The page submits and follows jobs (Prepare, Jobs, #38); stormconsole
-  sees the `prep` metric in the feed.
+- stormconsole sees the `prep` metric in the feed; jobs are submitted and
+  followed through the API or DriveOperations (the page that did it is
+  gone, #84).
 
 ### Cost at enrol: metadata only (#72)
 
@@ -844,9 +844,8 @@ The route table, request bodies and handle resolution are in the
   the peer (TLS or not, the certificate's CN/O) rides into the guard as
   `ConnectInfo<Peer>`. Plain HTTP answers health only, so stormd's liveness
   probe is unchanged. Reads need the admin token, a node-CA certificate, or
-  a bearer allowed `get` on `storage.storm.io` (`storage-viewer`); the
-  page's shell answers 401 with the page so it can sign in, its assets are
-  open. `[api] allow_anonymous` is the rollout: plain HTTP and
+  a bearer allowed `get` on `storage.storm.io` (`storage-viewer`); nothing
+  else is open (there is no page, #84). `[api] allow_anonymous` is the rollout: plain HTTP and
   credential-less reads served, sent credentials still checked.
 - **Drives and operations as Kubernetes objects (#45, `controller.rs`).**
   With an apiserver, a loop (every `kubernetes.interval_secs`) writes one
@@ -910,70 +909,18 @@ The route table, request bodies and handle resolution are in the
   0x02 counters beyond health (spare threshold, data units, power cycles,
   unsafe shutdowns, error-log entries) are kept on `HealthReport.nvme`.
 
-### The page (`web/`, #6)
-Built for hundreds of drives: a stormview `DataGrid` whose top rows are
-groups, with each group's drives in a nested grid. The groups are:
+### No page (#84)
 
-- one per shelf (by shelf key; an SES shelf with no drives still shows);
-- one per HBA with direct-attached drives, plus a card with no drives at
-  all;
-- NVMe on PCIe;
-- unlocated.
-
-A collapsed group renders one row. Rows are keyed by id, so the 4 s poll
-diffs cells instead of rebuilding a table. That rebuild was the old
-vanilla page's problem: every 4 s the whole table went through `innerHTML`,
-which reset open selects and scroll.
-
-DataGrid cells are text, `health` (HealthDot), `metrics` (toned values) or
-`actions` (buttons). So a row stays compact, and everything else lives in a
-side pane opened by clicking the row. The drive pane holds designation,
-overcommit, tests, format, firmware, locate, usage, drain and progress. The
-shelf pane shows SES elements and has locate, reformat and Prepare shelf.
-The HBA pane shows firmware, BIOS and NVDATA.
-
-**Selection:** a ticked group means every drive it shows under the current
-filter (`selectedDrives` in `web/src/lib/model.js`). The bulk bar sends
-only the eligible drives and says how many it skipped:
-
-- format (and every other preparation step) goes to the drive worker
-  through the Prepare pane (below); firmware goes through the batch
-  endpoint;
-- a bulk smoke test or read scan is one worker job (`test` step, #40): it
-  runs to the end with the tab closed, and Jobs shows each verdict;
-- designation and locate are per-drive calls, 8 at a time.
-
-**Prepare and Jobs (#38).** `Prepare.svelte` builds a worker request from
-the selection (`{drives}` from the bulk bar or a drive, `{shelf}` or
-`{shelf, unusable}` from the shelf pane) and the steps
-(`web/src/lib/worker.js`, unit-tested). It always previews first: a
-`dry_run` (gated as a read) returns `runnable` and `refused`
-with reasons. Refusals that say a drive *holds* a slab or a filesystem are
-the ones `destroy` lifts. The pane asks for each such drive's serial, typed
-exactly (a /dev name never counts, as on the server), and sends the
-serials it matched as `destroy`. Any change to the steps throws the preview
-away. `Jobs.svelte` lists `/api/v1/worker/jobs` (polled with the rest), open
-first, with per-drive state, step, progress and error, Cancel and Resume.
-The page's formats used to call `/api/v1/format`; they go through the
-worker now, so they survive a restart and get the destroy guard.
-`/api/v1/format` stays for API callers.
-
-**Sign in (#47, #19).** `lib/api.js` keeps a bearer in `sessionStorage`
-and sends it on every request (reads need one since #19). Errors keep the
-HTTP status and the envelope's `code`; a read refused 401 opens the sign-in
-box instead of an error banner, and a 403 reads "needs storage-admin". While `/api/v1/health` → `writes.gate` is `enforce` and no
-bearer is set, write controls sit in a `<fieldset disabled>` (the bulk
-bar's actions, the drive and shelf panes, firmware upload) and row actions
-are off. The server decides regardless.
-
-The eligibility rules in `model.js` mirror `src/drive.rs`'s guards so the
-page offers only what the server would accept. The server still checks
-every request.
-
-`web/dist` is committed (stormd's and stormconsole's convention), built on
-dev by `web/rebuild.sh`, and embedded by `include_str!`. Asset URLs are
-relative, so the same build works at `/`, `/ui/` and under stormd's
-`/ui/proxy/stormdrive/`.
+stormdrive served its own Svelte page (`web/`, #6, #38, #47) until 0.30.0.
+The owner's rule is that a component serves an API and a components feed,
+not an app UI ("stormdrive should be part of stormui, as a plugin"), and
+that management is declared in `storage.storm.io` resources. So the page is
+gone. `/`, `/ui` and `/assets/*` are unknown paths: 401 without a
+credential, 404 with one. Its views (shelf/HBA grouping, filters, the drive
+and shelf panes, bulk actions, Prepare and Jobs, the firmware store, offered
+drives, IOM firmware) belong to stormconsole's `drive` plugin
+(stormconsole#131), over this API, the feed and the Drive / DriveOperation /
+DrivePolicy resources.
 
 ### The components feed (`/api/v1/components`, `/ws/components`)
 Every drive, shelf and HBA as a stormview `ComponentSummary`, so stormd,
@@ -1319,7 +1266,7 @@ convention), and CLI flags override the file.
 - **Elsewhere:** the systemd unit in `deploy/systemd/` (After
   network-online and stormblock-target, runs fine without stormblock), or a
   stormd `[[process]]` with the `[process.ui]` block in
-  `deploy/stormd-ui.toml` for the dashboard card and proxied page.
+  `deploy/stormd-ui.toml` for the dashboard card (no page since #84).
 - It needs root, or at least CAP_SYS_ADMIN + CAP_SYS_RAWIO, for SG_IO and
   the NVMe admin ioctl, and a writable sysfs for LEDs and rescans.
 

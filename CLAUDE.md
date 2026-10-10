@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.29.0** — version locations: `Cargo.toml`, `Cargo.lock`, `web/package.json` (+ its lock), this file.
+**Version: 0.29.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -112,7 +112,8 @@ src/
                   NVMe, HBAs, shelves, bays; diff vs the previous boot (#64)
   placement.rs    where every drive + shelf is, hashed generation (#10)
   components.rs   stormview feed: drives, shelves, HBAs with actions
-  api/mod.rs      axum REST :9092, summary card, embeds web/dist (the page)
+  api/mod.rs      axum REST :9092, summary card (no page since #84: the UI is
+                  stormconsole's drive plugin)
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} (stormblock#80)
   kubeapi.rs      apiserver client (reqwest): TokenReview, SAR, objects, Events (#45)
   kubeauth.rs     the write gate: classify → bearer review / admin token, audit (#45)
@@ -123,9 +124,6 @@ test/             test container (#11): /test short|medium|long, pick.rs = safet
 tests/            suites.rs (the three suites against this daemon on every
                   cargo test), kube.rs (stand-in apiserver: gate, controller,
                   DrivePolicy), restart.rs, tls.rs, chassis160.rs (#31)
-web/              the page: Svelte 5 + stormview DataGrid (#6); web/dist is
-                  committed and embedded; rebuilt through sc-build with
-                  web/rebuild.sh (`SC_BUILD_VM=1` on a build VM)
 ```
 
 Not in the tree (design only, see docs/architecture.md): a sequencer, a
@@ -475,13 +473,13 @@ keep becomes an issue. Same pass as #7.
 
 Owner: "stormdrive should be part of stormui, as a plugin." A component
 serves an API and a components feed, not its own app UI.
-- [ ] remove `web/` (Svelte page, dist, rebuild.sh), the `/`, `/ui`,
+- [x] remove `web/` (Svelte page, dist, rebuild.sh), the `/`, `/ui`,
       `/assets/*` routes and the page's auth exceptions (open assets, 401
       with the shell); `/` answers 404 like any unknown path
-- [ ] tests: page checks out of the test container (short `page`, medium
+- [x] tests: page checks out of the test container (short `page`, medium
       `page_ui`), tls harness, api unit test; `deploy/stormd-ui.toml` keeps
       the summary card only
-- [ ] docs (README, architecture, presentation, CLAUDE.md module map,
+- [x] docs (README, architecture, presentation, CLAUDE.md module map,
       version locations), changelog
 - [ ] what moves: rack map/filters/grouping, drive pane, Prepare + Jobs,
       firmware store, shelf pane (#81), sign-in → stormconsole#131; #55 and
@@ -585,8 +583,8 @@ Steps:
   commit after d3ed8c2). NOT yet built: two VM builds were lost to a
   stormcentral self-update drain/restart. Next: `SC_BUILD_VM=1 sc-build
   'cargo clippy --workspace --all-targets -- -D warnings && cargo test
-  --workspace'` (fix what it finds), `SC_BUILD_VM=1 web/rebuild.sh` (commit
-  web/dist), then `web/rebuild.sh --check`, comment + golden
+  --workspace'` (fix what it finds), comment + golden (the page and its
+  shelf pane went with #84)
 - [ ] sc-build, release, golden; the live format waits on #82 (which
       format: 4096+PI probe) and a storage-admin bearer → #30
 

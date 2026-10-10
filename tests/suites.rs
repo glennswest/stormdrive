@@ -3,7 +3,7 @@
 //! stormblock off and discovery matching no disk (the build box's drives are
 //! not ours to test, and a harness must not depend on them). What it proves
 //! is the API contract the suites check — errors, refusals, the feed, kube,
-//! placement, the page, a long wave — and that the suites report pass/skip
+//! placement, a long wave — and that the suites report pass/skip
 //! correctly and exit 0. On a test machine the same suites meet real drives.
 //! Served over TLS from a CA minted here (#19), as on a node.
 

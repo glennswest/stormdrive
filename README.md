@@ -11,9 +11,11 @@ volumes; stormdrive curates the drives. stormdrive owns everything **below
 the node** (HBA, shelf, bay, PCIe slot). stormblock and stormstorage own the
 node and everything above it.
 
-One static binary, `stormdrive`, per node. It serves a REST API, an embedded
-web page, a stormview components feed and Kubernetes-shaped resources, all on
-**:9092**.
+One static binary, `stormdrive`, per node. It serves a REST API, a stormview
+components feed and Kubernetes-shaped resources, all on **:9092**. It serves
+no page of its own (#84): the UI for drives and shelves is stormconsole's
+`drive` plugin, which reads this API, the feed and the `storage.storm.io`
+resources.
 
 ```
             sysfs · SG_IO · NVMe admin ioctl · netlink uevents
@@ -326,42 +328,13 @@ are listed under [Not yet](#not-yet).
     drive serving data (fleet, or holding a slab) has no second path, e.g.
     a single-pathed shelf, unless `allow_path_loss`. `GET …/firmware` gives
     each IOM's revision (sysfs `rev`) and the run.
-- **The page** (`web/`, #6). A Svelte 5 page built on stormview's
-  DataGrid, for hundreds of drives:
-  - **Groups:** each shelf is a top-level row, then each HBA's direct
-    drives, then NVMe, then unlocated drives. A group's drives are a nested
-    grid that can be sorted, and a collapsed shelf is one row.
-  - **Filters:** quick filters (attention, needs reformat, out of fleet,
-    fleet, busy) and a text filter on name, serial, model, `bay 4`, shelf or
-    host.
-  - **Detail pane:** clicking a drive or shelf opens it. The drive pane
-    holds designation, overcommit, tests, format, firmware, locate, usage,
-    drain and progress. The shelf pane shows SES elements and has locate,
-    reformat and Prepare shelf.
-  - **Bulk bar:** acts on the ticked drives; ticking a group means every
-    drive it shows. It offers tests, locate, designation, Prepare, format →
-    4096/512 and firmware.
-  - **Prepare** (the drive worker, #38): every format on the page (bulk,
-    shelf, drive) and the rest of drive preparation go through it. Pick the
-    steps (format 4096/512, sanitize block/crypto/overwrite or ATA
-    security erase, partition,
-    enroll with a tier, role), preview them as a dry run (which drives run,
-    which are refused and why), type the serial of each drive that holds a
-    slab or a filesystem before it may be destroyed, then run.
-  - **Jobs:** every worker job, open ones first. Each drive shows its
-    state, step, progress and error, with Cancel (what has not started)
-    and Resume (what a restart interrupted). The state column shows each
-    out-of-fleet drive's `prep` phase (unusable / ready).
-  - **Sign in** (#47, #19): every write needs a storage-admin since
-    0.18.0, and every read a credential since 0.21.0. Paste a bearer (`oc
-    whoami -t`); it is kept in this tab's `sessionStorage` and sent as
-    `Authorization: Bearer` on every request. Asked with no credential,
-    the node answers the page itself with a 401, and a read refused 401
-    opens the sign-in box. While the node enforces (`writes.gate` in
-    `/api/v1/health`) and no bearer is set, write controls are disabled,
-    and a 403 reads "needs storage-admin".
-  - It polls every 4 s, and rows are keyed, so a refresh updates cells
-    instead of rebuilding the table.
+- **No page** (#84, owner: "stormdrive should be part of stormui, as a
+  plugin"). The Svelte page that lived in `web/` (#6, #38, #47) is gone in
+  0.30.0; `/`, `/ui` and `/assets/*` are unknown paths now (401 without a
+  credential, 404 with one). Its views move to stormconsole's `drive`
+  plugin (stormconsole#131): shelf/HBA grouping and filters, the drive and
+  shelf panes, the bulk bar, Prepare and Jobs (the drive worker), the
+  firmware image store, offered drives (#55) and shelf IOM firmware (#60).
 - **Events** (`src/events.rs`). A ring of the last 4096 events, numbered by
   `seq`. The newest 512 are kept in `<data_dir>/events.json` (#25), so a
   restart keeps them, the sequence continues, and a `restart` event says
@@ -426,8 +399,8 @@ stormdrive's suites follow stormcentral's
 
 | Suite | Budget | What it proves |
 |---|---|---|
-| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled, or the reason it is not; slabs on each disk vs the engine's report (`drive-slabs`, #58); system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); card, placement (+304), feed, kube Drives, events, HBAs, the page, `/metrics` (every drive by serial) |
-| `medium` | < 30 min | 404 envelope, malformed requests refused (400); reads with no or a bogus credential refused (`reads-need-a-credential`, #19); writes without a storage-admin refused (`writes-need-storage-admin`, #45); malformed worker jobs refused, dry run only (`worker-refusals`); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost, page under `/ui/` |
+| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled, or the reason it is not; slabs on each disk vs the engine's report (`drive-slabs`, #58); system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); card, placement (+304), feed, kube Drives, events, HBAs, `/metrics` (every drive by serial) |
+| `medium` | < 30 min | 404 envelope, malformed requests refused (400); reads with no or a bogus credential refused (`reads-need-a-credential`, #19); writes without a storage-admin refused (`writes-need-storage-admin`, #45); malformed worker jobs refused, dry run only (`worker-refusals`); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost |
 | `long` | the night window | waves until the window ends: 4 + drives/8 API readers (4–64) and a smoke test on every idle, usable drive; p50/p95, errors, drives left busy, stuck or timed-out health reads, event growth. A wave slower than 2× the first (+250 ms), or leaving residue, fails |
 
 **Never destructive.** The suites run on real machines with real drives,
@@ -445,25 +418,6 @@ daemon, started on the build box with stormblock off and no drives. That
 proves the API contract and the reporting on every sc-build. The
 drive-touching checks skip there; they meet real drives on the test machines
 (`stormcentral test run stormdrive <suite>`).
-
-**The page** is Svelte + Vite in `web/`. Its build, `web/dist`, is committed
-and embedded with `include_str!`, so cargo alone builds the daemon. The
-build runs through `sc-build` (prefix `SC_BUILD_VM=1` for a build VM),
-never on this machine:
-
-```bash
-git push && web/rebuild.sh          # npm install + npm test + vite build + page test → web/dist, web/package-lock.json
-git push && web/rebuild.sh --check  # npm ci, the same tests, fail unless the committed web/dist matches
-```
-
-`npm test` runs `node --test` over `web/src/lib/model.js`: grouping,
-filters, group-means-its-drives selection, and the eligibility rules that
-mirror the server's guards. `npm run test:page` loads the built
-`dist/assets/app.js` in jsdom against a mocked API with 212 drives (two
-24-bay shelves, 4 direct, 160 NVMe). It checks that the page groups,
-expands, selects, opens the pane and filters, and that a row keeps its
-element across the 4 s refresh. stormview comes from GitHub `main`, pinned by
-`web/package-lock.json`.
 
 ## Running it
 
@@ -605,11 +559,7 @@ CA (the node CA vouches, nothing more is asked); or a Kubernetes bearer the
 apiserver allows `get` on `storage.storm.io` (`drives`, `enclosures`,
 `driveoperations` for jobs, `firmwareimages`; the release's `storage-viewer`
 role). No credential, or one nobody knows → 401; a known user without the
-role → 403. Health is open on any connection; the page's code
-(`/assets/*`, `/ui/assets/*`) is open over TLS (plain HTTP gets 403
-`tls_required` for it like anything else); the page's
-shell (`/`, `/ui`), asked with no credential, is answered 401 *with the
-page*, which then signs in.
+role → 403. Health is open on any connection; nothing else is.
 
 **Writes.** Owner: "non admins cant format drives etc." (stormcos#250).
 **Every write needs a storage-admin** (`src/kubeauth.rs`):
@@ -740,9 +690,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 
 | Method and path | What |
 |---|---|
-| `GET /api/v1/health`, `/healthz` | `{status, version, node, writes, reads}` — liveness, how writes are decided, whether anonymous reads are served; the only paths open over plain HTTP, and with no credential besides the page's assets |
-| `GET /`, `/ui`, `/ui/` | the embedded page; works behind a proxy prefix (401 with the page when no credential) |
-| `GET /assets/app.{js,css}`, `/ui/assets/…` | the page's two assets (open over TLS) |
+| `GET /api/v1/health`, `/healthz` | `{status, version, node, writes, reads}` — liveness, how writes are decided, whether anonymous reads are served; the only paths open over plain HTTP |
 | `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
 | `GET /api/v1/monitor` | health-poll cost, stuck drives, last discovery pass |
 | `GET /metrics` | Prometheus text: per-drive SMART, temperature, wear, errors, last poll; shelf sensors; the poller (see below) |
@@ -975,8 +923,6 @@ Design only; the code does not do them:
 
 - a node-wide sequencer for every disruptive operation (the firmware
   redundancy gate itself is #24, built)
-- the page: shelf (IOM) firmware (#60, API only) and offered drives (#55,
-  feed only)
 - waiting on your decision: the drive worker's scheduling default (#37)
 - waiting on your decision:
   - thermal actuation (#32)

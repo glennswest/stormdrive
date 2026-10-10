@@ -9,7 +9,7 @@ description: Physical drive management for a storage node — purpose and functi
 <!--
 Render: npx @marp-team/marp-cli docs/presentation.md          (HTML)
         npx @marp-team/marp-cli --pdf docs/presentation.md    (PDF)
-Every claim here is checkable against the code as of v0.27.1 (src/, web/)
+Every claim here is checkable against the code as of v0.30.0 (src/)
 and the docs rewritten from it (#7). README.md is the full reference;
 docs/architecture.md says how each part works.
 -->
@@ -27,7 +27,7 @@ section.dense li { margin: 0; }
 **Knows what a node's drives are, and hands them to stormblock**
 
 Physical drive management for the Storm ecosystem: one Rust daemon per
-storage node, REST + page + feed on **:9092**
+storage node, REST + feed on **:9092**; its UI is stormconsole's drive plugin
 
 v0.27.1 · github.com/glennswest/stormdrive
 
@@ -61,7 +61,7 @@ Group **storage** (stormcentral's relationships graph).
 | Direction | Component | How, in the code |
 |---|---|---|
 | depends on | **stormblock** | engine API `:9090` (Bearer token): register drives, labels, slabs, health, drain, overcommit |
-| depends on | **stormview** | crate: the components feed (`/api/v1/components`); npm: the page's DataGrid |
+| depends on | **stormview** | crate: the components feed (`/api/v1/components`) |
 | depends on | **stormd** | the golden is a stormd container; `[process.ui]` card for non-stormcos installs |
 | used by | **stormcos** | ships the golden and starts it on every node profile |
 | used by | **stormstorage** | fleet policy; names drives by the identity stormdrive uses (via stormblock's `DriveRef`), and stormdrive's labels reach it through stormblock |
@@ -83,12 +83,12 @@ stormblock's built-in driver; stormdrive only says where their drives are.
      │                         ▼
      │             inventory.json (drives, designations, trends)
      │                         │
-     │   jobs: tests · FORMAT UNIT · firmware ◀── operator (page / API / feed)
+     │   jobs: tests · FORMAT UNIT · firmware ◀── operator (console / API / feed)
      │                         │
      │   fleet loop ───────────┴──▶ stormblock :9090
      │   labels · health · drain→retire · overcommit · auto-add
      ▼
- API :9092 ── REST · page (web/) · stormview feed · /apis/storage.storm.io/v1
+ API :9092 ── REST · stormview feed · /apis/storage.storm.io/v1
 ```
 
 Lifecycle is three separate fields:
@@ -176,14 +176,9 @@ Lifecycle is three separate fields:
   - Out-of-fleet drives in parallel, fleet drives one at a time, each
     waiting until its volumes are redundant (#24).
   - Shelf IOM firmware through SES, one IOM at a time (#35, API only).
-- **The page** (v0.16.0, Svelte + stormview DataGrid), built for hundreds of
-  drives:
-  - shelves, HBAs and NVMe are rows, each with its drives nested;
-  - filters, a detail pane, and a bulk bar where ticking a shelf means its
-    drives;
-  - Prepare (dry run, destroy by serial) and Jobs for the drive worker;
-    sign in with a storage-admin bearer (#38, #47);
-  - checked against 212 drives, and the worker flow, in jsdom tests.
+- **No page of its own** (#84, v0.30.0): the UI is stormconsole's
+  `drive` plugin, over the API, the feed and the `storage.storm.io`
+  resources.
 
 ---
 
@@ -199,7 +194,6 @@ Lifecycle is three separate fields:
 | Watchers | `/api/v1/events?since=` · `/api/v1/monitor` (poll cost) · `/api/v1/history` · `/api/v1/assets` (system-data, #64) |
 | Renderers | `/api/v1/components` + `/ws/components` (stormview feed; body-free action routes) |
 | Kubernetes-shaped | `/apis/storage.storm.io/v1/{drives,enclosures}`, `?watch=1`, PATCH a Drive |
-| The page | `/`, `/ui`, `/ui/`, `/assets/app.{js,css}`; works under stormd's proxy prefix |
 
 Errors are `{error, code}`, stormblock's shape. `/metrics` serves
 per-drive SMART, temperature, wear and errors in Prometheus text (#18).
@@ -254,7 +248,7 @@ health (#19) — once the golden drops its `allow_anonymous` transition (#56).
 - **Updated** only as a golden composed into a stormcos release; nodes
   clone the release copy-on-write, and a commit alone reaches nothing.
 - **Built** with `sc-build` (a build VM since dev.g8.lo retired): cargo
-  only, since `web/dist` is committed (`web/rebuild.sh` rebuilds it).
+  only.
 - **Remote calls retry** by idempotency, with backoff and a deadline (#71).
 - **Reached** at `drive.<node>` (HTTPRoute), in stormconsole's drive view,
   and directly on `:9092`.
@@ -267,7 +261,6 @@ health (#19) — once the golden drops its `allow_anonymous` transition (#56).
 |---|---|
 | Drive worker scheduling default | decision #37 |
 | A vendor firmware image source | decision #29 |
-| The page: shelf IOM firmware · offered drives | #60 · #55 |
 | Configuration kept across installs · what was done to a drive in its history | #67 · #68 |
 | Thermal actuation · drive crypto · burn-in before joining | your decision: #32 · #33 · #34 |
 
@@ -279,7 +272,7 @@ health (#19) — once the golden drops its `allow_anonymous` transition (#56).
 
 - **v0.27.1** (October 2026). Each release's golden and release request
   are recorded in CLAUDE.md's work plan and in CHANGELOG.md.
-- **Tested:** 241 unit tests, model/page tests (212 drives), and the
+- **Tested:** 241 unit tests, and the
   daemon run against a stand-in apiserver, a seeded restart, TLS, and a
   simulated 160-bay chassis, on a build VM.
   The test containers (short, medium, long) run against the real daemon

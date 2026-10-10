@@ -11,7 +11,7 @@ use crate::inventory::Inventory;
 use crate::stormblock::StormBlockClient;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -22,12 +22,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub mod kube;
-
-// The page (#6): a Svelte + stormview build, committed as web/dist so a
-// cargo-only build needs no node. Rebuilt on dev (README, "The page").
-const INDEX_HTML: &str = include_str!("../../web/dist/index.html");
-const APP_JS: &str = include_str!("../../web/dist/assets/app.js");
-const APP_CSS: &str = include_str!("../../web/dist/assets/app.css");
 
 pub struct AppState {
     pub config: Config,
@@ -183,18 +177,8 @@ impl IntoResponse for ApiError {
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        // The page computes its own API base (mkube's proxy-prefix pattern),
-        // so it works served from any of these and through stormd's
-        // /ui/proxy/stormdrive/ — no redirects, which a proxied iframe
-        // could not follow.
-        .route("/", get(ui_index))
-        .route("/ui", get(ui_index))
-        .route("/ui/", get(ui_index))
-        // Asset URLs are relative, so "/" and "/ui" load /assets/… and
-        // "/ui/" loads /ui/assets/…; through stormd's proxy both arrive as
-        // /assets/….
-        .route("/assets/{file}", get(ui_asset))
-        .route("/ui/assets/{file}", get(ui_asset))
+        // No page (#84): the UI is stormconsole's drive plugin, over this
+        // API, the components feed and the storage.storm.io resources.
         .route("/api/v1/health", get(health))
         // The conventional probe path (#19): open on plain HTTP as health.
         .route("/healthz", get(health))
@@ -284,7 +268,7 @@ async fn guard(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    use crate::kubeauth::{audit_line, classify, is_health, is_page_asset, is_page_shell, read_access, Credential, Decision};
+    use crate::kubeauth::{audit_line, classify, is_health, read_access, Credential, Decision};
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
     if is_health(&path) {
@@ -300,9 +284,6 @@ async fn guard(
             message: "plain HTTP answers /api/v1/health only: use https://, verified against the node CA".into(),
         }
         .into_response();
-    }
-    if is_page_asset(&path) {
-        return next.run(req).await;
     }
     let bearer = req
         .headers()
@@ -331,9 +312,6 @@ async fn guard(
             Decision::Allowed(r) | Decision::AuditOnly(r, _) => {
                 req.extensions_mut().insert(r);
                 next.run(req).await
-            }
-            Decision::Refused(401, _, _) if is_page_shell(&path) && cred.bearer.is_none() => {
-                (StatusCode::UNAUTHORIZED, Html(INDEX_HTML)).into_response()
             }
             Decision::Refused(code, _, why) => refused(code, why),
         };
@@ -442,41 +420,6 @@ async fn placement_one(
     let mut v = crate::placement::drive_record(d);
     v["node"] = json!(s.node_name);
     Ok(Json(v))
-}
-
-async fn ui_index() -> Html<&'static str> {
-    Html(INDEX_HTML)
-}
-
-fn asset(file: &str) -> Option<(&'static str, &'static str)> {
-    match file {
-        "app.js" => Some(("text/javascript; charset=utf-8", APP_JS)),
-        "app.css" => Some(("text/css; charset=utf-8", APP_CSS)),
-        _ => None,
-    }
-}
-
-async fn ui_asset(Path(file): Path<String>) -> Response {
-    match asset(&file) {
-        Some((ty, body)) => ([(axum::http::header::CONTENT_TYPE, ty)], body).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The committed build is whole: the page names the two assets, relative
-    /// (so it works under a proxy prefix), and both are served.
-    #[test]
-    fn page_and_assets_are_embedded() {
-        assert!(INDEX_HTML.contains("src=\"./assets/app.js\""));
-        assert!(INDEX_HTML.contains("href=\"./assets/app.css\""));
-        assert!(asset("app.js").is_some_and(|(t, b)| t.starts_with("text/javascript") && !b.is_empty()));
-        assert!(asset("app.css").is_some_and(|(t, b)| t.starts_with("text/css") && !b.is_empty()));
-        assert!(asset("../Cargo.toml").is_none());
-    }
 }
 
 async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
