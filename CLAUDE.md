@@ -471,6 +471,40 @@ keep becomes an issue. Same pass as #7.
       system-data mount → stormcos#456; /sys ro → #54), all tracked;
       changelog; #70 closed
 
+### #81: NetApp DS224C (IOM12) shelf management (P1, 2026-10-10) — in progress
+
+The shelf is on the Dell (C2NR0Q2, mpt3sas host0): `NETAPP DS22412IOM12A`,
+logical id 500a09800e359135, ESP 500a09800853bf4c (/dev/sg18), 17 drives
+(12 ST1200MM0098 at 520 in bays 0-7, 10-13; 5 X425_HCBEP1T2A10 at 512 in
+8, 9, 14-16). Read live from 0.27.1's `/api/v1/shelves` (anonymous reads on):
+- "unsupported" PSU/slot/vendor entries are the **overall** elements (all
+  zero bytes = no summary), not hardware. PSU 0 ok (SN/FW/PN/913 W in its
+  descriptor), PSU 1 not installed. Bay 5 (sdg) noncritical, flags clear.
+- Descriptors are NetApp `KEY=VALUE;` strings: enclosure `ID=02` (shelf
+  ID), `SN=SHFGB…` (the shelf serial, which VPD 0x80 doesn't give); ESC
+  electronics = the two IOMs (SN, FW=0401, PN, byte 2 bit 0 = the one
+  answering); SAS connector `AA=` = what is cabled (only connector 0, to
+  the HBA 500605b00dacc340); vendor 0x83 = IOM expander (`SA=`, `FPI=`),
+  0x85 = IOM Ethernet MAC (`OM=`); 0x8c/0x8d/0x8e: no descriptor, raw only.
+- So: both IOMs installed, one cabled (IOM A, expander …bf4d). Dry run
+  (shelf, format 4096) refuses nothing: 17 runnable.
+Steps:
+- [ ] ses.rs: descriptor `attributes`, NetApp vendor element names,
+      overall elements kept out of problems; `problems` (why noncritical);
+      IOMs (installed / answering / path seen), connectors (cabled, to
+      what), PSUs, shelf ID + serial from the enclosure element
+- [ ] pages 0x03 help text, 0x05 thresholds, 0x00 supported pages; raw
+      read `GET /api/v1/shelves/{key}/diagnostics[/{page}]`
+- [ ] bay power off/on (slot DEVICE OFF), gated like a drive operation,
+      refused for a data-serving drive
+- [ ] drive `vendor` (INQUIRY); shelf drive rows + dry run carry bay,
+      vendor, model, firmware, sector size
+- [ ] grown defect count (READ DEFECT DATA(12) GLIST length) in SAS health
+- [ ] docs/netapp-shelf.md: every SAS/SCSI command stormdrive sends, the
+      DS224C element map, multipath; page shelf pane (IOMs, PSUs, paths)
+- [ ] sc-build, release, golden; the live format waits on #82 (which
+      format: 4096+PI probe) and a storage-admin bearer → #30
+
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 
 Owner: "Formatting a 15 PB SSD drive is a century; imagine a server with
