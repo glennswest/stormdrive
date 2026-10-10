@@ -490,6 +490,30 @@ Steps:
       `golden-stormdrive-fd0a54680e42`, stormcos#426; stormcos#456 told
       `/system-data`; #68, #76 closed. Live once system-data is mounted
 
+### #66: a `system` designation the install can read (P1, 2026-10-10) — in progress
+
+Owner's install rule 3 (stormdrive#58 comment, stormblock#351): the system
+drive is install-over, else "a drive designated `system` in stormdrive",
+else unambiguous, else stop. X9 blades (owner, 2026-10-10): the 256 GB SSD
+is the system drive, the 2 TB HDD keeps data (stormblock#402).
+- `Designation::System` (one drive or a set), set like the others
+  (storage-admin gate); refused on a fleet drive (its data would be laid
+  over); on /api/v1/drives, kube Drive, placement, feed (action), metrics
+- guards: never offered/auto-added/DrivePolicy'd (any designation already
+  skips); no fleet join; worker `enroll role: data` refused; a destroying
+  worker step needs the drive named in `destroy`; REST format / destructive
+  test refused
+- the install's view: `<history.dir>/stormdrive/system-drives.json`
+  (system-data), the system-designated drives by WWN/serial with model,
+  kind, size, shelf/bay; rewritten when the set changes; read back after an
+  install (inventory wiped) and the designation re-applied by WWN/serial
+- open (owner): the install reading system-data before it chooses, vs an
+  on-disk marker; and the designation outranking install-over (X9: old
+  system slab on the HDD) — asked on #66, stormblock#351 told
+Steps:
+- [ ] designation + guards + tests · [ ] system-drives.json + reload + tests
+- [ ] docs, changelog, build, release, golden; question on #66
+
 ### #84: stormdrive serves no page; its UI is stormconsole's drive plugin (owner BUG, 2026-10-10) — DONE (v0.30.0)
 
 Owner: "stormdrive should be part of stormui, as a plugin." A component
