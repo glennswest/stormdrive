@@ -469,7 +469,7 @@ keep becomes an issue. Same pass as #7.
       system-data mount → stormcos#456; /sys ro → #54), all tracked;
       changelog; #70 closed
 
-### #68 + #76: drive history records what happened to the drive; `/system-data` (P1, 2026-10-10) — in progress
+### #68 + #76: drive history records what happened to the drive; `/system-data` (P1, 2026-10-10) — DONE (v0.31.0)
 
 Owner: "Stormdrive needs to keep detailed history on drive state and history
 in a data drive". Design (no open decision):
@@ -485,7 +485,10 @@ in a data drive". Design (no open decision):
 Steps:
 - [x] history.rs Entry/Action/Summary, follow(), events tap, worker/format/
       firmware actions, API + kube, tests, docs, changelog
-- [ ] build, release, golden; stormcos#456 told; close #68, #76
+- [x] build VM on f1a4dc1 (262 unit + harnesses, clippy clean; #88 was a
+      private field); v0.31.0 (765be19); golden
+      `golden-stormdrive-fd0a54680e42`, stormcos#426; stormcos#456 told
+      `/system-data`; #68, #76 closed. Live once system-data is mounted
 
 ### #84: stormdrive serves no page; its UI is stormconsole's drive plugin (owner BUG, 2026-10-10) — DONE (v0.30.0)
 
