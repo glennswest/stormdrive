@@ -3,6 +3,18 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.28.0] — 2026-10-10
+
+### Added
+- NetApp DS224C shelf decode (#81): descriptor attributes, NetApp vendor elements, `summary` (shelf ID, chassis serial, IOMs and their paths, PSUs, connectors, multipath verdict, problems), help text, thresholds; raw diagnostic page reads; bay power (DEVICE OFF); drive `vendor`; grown defect count; dry runs list each bay
+- PI formats (#85): `Drive.supports` probe, `GET /api/v1/drives/{id}/supports`, Drive status `supports`/`currentFormat`/`plannedFormat` from `spec.format`, format step `protection: type1` (FMTPINFO), PI read back, controller reset watch
+
+### Fixed
+- SES enclosure element failure/warning indication bits (#86); overall elements are not problems (#81)
+
+### Documentation
+- docs/netapp-shelf.md: element map, multipath, every SCSI command, PI format flow (#81, #85)
+
 ### 2026-10-10
 - **feat:** what a drive can be formatted to (#85, `pi.rs`): INQUIRY PROTECT, VPD 0x86 SPT, 0xB4 block lengths × PI types, 0xB1 rotation, MODE SENSE block length, READ CAPACITY PROT_EN/P_TYPE → `Drive.supports`; probed in discovery and by `GET /api/v1/drives/{id}/supports`; a plan (spec.format when offered, else 4096+PI1 → 512+PI1 → 4096 → 512, 4096 never assumed without VPD 0xB4)
 - **feat:** Drive objects carry `status.supports`, `currentFormat`, `plannedFormat`; `spec.format {blockSize, protection}` (the user's, never overwritten) feeds the plan (#85)
