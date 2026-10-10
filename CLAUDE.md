@@ -620,7 +620,9 @@ Steps:
       status on #81, proposed after stormcos#426
 - [ ] live: decode vs the real shelf once installed; hot-add list; dry run
       posted; the format via the console (#85), gated on stormblock#391 (which
-      format: 4096+PI probe) and a storage-admin bearer → #30
+      format: 4096+PI probe) and a storage-admin bearer → #30.
+      2026-10-10 check: Dell still 0.27.1, shelf 17/24 (bays 0-16),
+      stormblock#391 closed; re-proposed after stormcos#426
 
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 
