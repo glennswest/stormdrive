@@ -18,6 +18,9 @@
 //!   uncorrected errors are its media errors. A SATA drive's whole
 //!   attribute table goes into the drive history.
 //!
+//! - SAS, also (#81): READ DEFECT DATA(12) asking for the grown list's
+//!   header only (8 bytes): how many blocks the drive has remapped.
+//!
 //! A page or command the drive does not support is simply not reported.
 //! Parsers are portable and unit-tested; issuing the commands is Linux-only.
 
@@ -94,6 +97,30 @@ pub fn parse_error_counters(raw: &[u8], page: u8) -> Option<ErrorCounters> {
     };
     let c = ErrorCounters { corrected: get(3), uncorrected: get(6), bytes: get(5) };
     (c != ErrorCounters::default()).then_some(c)
+}
+
+/// READ DEFECT DATA(12): the grown list (REQ_GLIST), "bytes from index"
+/// format, header only — what smartctl reads for "Elements in grown defect
+/// list".
+pub fn read_defect12_cdb(alloc: u32) -> [u8; 12] {
+    let a = alloc.to_be_bytes();
+    [0xB7, 0x08 | 0x04, 0, 0, 0, 0, a[0], a[1], a[2], a[3], 0, 0]
+}
+
+/// The grown defect count from a READ DEFECT DATA(12) header: list length
+/// over the descriptor size of the format the drive answered in. None when
+/// the drive says the grown list is not valid (GLISTV clear) or answers in
+/// a vendor format.
+pub fn parse_grown_defects(raw: &[u8]) -> Option<u64> {
+    if raw.len() < 8 || raw[1] & 0x08 == 0 {
+        return None;
+    }
+    let size: u64 = match raw[1] & 0x07 {
+        0 => 4,
+        1..=5 => 8,
+        _ => return None,
+    };
+    Some(u64::from(u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]])) / size)
 }
 
 /// The drive's own media errors from its error counter pages: uncorrected
@@ -301,6 +328,11 @@ mod linux {
             any = true;
             s.media_errors = sas_media_errors(&c);
         }
+        let mut hdr = [0u8; 8];
+        if dev.io(&read_defect12_cdb(8), crate::scsi::Dir::FromDevice, &mut hdr, 10_000).is_ok() {
+            c.grown_defects = parse_grown_defects(&hdr);
+            any |= c.grown_defects.is_some();
+        }
         if any {
             s.smart = Some(c);
         }
@@ -353,6 +385,18 @@ pub fn collect(name: &str, ssd: bool) -> Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grown_defects_from_the_header() {
+        assert_eq!(read_defect12_cdb(8)[1], 0x0c, "REQ_GLIST, bytes-from-index format");
+        // GLISTV, format 4 (8-byte descriptors), list length 24 → 3.
+        assert_eq!(parse_grown_defects(&[0, 0x0c, 0, 0, 0, 0, 0, 24]), Some(3));
+        // Short block format: 4 bytes each.
+        assert_eq!(parse_grown_defects(&[0, 0x08, 0, 0, 0, 0, 0, 24]), Some(6));
+        assert_eq!(parse_grown_defects(&[0, 0x04, 0, 0, 0, 0, 0, 24]), None, "GLISTV clear");
+        assert_eq!(parse_grown_defects(&[0, 0x0e, 0, 0, 0, 0, 0, 24]), None, "vendor format");
+        assert_eq!(parse_grown_defects(&[0, 0x0c]), None);
+    }
 
     #[test]
     fn ioerr_parses_hex_and_decimal() {

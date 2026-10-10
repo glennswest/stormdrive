@@ -129,7 +129,8 @@ pub fn spec(name: &str) -> Spec {
         | "nvme.error_log_entries" => ERRORS,
         n if n.starts_with("sas.") && n.ends_with(".uncorrected") => ERRORS,
         // Pending sectors fall when the drive remaps them: only growth.
-        "smart.pending_sectors" => Spec { grow: true, back: false, writes: true },
+        // A low-level format may rebuild the grown defect list: the same.
+        "smart.pending_sectors" | "smart.grown_defects" => Spec { grow: true, back: false, writes: true },
         // Since boot (sysfs ioerr_cnt), and not media errors (#58).
         "io_errors" | "available_spare_pct" | "critical_warning" => GAUGE,
         "power_on_hours"
@@ -176,6 +177,7 @@ pub fn counters(s: &Sample) -> BTreeMap<String, u64> {
         put("smart.offline_uncorrectable", m.offline_uncorrectable);
         put("smart.reported_uncorrectable", m.reported_uncorrectable);
         put("smart.crc_errors", m.crc_errors);
+        put("smart.grown_defects", m.grown_defects);
         for (page, e) in [("write", m.write_errors), ("read", m.read_errors), ("verify", m.verify_errors)] {
             if let Some(e) = e {
                 put(&format!("sas.{page}.corrected"), e.corrected);

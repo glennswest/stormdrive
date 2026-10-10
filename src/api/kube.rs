@@ -530,6 +530,7 @@ mod tests {
             model: "M".into(),
             serial: name.into(),
             firmware: "1".into(),
+            vendor: None,
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,

@@ -225,6 +225,9 @@ fn drive(o: &mut Out, d: &Drive) {
         if let Some(n) = sm.pending_sectors {
             o.gauge("stormdrive_drive_pending_sectors", "ATA SMART 197: sectors pending reallocation.", &l, n as f64);
         }
+        if let Some(n) = sm.grown_defects {
+            o.gauge("stormdrive_drive_grown_defects", "SAS: entries in the grown defect list (READ DEFECT DATA).", &l, n as f64);
+        }
         if let Some(n) = sm.offline_uncorrectable {
             o.gauge("stormdrive_drive_offline_uncorrectable_sectors", "ATA SMART 198: offline-uncorrectable sectors.", &l, n as f64);
         }
@@ -473,6 +476,7 @@ mod tests {
                 el("power_supply", 1, "not_installed", serde_json::json!({})),
             ],
             slots: BTreeMap::new(),
+            help_text: None,
             collected_at: UNIX_EPOCH,
             status_raw: vec![],
         };

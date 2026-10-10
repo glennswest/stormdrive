@@ -650,6 +650,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                 d.name = primary.name.clone();
                 d.paths = paths;
                 d.firmware = primary.firmware.clone();
+                d.vendor = primary.vendor.clone();
                 if !matches!(d.activity, Activity::Formatting | Activity::Sanitizing) {
                     // Mid-format the drive answers NOT READY and sysfs says
                     // 0 blocks; the format job owns these fields until it
@@ -731,6 +732,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         model: primary.model.clone(),
                         serial: primary.serial.clone(),
                         firmware: primary.firmware.clone(),
+                        vendor: primary.vendor.clone(),
                         wwid: primary.wwid.clone(),
                         capacity_bytes: primary.capacity_bytes,
                         block_size: primary.block_size,
@@ -1096,6 +1098,7 @@ mod tests {
             model: "X411_HVIPC420A11".into(),
             serial: if wwid == "w1" { "S1".into() } else { "S2".into() },
             firmware: "NA02".into(),
+            vendor: None,
             wwid: Some(wwid.into()),
             capacity_bytes: 420 << 30,
             block_size: 512,

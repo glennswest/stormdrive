@@ -16,7 +16,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -245,6 +245,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/shelves/{key}/format", post(format_shelf))
         .route("/api/v1/shelves/{key}/firmware", get(get_shelf_firmware).post(shelf_firmware))
         .route("/api/v1/shelves/{key}/format/{block_size}", post(format_shelf_by_path))
+        .route("/api/v1/shelves/{key}/diagnostics", get(shelf_diagnostics))
+        .route("/api/v1/shelves/{key}/diagnostics/{page}", get(shelf_diagnostic_page))
+        .route("/api/v1/shelves/{key}/bays/{bay}/power", post(shelf_bay_power))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/hbas", get(list_hbas))
         .route("/api/v1/placement", get(placement))
@@ -1319,7 +1322,22 @@ async fn ws_components(
 
 // --------------------------------------------------------------- shelves
 
-fn shelf_json(r: &crate::ses::ShelfReport, drives: &[serde_json::Value]) -> serde_json::Value {
+/// This node's HBA SAS addresses → "host0 0000:01:00.0", so a shelf
+/// connector can say what it is cabled to.
+async fn hba_sas_names(s: &AppState) -> BTreeMap<String, String> {
+    s.hbas
+        .read()
+        .await
+        .values()
+        .filter_map(|h| {
+            let sas = crate::ses::normalize_sas(h.sas_address.as_deref()?);
+            let host = h.scsi_hosts.first().map(String::as_str).unwrap_or("");
+            Some((sas, format!("{host} {}", h.pcie_addr).trim().to_string()))
+        })
+        .collect()
+}
+
+fn shelf_json(r: &crate::ses::ShelfReport, drives: &[serde_json::Value], hba_sas: &BTreeMap<String, String>) -> serde_json::Value {
     let (psu_ok, psu_n) = r.count(crate::ses::ET_POWER_SUPPLY);
     let (fan_ok, fan_n) = r.count(crate::ses::ET_COOLING);
     let (slot_ok, slot_n) = {
@@ -1344,6 +1362,8 @@ fn shelf_json(r: &crate::ses::ShelfReport, drives: &[serde_json::Value]) -> serd
         "slots": { "ok": slot_ok, "total": slot_n },
         "elements": r.elements,
         "slot_addresses": r.slots,
+        "summary": crate::shelfview::summarize(r, hba_sas),
+        "help_text": r.help_text,
         "drives": drives,
         "collected_at": r.collected_at,
     })
@@ -1361,8 +1381,10 @@ async fn shelf_drives(s: &AppState, key: &str) -> Vec<serde_json::Value> {
     ds.iter()
         .map(|d| {
             json!({
-                "id": d.id, "name": d.name, "bay": d.location.bay, "model": d.model, "serial": d.serial,
-                "block_size": d.block_size, "usable": d.usable, "needs_reformat": d.needs_reformat(),
+                "id": d.id, "name": d.name, "bay": d.location.bay, "vendor": d.vendor, "model": d.model,
+                "serial": d.serial, "firmware": d.firmware, "kind": d.kind, "wwid": d.wwid,
+                "block_size": d.block_size, "physical_block_size": d.physical_block_size,
+                "usable": d.usable, "needs_reformat": d.needs_reformat(),
                 "capacity_bytes": d.capacity_bytes, "membership": d.membership, "designation": d.designation,
                 "activity": d.activity, "health": d.health.status(),
             })
@@ -1372,10 +1394,11 @@ async fn shelf_drives(s: &AppState, key: &str) -> Vec<serde_json::Value> {
 
 async fn list_shelves(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let shelves = s.shelves.read().await.clone();
+    let hba_sas = hba_sas_names(&s).await;
     let mut out = Vec::new();
     for (key, r) in &shelves {
         let drives = shelf_drives(&s, key).await;
-        out.push(shelf_json(r, &drives));
+        out.push(shelf_json(r, &drives, &hba_sas));
     }
     Json(json!({ "shelves": out }))
 }
@@ -1403,7 +1426,121 @@ async fn get_shelf(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let r = resolve_shelf(&s, &key).await?;
     let drives = shelf_drives(&s, &r.key).await;
-    Ok(Json(shelf_json(&r, &drives)))
+    Ok(Json(shelf_json(&r, &drives, &hba_sas_names(&s).await)))
+}
+
+/// `GET /api/v1/shelves/{key}/diagnostics`: the diagnostic pages each of
+/// the shelf's ESPs answers (page 0x00) — `sg_ses --page=0x00`.
+async fn shelf_diagnostics(State(s): State<Arc<AppState>>, Path(key): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_shelf(&s, &key).await?;
+    let esps: Vec<String> = r.esps.iter().map(|e| e.scsi_id.clone()).collect();
+    let r2 = r.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        esps.iter()
+            .map(|id| match crate::ses::read_page(&r2, Some(id), crate::ses::PAGE_SUPPORTED) {
+                Ok((_, raw)) => json!({
+                    "esp": id,
+                    "pages": crate::ses::parse_supported_pages(&raw).iter().map(|p| format!("0x{p:02x}")).collect::<Vec<_>>(),
+                }),
+                Err(e) => json!({ "esp": id, "error": e.to_string() }),
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(json!({ "shelf": r.key, "esps": out })))
+}
+
+#[derive(Deserialize)]
+struct DiagnosticQuery {
+    /// An ESP's SCSI id (H:C:T:L); the first that answers otherwise.
+    #[serde(default)]
+    esp: Option<String>,
+}
+
+/// `GET /api/v1/shelves/{key}/diagnostics/{page}` (`0x0a`, `0a` or `10`
+/// hex): one page raw, as hex — `sg_ses --page=N --raw`. RECEIVE
+/// DIAGNOSTIC RESULTS only: a read, whatever the page.
+async fn shelf_diagnostic_page(
+    State(s): State<Arc<AppState>>,
+    Path((key, page)): Path<(String, String)>,
+    Query(q): Query<DiagnosticQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_shelf(&s, &key).await?;
+    let code = u8::from_str_radix(page.trim_start_matches("0x").trim_start_matches("0X"), 16)
+        .map_err(|_| ApiError::bad_request(format!("page {page:?}: a hex page code, 00..ff")))?;
+    if let Some(e) = &q.esp {
+        if !r.esps.iter().any(|x| &x.scsi_id == e) {
+            return Err(ApiError::not_found(format!("shelf {}: no ESP {e:?}", r.key)));
+        }
+    }
+    let r2 = r.clone();
+    let (esp, raw) = tokio::task::spawn_blocking(move || crate::ses::read_page(&r2, q.esp.as_deref(), code))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(Json(json!({ "shelf": r.key, "esp": esp, "page": format!("0x{code:02x}"), "length": raw.len(), "hex": hex })))
+}
+
+#[derive(Deserialize)]
+struct BayPowerBody {
+    on: bool,
+}
+
+/// `POST /api/v1/shelves/{key}/bays/{bay}/power {"on": false}`: turn the
+/// drive in a bay off (SES slot DEVICE OFF) or back on (#81). A drive
+/// operation (storage-admin). Refused while the bay's drive is in the
+/// fleet, holds data (`in_use_by`) or is busy.
+async fn shelf_bay_power(
+    State(s): State<Arc<AppState>>,
+    Path((key, bay)): Path<(String, u32)>,
+    Json(body): Json<BayPowerBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_shelf(&s, &key).await?;
+    if crate::ses::find_slot_element(&r.elements, bay).is_none() {
+        return Err(ApiError::not_found(format!("shelf {}: no bay {bay}", r.key)));
+    }
+    if !body.on {
+        let inv = s.inventory.read().await;
+        let here = inv.drives.values().find(|d| {
+            d.location.bay == Some(bay)
+                && d.activity != crate::drive::Activity::Missing
+                && d.location.shelf.as_ref().and_then(|sh| sh.key()).as_deref() == Some(r.key.as_str())
+        });
+        if let Some(d) = here {
+            if let Some(why) = bay_power_blocker(d) {
+                return Err(ApiError::conflict(format!("bay {bay} ({}): {why}", d.name)));
+            }
+        }
+    }
+    let r2 = r.clone();
+    let off = !body.on;
+    tokio::task::spawn_blocking(move || crate::ses::set_power(&r2, bay, off))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    s.events.write().await.push(
+        None,
+        Severity::Warning,
+        "shelf",
+        format!("shelf {}: bay {bay} power {}", r.shelf.display(), if body.on { "on" } else { "off" }),
+    );
+    Ok(Json(json!({ "key": r.key, "bay": bay, "power": if body.on { "on" } else { "off" } })))
+}
+
+/// Why the drive in a bay may not be powered off, if it may not.
+fn bay_power_blocker(d: &crate::drive::Drive) -> Option<String> {
+    if d.membership == crate::drive::Membership::Fleet {
+        return Some("in the fleet: leave it first".into());
+    }
+    if let Some(by) = &d.in_use_by {
+        return Some(format!("in use by {by}"));
+    }
+    if d.activity != crate::drive::Activity::Idle {
+        return Some(format!("busy ({:?})", d.activity).to_lowercase());
+    }
+    None
 }
 
 #[derive(Deserialize)]

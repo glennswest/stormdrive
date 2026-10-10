@@ -8,9 +8,16 @@
 //!   product, revision) + type descriptor headers (element type, count).
 //! - 0x02 Enclosure Status: one overall + N individual 4-byte statuses per
 //!   type, in header order. SEND DIAGNOSTIC of the same page is control.
-//! - 0x07 Element Descriptor: a text name per element.
+//! - 0x00 Supported Diagnostic Pages: what this ESP answers.
+//! - 0x03 Help Text: the enclosure's own words on its state.
+//! - 0x05 Threshold In: warning/critical limits per sensor element.
+//! - 0x07 Element Descriptor: a text name per element. NetApp shelves put
+//!   `KEY=VALUE;` lists here (serials, firmware, part numbers, attached
+//!   SAS addresses), kept as [`Element::attributes`].
 //! - 0x0A Additional Element Status: per-slot SAS addresses — how a drive
 //!   is tied to a bay when the kernel's `ses` module is not around.
+//!
+//! Every command, and the DS224C's element map, is in docs/netapp-shelf.md.
 //!
 //! Parsers are portable and tested on synthetic pages; enumeration and
 //! I/O are Linux-only.
@@ -20,8 +27,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
+pub const PAGE_SUPPORTED: u8 = 0x00;
 pub const PAGE_CONFIG: u8 = 0x01;
 pub const PAGE_STATUS: u8 = 0x02;
+pub const PAGE_HELP: u8 = 0x03;
+pub const PAGE_THRESHOLD: u8 = 0x05;
 pub const PAGE_DESCRIPTORS: u8 = 0x07;
 pub const PAGE_ADDITIONAL: u8 = 0x0a;
 
@@ -37,6 +47,72 @@ pub const ET_CURRENT: u8 = 0x13;
 pub const ET_ARRAY_DEVICE_SLOT: u8 = 0x17;
 pub const ET_SAS_EXPANDER: u8 = 0x18;
 pub const ET_SAS_CONNECTOR: u8 = 0x19;
+// NetApp vendor element types, named from what their descriptors carry on
+// a DS224C/IOM12 (docs/netapp-shelf.md): the IOM's expander (`SA=` its SAS
+// address, `FPI=` the FRU) and the IOM's Ethernet port (`OM=` its MAC).
+pub const ET_NETAPP_IOM_EXPANDER: u8 = 0x83;
+pub const ET_NETAPP_IOM_ETHERNET: u8 = 0x85;
+
+/// A vendor's own element types, by the enclosure's INQUIRY vendor.
+pub fn vendor_type_name(vendor: &str, t: u8) -> Option<&'static str> {
+    match (vendor, t) {
+        ("NETAPP", ET_NETAPP_IOM_EXPANDER) => Some("iom expander"),
+        ("NETAPP", ET_NETAPP_IOM_ETHERNET) => Some("iom ethernet"),
+        _ => None,
+    }
+}
+
+/// SAS connector element byte 1 bits 6:0 (SES-3 table 129).
+pub fn connector_type_name(code: u8) -> Option<&'static str> {
+    Some(match code & 0x7f {
+        0x00 => return None,
+        0x01 => "SAS 4x receptacle (SFF-8470)",
+        0x02 => "Mini SAS 4x receptacle (SFF-8088)",
+        0x03 => "QSFP+ receptacle (SFF-8436)",
+        0x04 => "Mini SAS 4x active receptacle (SFF-8088)",
+        0x05 => "Mini SAS HD 4x receptacle (SFF-8644)",
+        0x06 => "Mini SAS HD 8x receptacle (SFF-8644)",
+        0x07 => "Mini SAS HD 16x receptacle (SFF-8644)",
+        0x0f => "vendor specific external",
+        0x10 => "SAS 4i plug (SFF-8484)",
+        0x11 => "Mini SAS 4i receptacle (SFF-8087)",
+        0x12 => "Mini SAS HD 4i receptacle (SFF-8643)",
+        0x13 => "Mini SAS HD 8i receptacle (SFF-8643)",
+        0x20 => "SAS drive backplane receptacle (SFF-8482)",
+        0x21 => "SATA host plug",
+        0x22 => "SAS drive plug (SFF-8482)",
+        0x23 => "SATA device plug",
+        0x24 => "Micro SAS receptacle",
+        0x25 => "Micro SATA device plug",
+        0x26 => "Micro SAS plug",
+        0x27 => "Micro SAS/SATA plug",
+        0x28 => "12 Gb/s SAS drive backplane receptacle (SFF-8680)",
+        0x29 => "12 Gb/s SAS drive plug (SFF-8680)",
+        0x2a => "Multifunction 12 Gb/s 6x unshielded receptacle (SFF-8639)",
+        0x2b => "Multifunction 12 Gb/s 6x unshielded plug (SFF-8639)",
+        0x2f => "SAS virtual connector",
+        0x3f => "vendor specific internal",
+        _ => "other",
+    })
+}
+
+/// A NetApp descriptor `TP=7D;SN=PSQ0942…;FW=0111;PW=913 ;` as pairs:
+/// keys as given, values trimmed, empty values dropped. Not a `K=V;` list
+/// (no `=`, or no `;`) → empty.
+pub fn parse_attributes(text: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if !text.contains('=') || !text.contains(';') {
+        return out;
+    }
+    for part in text.split(';') {
+        let Some((k, v)) = part.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim());
+        if !k.is_empty() && !v.is_empty() {
+            out.insert(k.to_string(), v.to_string());
+        }
+    }
+    out
+}
 
 pub fn element_type_name(t: u8) -> &'static str {
     match t {
@@ -143,7 +219,43 @@ pub struct Element {
     /// Power supplies: AC/DC failure, off.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<String>,
+    /// The descriptor (page 0x07) as `KEY=VALUE` pairs, when it is a list.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
+    /// Page 0x05 limits, for temperature/voltage/current sensors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thresholds: Option<Thresholds>,
     pub raw: [u8; 4],
+}
+
+/// Threshold In (page 0x05) for one sensor: °C for temperature, percent of
+/// nominal for voltage and current (SES-3: 0.5 % units). None = not set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Thresholds {
+    pub unit: String,
+    pub high_critical: Option<f32>,
+    pub high_warning: Option<f32>,
+    pub low_warning: Option<f32>,
+    pub low_critical: Option<f32>,
+}
+
+/// One element's four threshold bytes → [`Thresholds`] (sensors only).
+pub fn decode_thresholds(element_type: u8, b: [u8; 4]) -> Option<Thresholds> {
+    let (unit, f): (&str, fn(u8) -> Option<f32>) = match element_type {
+        ET_TEMPERATURE => ("°C", |v| (v != 0).then(|| v as f32 - 20.0)),
+        ET_VOLTAGE | ET_CURRENT => ("% of nominal", |v| (v != 0).then(|| v as f32 / 2.0)),
+        _ => return None,
+    };
+    if b == [0; 4] {
+        return None;
+    }
+    Some(Thresholds {
+        unit: unit.into(),
+        high_critical: f(b[0]),
+        high_warning: f(b[1]),
+        low_warning: f(b[2]),
+        low_critical: f(b[3]),
+    })
 }
 
 /// Page 0x01, the part we keep.
@@ -243,6 +355,8 @@ fn decode_element(t: u8, index: u32, overall: bool, b: [u8; 4]) -> Element {
         bay: None,
         sas_address: None,
         flags: Vec::new(),
+        attributes: BTreeMap::new(),
+        thresholds: None,
         raw: b,
     };
     match t {
@@ -257,6 +371,12 @@ fn decode_element(t: u8, index: u32, overall: bool, b: [u8; 4]) -> Element {
             }
             if b[3] & 0x10 != 0 {
                 e.flags.push("device off".into());
+            }
+            if b[2] & 0x08 != 0 {
+                e.flags.push("ready to insert".into());
+            }
+            if b[2] & 0x04 != 0 {
+                e.flags.push("remove requested".into());
             }
             if b[3] & 0x0f != 0 {
                 e.flags.push("bypassed".into());
@@ -435,6 +555,46 @@ pub fn parse_descriptors(cfg: &Configuration, raw: &[u8]) -> Vec<Option<String>>
     out
 }
 
+/// Page 0x03: the enclosure's help text (empty → None).
+pub fn parse_help_text(raw: &[u8]) -> Option<String> {
+    if raw.len() < 4 || raw[0] != PAGE_HELP {
+        return None;
+    }
+    let len = u16::from_be_bytes([raw[2], raw[3]]) as usize;
+    let end = (4 + len).min(raw.len());
+    let t = String::from_utf8_lossy(&raw[4..end])
+        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+        .to_string();
+    (!t.is_empty()).then_some(t)
+}
+
+/// Page 0x05: four threshold bytes per element, page order (overall
+/// elements included, as in page 0x02).
+pub fn parse_thresholds(cfg: &Configuration, raw: &[u8]) -> Vec<[u8; 4]> {
+    let mut out = Vec::new();
+    if raw.len() < 8 || raw[0] != PAGE_THRESHOLD {
+        return out;
+    }
+    let len = u16::from_be_bytes([raw[2], raw[3]]) as usize + 4;
+    let end = len.min(raw.len());
+    let total: usize = cfg.types.iter().map(|t| t.count as usize + 1).sum();
+    let mut off = 8;
+    while out.len() < total && off + 4 <= end {
+        out.push([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]);
+        off += 4;
+    }
+    out
+}
+
+/// Page 0x00: the diagnostic pages this ESP answers.
+pub fn parse_supported_pages(raw: &[u8]) -> Vec<u8> {
+    if raw.len() < 4 || raw[0] != PAGE_SUPPORTED {
+        return Vec::new();
+    }
+    let len = u16::from_be_bytes([raw[2], raw[3]]) as usize;
+    raw[4..(4 + len).min(raw.len())].to_vec()
+}
+
 /// One SAS device-slot descriptor from page 0x0A.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotAddress {
@@ -554,6 +714,23 @@ pub fn build_fault_control(status_raw: &[u8], element_offset: usize, element_typ
     Some(page)
 }
 
+/// A slot's power: DEVICE OFF (control byte 3 bit 4) set to turn the
+/// drive in the bay off, cleared to turn it back on. The slot's IDENT and
+/// RQST FAULT are kept as the status page shows them. Only for a (array)
+/// device slot; whether the IOM honours it is the IOM's business (read the
+/// slot's "device off" flag back).
+pub fn build_power_control(status_raw: &[u8], element_offset: usize, element_type: u8, off: bool) -> Option<Vec<u8>> {
+    if !matches!(element_type, ET_DEVICE_SLOT | ET_ARRAY_DEVICE_SLOT) {
+        return None;
+    }
+    let mut page = build_ident_control(status_raw, element_offset, element_type, false)?;
+    let st = &status_raw[element_offset..element_offset + 4];
+    let ctl = &mut page[element_offset..element_offset + 4];
+    ctl[2] = st[2] & 0x02;
+    ctl[3] = (st[3] & 0x20) | if off { 0x10 } else { 0 };
+    Some(page)
+}
+
 /// Byte offset of the n-th element (page order, overall elements
 /// included) inside a page 0x02 buffer.
 pub fn element_offset(n: usize) -> usize {
@@ -610,6 +787,9 @@ pub struct ShelfReport {
     pub elements: Vec<Element>,
     /// bay → SAS addresses seen in that bay (page 0x0A).
     pub slots: BTreeMap<u32, Vec<String>>,
+    /// Page 0x03, when the enclosure says anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_text: Option<String>,
     pub collected_at: SystemTime,
     /// The raw status page, kept so a control page can be built from the
     /// exact generation the enclosure reported.
@@ -676,21 +856,42 @@ pub fn normalize_sas(s: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// The raw pages one ESP answered. Configuration and status are needed;
+/// the rest are optional.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RawPages<'a> {
+    pub config: &'a [u8],
+    pub status: &'a [u8],
+    pub descriptors: Option<&'a [u8]>,
+    pub additional: Option<&'a [u8]>,
+    pub help: Option<&'a [u8]>,
+    pub thresholds: Option<&'a [u8]>,
+}
+
 /// Assemble a report from raw pages (portable, so it can be tested).
-pub fn assemble(
-    esps: Vec<EspPath>,
-    sysfs_id: Option<String>,
-    cfg_raw: &[u8],
-    status_raw: &[u8],
-    desc_raw: Option<&[u8]>,
-    add_raw: Option<&[u8]>,
-) -> Option<ShelfReport> {
-    let cfg = parse_configuration(cfg_raw)?;
+pub fn assemble(esps: Vec<EspPath>, sysfs_id: Option<String>, pages: RawPages<'_>) -> Option<ShelfReport> {
+    let status_raw = pages.status;
+    let cfg = parse_configuration(pages.config)?;
     let mut status = parse_status(&cfg, status_raw)?;
-    if let Some(d) = desc_raw {
+    if let Some(d) = pages.descriptors {
         let names = parse_descriptors(&cfg, d);
         for (e, n) in status.elements.iter_mut().zip(names) {
+            if let Some(n) = &n {
+                e.attributes = parse_attributes(n);
+            }
             e.name = n;
+        }
+    }
+    if let Some(t) = pages.thresholds {
+        for (e, b) in status.elements.iter_mut().zip(parse_thresholds(&cfg, t)) {
+            if !e.overall {
+                e.thresholds = decode_thresholds(e.element_type, b);
+            }
+        }
+    }
+    for e in status.elements.iter_mut() {
+        if let Some(n) = vendor_type_name(&cfg.vendor, e.element_type) {
+            e.type_name = n.into();
         }
     }
     // Array device slots carry no bay number in their status; number them
@@ -701,7 +902,7 @@ pub fn assemble(
         }
     }
     let mut slots: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-    if let Some(a) = add_raw {
+    if let Some(a) = pages.additional {
         let addrs = parse_additional(a);
         // Individual slot elements in page order, to map ELEMENT INDEX.
         let slot_positions: Vec<usize> = status
@@ -753,11 +954,18 @@ pub fn assemble(
         .clone()
         .or_else(|| first.and_then(|e| e.serial.clone()))
         .or_else(|| first.map(|e| e.scsi_id.clone()))?;
+    // The enclosure element's descriptor names the chassis itself (NetApp:
+    // `SN=SHFGB…`); the ESP's VPD serial is its IOM's, so it comes second.
+    let chassis_serial = status
+        .elements
+        .iter()
+        .find(|e| e.element_type == ET_ENCLOSURE && !e.overall)
+        .and_then(|e| e.attributes.get("SN").cloned());
     let shelf = Shelf {
         id: sysfs_id.or_else(|| first.map(|e| e.scsi_id.clone())),
         vendor: (!cfg.vendor.is_empty()).then_some(cfg.vendor.clone()),
         model: (!cfg.product.is_empty()).then_some(cfg.product.clone()),
-        serial: first.and_then(|e| e.serial.clone()),
+        serial: chassis_serial.or_else(|| first.and_then(|e| e.serial.clone())),
         sas_address: first.and_then(|e| e.sas_address.clone()),
         logical_id: cfg.logical_id.clone(),
     };
@@ -772,6 +980,7 @@ pub fn assemble(
         info: status.info,
         elements: status.elements,
         slots,
+        help_text: pages.help.and_then(parse_help_text),
         collected_at: SystemTime::now(),
         status_raw: status_raw.to_vec(),
     })
@@ -831,16 +1040,64 @@ mod linux {
             .map(|e| e.file_name().to_string_lossy().to_string())
     }
 
-    /// (configuration, status, descriptors, additional status)
-    type Pages = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>);
+    /// The pages one ESP answered (owned; see [`RawPages`]).
+    struct Pages {
+        config: Vec<u8>,
+        status: Vec<u8>,
+        descriptors: Option<Vec<u8>>,
+        additional: Option<Vec<u8>>,
+        help: Option<Vec<u8>>,
+        thresholds: Option<Vec<u8>>,
+    }
+
+    impl Pages {
+        fn raw(&self) -> RawPages<'_> {
+            RawPages {
+                config: &self.config,
+                status: &self.status,
+                descriptors: self.descriptors.as_deref(),
+                additional: self.additional.as_deref(),
+                help: self.help.as_deref(),
+                thresholds: self.thresholds.as_deref(),
+            }
+        }
+    }
 
     fn read_pages(sg: &str) -> Option<Pages> {
         let dev = Device::open(sg).ok()?;
-        let cfg = dev.receive_diagnostic(PAGE_CONFIG).ok()?;
+        let config = dev.receive_diagnostic(PAGE_CONFIG).ok()?;
         let status = dev.receive_diagnostic(PAGE_STATUS).ok()?;
-        let desc = dev.receive_diagnostic(PAGE_DESCRIPTORS).ok();
-        let add = dev.receive_diagnostic(PAGE_ADDITIONAL).ok();
-        Some((cfg, status, desc, add))
+        // Optional pages: only those page 0x00 lists (an ESP may answer an
+        // unlisted page with an error, or with garbage).
+        let supported = dev.receive_diagnostic(PAGE_SUPPORTED).ok().map(|r| parse_supported_pages(&r));
+        let has = |p: u8| supported.as_ref().map_or(true, |s| s.contains(&p));
+        let opt = |p: u8| if has(p) { dev.receive_diagnostic(p).ok() } else { None };
+        Some(Pages {
+            descriptors: opt(PAGE_DESCRIPTORS),
+            additional: opt(PAGE_ADDITIONAL),
+            help: opt(PAGE_HELP),
+            thresholds: opt(PAGE_THRESHOLD),
+            config,
+            status,
+        })
+    }
+
+    /// One diagnostic page, raw, through the shelf's ESP `scsi_id` (or the
+    /// first that answers): RECEIVE DIAGNOSTIC RESULTS only, so a read.
+    pub fn read_page(rep: &ShelfReport, esp: Option<&str>, page: u8) -> std::io::Result<(String, Vec<u8>)> {
+        let mut last = None;
+        for e in rep.esps.iter().filter(|e| esp.map_or(true, |w| w == e.scsi_id)) {
+            let Some(sg) = &e.sg_path else { continue };
+            match Device::open(sg).and_then(|d| d.receive_diagnostic(page)) {
+                Ok(raw) => return Ok((e.scsi_id.clone(), raw)),
+                Err(err) => last = Some(err.to_string()),
+            }
+        }
+        Err(std::io::Error::other(format!(
+            "shelf {}: page 0x{page:02x} not read: {}",
+            rep.key,
+            last.unwrap_or_else(|| "no ESP path".into())
+        )))
     }
 
     /// Read every shelf on the node. Two SES devices with the same
@@ -853,13 +1110,12 @@ mod linux {
                 tracing::debug!(%scsi_id, "enclosure device without sg node");
                 continue;
             };
-            let Some((cfg, status, desc, add)) = read_pages(&sg) else {
+            let Some(pages) = read_pages(&sg) else {
                 tracing::debug!(%scsi_id, %sg, "SES pages unreadable");
                 continue;
             };
             let sysfs_id = sysfs_enclosure_id(&dir);
-            let Some(rep) = assemble(vec![esp.clone()], sysfs_id, &cfg, &status, desc.as_deref(), add.as_deref())
-            else {
+            let Some(rep) = assemble(vec![esp.clone()], sysfs_id, pages.raw()) else {
                 continue;
             };
             match out.get_mut(&rep.key) {
@@ -899,6 +1155,29 @@ mod linux {
             }
         }
         Err(err(format!("shelf {}: fault LED not set: {}", rep.key, last.unwrap_or_else(|| "no ESP path".into()))))
+    }
+
+    /// Turn the drive in a bay off (DEVICE OFF) or back on, through the
+    /// shelf's first reachable ESP.
+    pub fn set_power(rep: &ShelfReport, bay: u32, off: bool) -> std::io::Result<()> {
+        let err = std::io::Error::other;
+        let pos = find_slot_element(&rep.elements, bay).ok_or_else(|| err(format!("shelf {}: no slot element for bay {bay}", rep.key)))?;
+        let et = rep.elements[pos].element_type;
+        let mut last = None;
+        for esp in &rep.esps {
+            let Some(sg) = &esp.sg_path else { continue };
+            let r = Device::open(sg).and_then(|dev| {
+                let status = dev.receive_diagnostic(PAGE_STATUS)?;
+                let page = build_power_control(&status, element_offset(pos), et, off)
+                    .ok_or(crate::scsi::Error::Unsupported("status page too short"))?;
+                dev.send_diagnostic(&page)
+            });
+            match r {
+                Ok(()) => return Ok(()),
+                Err(e) => last = Some(e.to_string()),
+            }
+        }
+        Err(err(format!("shelf {}: bay {bay} power not set: {}", rep.key, last.unwrap_or_else(|| "no ESP path".into()))))
     }
 
     /// Set IDENT on a bay (or the enclosure itself when `bay` is None)
@@ -965,6 +1244,32 @@ pub fn scan() -> BTreeMap<String, ShelfReport> {
     #[cfg(not(target_os = "linux"))]
     {
         BTreeMap::new()
+    }
+}
+
+/// A bay's power via SES DEVICE OFF (#81).
+pub fn set_power(rep: &ShelfReport, bay: u32, off: bool) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::set_power(rep, bay, off)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (rep, bay, off);
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "SES control requires Linux"))
+    }
+}
+
+/// One raw diagnostic page through a shelf ESP: (ESP SCSI id, bytes).
+pub fn read_page(rep: &ShelfReport, esp: Option<&str>, page: u8) -> std::io::Result<(String, Vec<u8>)> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::read_page(rep, esp, page)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (rep, esp, page);
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "SES requires Linux"))
     }
 }
 
@@ -1124,13 +1429,11 @@ mod tests {
             serial: Some("IOMSERIAL".into()),
             revision: Some("0300".into()),
         };
+        let (cfg, st, add) = (config_page(), status_page(), additional_page());
         let rep = assemble(
             vec![esp],
             None,
-            &config_page(),
-            &status_page(),
-            None,
-            Some(&additional_page()),
+            RawPages { config: &cfg, status: &st, additional: Some(&add), ..Default::default() },
         )
         .unwrap();
         assert_eq!(rep.key, "500a09800e359135", "logical id is the key");
@@ -1208,6 +1511,58 @@ mod tests {
         assert_eq!(find_slot_element(&st.elements, 11), Some(2));
         assert_eq!(find_slot_element(&st.elements, 3), None);
         assert_eq!(find_enclosure_element(&st.elements), Some(6));
+    }
+
+    #[test]
+    fn power_control_sets_device_off_and_keeps_ident_and_fault() {
+        let mut st = status_page();
+        st[element_offset(2) + 2] |= 0x02; // IDENT on
+        st[element_offset(2) + 3] |= 0x20; // FAULT REQSTD
+        let page = build_power_control(&st, element_offset(2), ET_ARRAY_DEVICE_SLOT, true).unwrap();
+        assert_eq!(&page[4..8], &st[4..8], "generation preserved");
+        assert_eq!(page[16], 0x80, "slot 1 selected");
+        assert_eq!(page[18], 0x02, "IDENT kept");
+        assert_eq!(page[19], 0x30, "RQST FAULT kept + DEVICE OFF");
+        assert_eq!(page[12], 0, "slot 0 untouched");
+        let on = build_power_control(&st, element_offset(2), ET_ARRAY_DEVICE_SLOT, false).unwrap();
+        assert_eq!(on[19], 0x20, "DEVICE OFF cleared");
+        assert!(build_power_control(&st, element_offset(6), ET_ENCLOSURE, true).is_none());
+    }
+
+    #[test]
+    fn help_thresholds_and_supported_pages() {
+        let mut h = vec![PAGE_HELP, 0, 0, 9];
+        h.extend_from_slice(b" all ok \0");
+        assert_eq!(parse_help_text(&h).as_deref(), Some("all ok"));
+        assert_eq!(parse_help_text(&[PAGE_HELP, 0, 0, 0]), None);
+
+        let cfg = parse_configuration(&config_page()).unwrap();
+        // slots: overall + 2; temperature: overall + 1; enclosure: overall + 1
+        let mut t = vec![PAGE_THRESHOLD, 0, 0, 0, 0, 0, 0, 7];
+        for b in [[0u8; 4], [0; 4], [0; 4], [0; 4], [80, 70, 25, 20], [0; 4], [0; 4]] {
+            t.extend_from_slice(&b);
+        }
+        let l = (t.len() - 4) as u16;
+        t[2..4].copy_from_slice(&l.to_be_bytes());
+        let thr = parse_thresholds(&cfg, &t);
+        assert_eq!(thr.len(), 7);
+        let d = decode_thresholds(ET_TEMPERATURE, thr[4]).unwrap();
+        assert_eq!((d.high_critical, d.high_warning, d.low_warning, d.low_critical), (Some(60.0), Some(50.0), Some(5.0), Some(0.0)));
+        let v = decode_thresholds(ET_VOLTAGE, [20, 10, 10, 0]).unwrap();
+        assert_eq!((v.high_critical, v.low_critical), (Some(10.0), None), "0.5 % units; 0 = unset");
+        assert!(decode_thresholds(ET_DEVICE_SLOT, [1, 2, 3, 4]).is_none());
+        assert!(decode_thresholds(ET_TEMPERATURE, [0; 4]).is_none());
+
+        assert_eq!(parse_supported_pages(&[0, 0, 0, 4, 0, 1, 2, 0x0a]), vec![0, 1, 2, 0x0a]);
+        assert!(parse_supported_pages(&[1, 0, 0, 1, 0]).is_empty());
+    }
+
+    #[test]
+    fn connector_types() {
+        assert_eq!(connector_type_name(0x05), Some("Mini SAS HD 4x receptacle (SFF-8644)"));
+        assert_eq!(connector_type_name(0x80), None, "bit 7 is IDENT");
+        assert_eq!(vendor_type_name("NETAPP", 0x83), Some("iom expander"));
+        assert_eq!(vendor_type_name("DELL", 0x83), None);
     }
 
     #[test]

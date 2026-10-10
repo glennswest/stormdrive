@@ -617,6 +617,7 @@ mod tests {
             model: "M".into(),
             serial: "S".into(),
             firmware: "1".into(),
+            vendor: None,
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,
@@ -981,6 +982,7 @@ mod tests {
             info: false,
             elements: Vec::new(),
             slots: BTreeMap::new(),
+            help_text: None,
             collected_at: SystemTime::now(),
             status_raw: Vec::new(),
         };

@@ -13,6 +13,8 @@ pub struct Observed {
     pub name: String,
     pub path: String,
     pub kind: DriveKind,
+    /// SCSI INQUIRY vendor, as sysfs has it.
+    pub vendor: Option<String>,
     pub model: String,
     pub serial: String,
     pub firmware: String,
@@ -282,6 +284,7 @@ mod linux {
                 wwid: wwid.clone(),
             };
             let model = read_trim(&dev.join("model")).unwrap_or_default();
+            let vendor = read_trim(&dev.join("vendor"));
             let serial = read_trim(&dev.join("serial"))
                 .or_else(|| read_trim(&base.join("serial")))
                 .unwrap_or_default();
@@ -292,6 +295,7 @@ mod linux {
                 out.push(Observed {
                     path: format!("/dev/{name}"),
                     kind: classify(&base, &name),
+                    vendor,
                     model,
                     serial,
                     firmware,
@@ -362,6 +366,7 @@ mod linux {
             out.push(Observed {
                 path: format!("/dev/{name}"),
                 kind: classify(&base, &name),
+                vendor,
                 model,
                 serial,
                 firmware,

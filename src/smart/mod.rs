@@ -78,6 +78,10 @@ pub struct SmartCounters {
     pub read_errors: Option<ErrorCounters>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_errors: Option<ErrorCounters>,
+    /// SAS: entries in the grown defect list (READ DEFECT DATA(12), GLIST):
+    /// blocks the drive has remapped since it left the factory (#81).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grown_defects: Option<u64>,
 }
 
 /// One SCSI error counter page (SBC: parameters 0003h, 0005h, 0006h).

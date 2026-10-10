@@ -102,6 +102,7 @@ mod tests {
             model: "M".into(),
             serial: serial.into(),
             firmware: "1.0".into(),
+            vendor: None,
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,

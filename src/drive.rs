@@ -395,6 +395,10 @@ pub struct Drive {
     #[serde(default)]
     pub paths: Vec<String>,
     pub kind: DriveKind,
+    /// SCSI INQUIRY vendor (sysfs `vendor`): `SEAGATE`, `NETAPP`, … —
+    /// `ATA` is a SATA drive behind SAT; None for NVMe (#81).
+    #[serde(default)]
+    pub vendor: Option<String>,
     pub model: String,
     pub serial: String,
     pub firmware: String,
@@ -792,6 +796,7 @@ mod tests {
             model: "M".into(),
             serial: "S".into(),
             firmware: "1".into(),
+            vendor: None,
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,

@@ -36,6 +36,7 @@ pub mod policy;
 pub mod poller;
 pub mod scsi;
 pub mod ses;
+pub mod shelfview;
 pub mod smart;
 pub mod stormblock;
 pub mod tls;

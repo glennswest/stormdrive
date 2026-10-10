@@ -820,7 +820,25 @@ pub async fn submit_tagged(
     if req.dry_run {
         let mut p = plan;
         p["dry_run"] = json!(true);
-        p["drives"] = json!(djs.iter().filter(|d| d.state == DjState::Queued).map(|d| json!({ "drive": d.drive, "name": d.name })).collect::<Vec<_>>());
+        // What is in each bay before anything is changed (#81): the dry run
+        // is the operator's last look at vendor, model, firmware, sectors.
+        let row = |d: &DriveJob| {
+            let x = drives.iter().find(|x| x.id == d.drive);
+            json!({
+                "drive": d.drive,
+                "name": d.name,
+                "shelf": x.and_then(|x| x.location.shelf.as_ref()).and_then(|s| s.key()),
+                "bay": x.and_then(|x| x.location.bay),
+                "vendor": x.and_then(|x| x.vendor.clone()),
+                "model": x.map(|x| x.model.clone()),
+                "serial": d.serial,
+                "firmware": x.map(|x| x.firmware.clone()),
+                "kind": d.kind,
+                "block_size": x.map(|x| x.block_size),
+                "capacity_bytes": x.map(|x| x.capacity_bytes),
+            })
+        };
+        p["drives"] = json!(djs.iter().filter(|d| d.state == DjState::Queued).map(row).collect::<Vec<_>>());
         return Ok(p);
     }
     if runnable == 0 {
