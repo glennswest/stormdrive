@@ -489,19 +489,20 @@ logical id 500a09800e359135, ESP 500a09800853bf4c (/dev/sg18), 17 drives
 - So: both IOMs installed, one cabled (IOM A, expander …bf4d). Dry run
   (shelf, format 4096) refuses nothing: 17 runnable.
 Steps:
-- [ ] ses.rs: descriptor `attributes`, NetApp vendor element names,
+- [x] ses.rs: descriptor `attributes`, NetApp vendor element names,
       overall elements kept out of problems; `problems` (why noncritical);
       IOMs (installed / answering / path seen), connectors (cabled, to
       what), PSUs, shelf ID + serial from the enclosure element
-- [ ] pages 0x03 help text, 0x05 thresholds, 0x00 supported pages; raw
+- [x] pages 0x03 help text, 0x05 thresholds, 0x00 supported pages; raw
       read `GET /api/v1/shelves/{key}/diagnostics[/{page}]`
-- [ ] bay power off/on (slot DEVICE OFF), gated like a drive operation,
+- [x] bay power off/on (slot DEVICE OFF), gated like a drive operation,
       refused for a data-serving drive
-- [ ] drive `vendor` (INQUIRY); shelf drive rows + dry run carry bay,
+- [x] drive `vendor` (INQUIRY); shelf drive rows + dry run carry bay,
       vendor, model, firmware, sector size
-- [ ] grown defect count (READ DEFECT DATA(12) GLIST length) in SAS health
-- [ ] docs/netapp-shelf.md: every SAS/SCSI command stormdrive sends, the
-      DS224C element map, multipath; page shelf pane (IOMs, PSUs, paths)
+- [x] grown defect count (READ DEFECT DATA(12) GLIST length) in SAS health
+- [x] docs/netapp-shelf.md: every SAS/SCSI command stormdrive sends, the
+      DS224C element map, multipath; page shelf pane (IOMs, PSUs, paths);
+      feed shelf card: shelf id, IOM paths, problems (1995f9d…d3ed8c2)
 - [ ] sc-build, release, golden; the live format waits on #82 (which
       format: 4096+PI probe) and a storage-admin bearer → #30
 
