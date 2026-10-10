@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.29.0] — 2026-10-10
+
+### Added
+- `plannedFormat.fallback` + a warning event when a drive does not offer 4096+PI1; dry runs show each drive's PI type and planned format; `GET /api/v1/scsi/not-good` (#82)
+
+### Fixed
+- Drive kind from the drive's own rotation rate (VPD 0xB1): a 520-byte 10K disk no longer reads `sas_ssd` (#82)
+
 ### 2026-10-10 (#82)
 - **fix:** drive kind from the drive's own rotation rate (VPD 0xB1) when it reports one — a 520-byte 10K disk (ST1200MM0098) read `sas_ssd` because sd never attached it and `rotational` reads 0; existing drives are reclassified with an event (#82)
 - **feat:** `plannedFormat.fallback`: a plan that is not 4096+PI1 (and not asked for) is flagged with its reason, and a warning event when the drive is probed — an issue, not a quiet fallback (#82)
