@@ -95,6 +95,11 @@ pub struct Planned {
     /// `vpd_b4` (the drive listed it) or `inferred` (no VPD 0xB4).
     pub basis: String,
     pub reason: String,
+    /// Not the first choice (4096+PI1) and not asked for: the drive does
+    /// not offer the default. An issue to show, never a quiet fallback
+    /// (owner, #82).
+    #[serde(default)]
+    pub fallback: bool,
 }
 
 /// SPT (VPD 0x86 byte 4 bits 5:3) → PI types.
@@ -213,18 +218,20 @@ pub const PREFERENCE: [(u32, Protection); 4] =
 pub fn plan(s: &Supports, want: Option<(u32, Protection)>) -> Result<Planned, String> {
     if let Some((len, prot)) = want {
         return match s.offers(len, prot) {
-            Some(basis) => Ok(Planned { block_size: len, protection: prot, basis: basis.into(), reason: "asked for (spec.format)".into() }),
+            Some(basis) => Ok(Planned { block_size: len, protection: prot, basis: basis.into(), reason: "asked for (spec.format)".into(), fallback: false }),
             None => Err(format!("the drive does not offer {len} with {}{}", prot.word(), unknown_hint(s))),
         };
     }
-    for (len, prot) in PREFERENCE {
+    for (i, (len, prot)) in PREFERENCE.into_iter().enumerate() {
         if let Some(basis) = s.offers(len, prot) {
-            let reason = if basis == "inferred" {
-                "first the drive offers in 4096+PI1, 512+PI1, 4096, 512 (no VPD 0xB4: 4096 not assumed)".to_string()
-            } else {
-                "first the drive offers in 4096+PI1, 512+PI1, 4096, 512".to_string()
-            };
-            return Ok(Planned { block_size: len, protection: prot, basis: basis.into(), reason });
+            let mut reason = "first the drive offers in 4096+PI1, 512+PI1, 4096, 512".to_string();
+            if basis == "inferred" {
+                reason.push_str(" (no VPD 0xB4: 4096 not assumed)");
+            }
+            if i > 0 {
+                reason = format!("4096 with PI type 1 not offered{}; {reason}", unknown_hint(s));
+            }
+            return Ok(Planned { block_size: len, protection: prot, basis: basis.into(), reason, fallback: i > 0 });
         }
     }
     Err(format!("the drive offers none of 4096/512 with or without PI{}", unknown_hint(s)))
@@ -235,6 +242,26 @@ fn unknown_hint(s: &Supports) -> &'static str {
         " (it lists no block lengths, VPD 0xB4; only 512 is assumed)"
     } else {
         ""
+    }
+}
+
+/// The drive's own rotation rate (VPD 0xB1) over the kernel's
+/// `queue/rotational`: sd never reads 0xB1 from a drive it could not attach
+/// (a 520-byte drive), and `rotational` then reads 0 — a 10K disk shown as
+/// an SSD (#82). Unreported rotation keeps the kernel's answer.
+pub fn kind_by_rotation(kind: crate::drive::DriveKind, s: Option<&Supports>) -> crate::drive::DriveKind {
+    use crate::drive::DriveKind as K;
+    let rotating = match s {
+        Some(s) if s.rotation_rpm.is_some() => true,
+        Some(s) if s.non_rotating == Some(true) => false,
+        _ => return kind,
+    };
+    match (kind, rotating) {
+        (K::SasSsd | K::SasHdd, true) => K::SasHdd,
+        (K::SasSsd | K::SasHdd, false) => K::SasSsd,
+        (K::SataSsd | K::SataHdd, true) => K::SataHdd,
+        (K::SataSsd | K::SataHdd, false) => K::SataSsd,
+        (k, _) => k,
     }
 }
 
@@ -341,9 +368,13 @@ mod tests {
         ]);
         let p = plan(&all, None).unwrap();
         assert_eq!((p.block_size, p.protection, p.basis.as_str()), (4096, Protection::Type1, "vpd_b4"));
+        assert!(!p.fallback);
 
         let no4k = st1200(vec![BlockLength { length: 512, pi_types: vec![0, 1] }, BlockLength { length: 520, pi_types: vec![0] }]);
         assert_eq!(plan(&no4k, None).unwrap().block_size, 512);
+        assert!(plan(&no4k, None).unwrap().fallback, "not the default: flagged, not quiet");
+        assert!(plan(&no4k, None).unwrap().reason.starts_with("4096 with PI type 1 not offered"));
+        assert!(!plan(&no4k, Some((512, Protection::Type1))).unwrap().fallback, "asked for");
         assert_eq!(plan(&no4k, None).unwrap().protection, Protection::Type1);
         assert!(plan(&no4k, Some((4096, Protection::None))).is_err(), "not offered → refused, never guessed");
     }
@@ -358,6 +389,19 @@ mod tests {
         let e = plan(&no_pi, Some((4096, Protection::Type1))).unwrap_err();
         assert!(e.contains("VPD 0xB4"), "{e}");
         assert!(plan(&no_pi, Some((512, Protection::Type1))).is_err(), "no PROTECT → no PI");
+    }
+
+    #[test]
+    fn rotation_decides_the_kind() {
+        use crate::drive::DriveKind as K;
+        let hdd = Supports { rotation_rpm: Some(10000), non_rotating: Some(false), ..Default::default() };
+        let ssd = Supports { non_rotating: Some(true), ..Default::default() };
+        assert_eq!(kind_by_rotation(K::SasSsd, Some(&hdd)), K::SasHdd, "the ST1200MM0098 at 520");
+        assert_eq!(kind_by_rotation(K::SasHdd, Some(&ssd)), K::SasSsd);
+        assert_eq!(kind_by_rotation(K::SataSsd, Some(&hdd)), K::SataHdd);
+        assert_eq!(kind_by_rotation(K::SasSsd, Some(&Supports::default())), K::SasSsd, "not reported: the kernel's");
+        assert_eq!(kind_by_rotation(K::SasSsd, None), K::SasSsd);
+        assert_eq!(kind_by_rotation(K::NvmeSsd, Some(&hdd)), K::NvmeSsd);
     }
 
     #[test]

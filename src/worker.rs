@@ -852,6 +852,13 @@ pub async fn submit_tagged(
                 "kind": d.kind,
                 "block_size": x.map(|x| x.block_size),
                 "capacity_bytes": x.map(|x| x.capacity_bytes),
+                "prot_type": x.and_then(|x| x.supports.as_ref()).map(|s| s.current_prot_type),
+                // What the drive would get by default (#82), next to what
+                // the job's own format step asks for.
+                "planned_format": x.and_then(|x| x.supports.as_ref()).map(|s| match crate::pi::plan(s, None) {
+                    Ok(p) => json!(p),
+                    Err(e) => json!({ "error": e }),
+                }),
             })
         };
         p["drives"] = json!(djs.iter().filter(|d| d.state == DjState::Queued).map(row).collect::<Vec<_>>());

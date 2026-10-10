@@ -9,6 +9,34 @@
 
 use std::fmt;
 
+/// Commands stormdrive sent that did not end GOOD, per device path:
+/// `"<opcode> <outcome>" → count` (#82). The kernel's `ioerr_cnt` counts
+/// every command that fails on a device, whoever sent it; this is the part
+/// that was ours, so the two can be compared.
+static NOT_GOOD: std::sync::Mutex<NotGood> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// device path → `"<opcode>[/<page>] <outcome>"` → count.
+pub type NotGood = std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>>;
+
+/// Count one command that did not end GOOD.
+pub fn record_not_good(path: &str, cdb: &[u8], outcome: &str) {
+    let op = cdb.first().copied().unwrap_or(0);
+    // LOG SENSE / VPD / diagnostic pages: the page is part of what failed.
+    let what = match op {
+        0x4D => format!("4d/{:02x} {outcome}", cdb.get(2).map_or(0, |b| b & 0x3f)),
+        0x12 if cdb.get(1).is_some_and(|b| b & 1 != 0) => format!("12/{:02x} {outcome}", cdb.get(2).copied().unwrap_or(0)),
+        0x85 => format!("85/{:02x} {outcome}", cdb.get(4).copied().unwrap_or(0)),
+        _ => format!("{op:02x} {outcome}"),
+    };
+    let mut m = NOT_GOOD.lock().unwrap_or_else(|e| e.into_inner());
+    *m.entry(path.to_string()).or_default().entry(what).or_default() += 1;
+}
+
+/// What [`record_not_good`] has counted since start.
+pub fn not_good() -> NotGood {
+    NOT_GOOD.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// Decoded sense data (fixed or descriptor format).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sense {
@@ -504,6 +532,7 @@ mod linux {
             }
             if hdr.sb_len_wr > 0 {
                 if let Some(s) = parse_sense(&sense[..hdr.sb_len_wr as usize]) {
+                    record_not_good(&self.path, cdb, &format!("sense {:x}/{:02x}{:02x}", s.key, s.asc, s.ascq));
                     // A CHECK CONDITION with a recovered error is success.
                     if s.key == 0x1 {
                         let got = (hdr.dxfer_len as i64 - hdr.resid as i64).max(0) as usize;
@@ -512,6 +541,7 @@ mod linux {
                     return Err(Error::Sense(s));
                 }
             }
+            record_not_good(&self.path, cdb, &format!("status {:02x} host {:x} driver {:x}", hdr.status, hdr.host_status, hdr.driver_status));
             Err(Error::Transport {
                 status: hdr.status,
                 host: hdr.host_status,
@@ -658,6 +688,16 @@ pub fn sg_path_in(scsi_generic_dir: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn not_good_counts_by_opcode_and_page() {
+        record_not_good("/dev/sgT", &[0x4D, 0, 0x40 | 0x11, 0, 0, 0, 0, 4, 0, 0], "sense 5/2400");
+        record_not_good("/dev/sgT", &[0x4D, 0, 0x40 | 0x11, 0, 0, 0, 0, 4, 0, 0], "sense 5/2400");
+        record_not_good("/dev/sgT", &[0x85, 8, 0x0e, 0, 0xD1], "sense 1/0000");
+        let m = not_good();
+        assert_eq!(m["/dev/sgT"]["4d/11 sense 5/2400"], 2);
+        assert_eq!(m["/dev/sgT"]["85/d1 sense 1/0000"], 1);
+    }
 
     #[test]
     fn fixed_sense_with_progress() {

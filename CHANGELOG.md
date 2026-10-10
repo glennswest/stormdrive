@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#82)
+- **fix:** drive kind from the drive's own rotation rate (VPD 0xB1) when it reports one — a 520-byte 10K disk (ST1200MM0098) read `sas_ssd` because sd never attached it and `rotational` reads 0; existing drives are reclassified with an event (#82)
+- **feat:** `plannedFormat.fallback`: a plan that is not 4096+PI1 (and not asked for) is flagged with its reason, and a warning event when the drive is probed — an issue, not a quiet fallback (#82)
+- **feat:** worker dry runs list each drive's current PI type and default `planned_format` (#82)
+- **feat:** `GET /api/v1/scsi/not-good`: SCSI commands stormdrive sent that did not end GOOD, per device and opcode/page, to compare with `io_errors` (#82)
+
 ## [v0.28.0] — 2026-10-10
 
 ### Added

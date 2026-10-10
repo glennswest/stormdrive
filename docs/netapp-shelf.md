@@ -175,6 +175,19 @@ So probe each drive first (VPD 0x86, 0xB4, 0xB1), then choose 4096+PI,
 512+PI or plain sizes per drive. The real run also needs a storage-admin
 bearer: the shelf's drives are writes, and the gate enforces.
 
+**Drive kind.** A 520-byte drive was shown as `sas_ssd`. sd never
+attached it, so sd never read VPD 0xB1, and sysfs `rotational` reads 0.
+From #82, the drive's own rotation rate (VPD 0xB1) decides HDD or SSD
+wherever the drive reports one. The ST1200MM0098 is a 10K disk.
+
+**`io_errors`.** This is the kernel's per-device `ioerr_cnt`: commands that
+failed, from whoever sent them. It is not media errors. On 0.27.1 it grew
+about one per minute on every drive, the internal SATA disk included. In
+the same reading, the drives' own error counters (LOG SENSE 0x02/0x03/0x05)
+showed 0 uncorrected, except 3 on sdp. `GET /api/v1/scsi/not-good` counts
+the commands stormdrive itself sent that did not end GOOD, per opcode and
+page, so the two can be held side by side.
+
 ## Formatting with protection information (#85)
 
 The owner formats from the console. stormdrive provides the probe, the
@@ -195,7 +208,12 @@ plan and the safe run. The session never sends a format.
    of 4096+PI type 1, 512+PI type 1, 4096, 512 (#82). Without VPD 0xB4,
    only 512 (and 512+PI1 when SPT lists type 1) counts as offered. The plan
    never guesses 4096. The Drive object shows `status.supports`,
-   `status.currentFormat` and `status.plannedFormat` (or `.error`).
+   `status.currentFormat` and `status.plannedFormat` (or `.error`). A plan
+   that is not 4096+PI1, and was not asked for, carries `fallback: true`
+   and its reason. The drive also gets a warning event when it is probed:
+   the owner wants a drive without 4096+PI1 to show as an issue, not to
+   fall back quietly (#82). A worker dry run lists each drive's current PI
+   type and `planned_format`.
 3. **Approve and run** with a `DriveOperation`. The apiserver stamps its
    requester, which must be a storage-admin; the worker checks that again
    before the step. Run it with `dryRun: true` first, then for real:

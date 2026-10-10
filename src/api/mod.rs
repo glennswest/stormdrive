@@ -207,6 +207,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}/health", get(get_drive_health))
         .route("/api/v1/drives/{id}/slabs", get(get_drive_slabs))
         .route("/api/v1/drives/{id}/supports", get(get_drive_supports))
+        .route("/api/v1/scsi/not-good", get(scsi_not_good))
         .route("/api/v1/drives/{id}/history", get(get_drive_history))
         // app-system-data (#64): drive history status, this boot's assets.
         .route("/api/v1/history", get(history_status))
@@ -690,6 +691,13 @@ async fn get_drive_health(
 /// role, offset), what the engine's slab listing puts on it (usage), and
 /// the engine's own report of where the node's halves run, with the
 /// finding when those disagree.
+/// `GET /api/v1/scsi/not-good` (#82): every SCSI command stormdrive sent
+/// since start that did not end GOOD, per device and opcode (page) — to
+/// hold against the kernel's per-device `ioerr_cnt` (`health.io_errors`).
+async fn scsi_not_good() -> Json<serde_json::Value> {
+    Json(json!({ "devices": crate::scsi::not_good() }))
+}
+
 #[derive(Deserialize)]
 struct SupportsQuery {
     /// `4096+type1`, `512`, … — plan this format instead of the preference.

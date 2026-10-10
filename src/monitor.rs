@@ -651,7 +651,14 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                 d.paths = paths;
                 d.firmware = primary.firmware.clone();
                 d.vendor = primary.vendor.clone();
-                if primary.supports.is_some() {
+                if primary.kind != d.kind && primary.kind != crate::drive::DriveKind::Unknown {
+                    events.push((Some(id), Severity::Info, "discovered", format!("{}: kind now {:?} (was {:?})", d.name, primary.kind, d.kind).to_lowercase()));
+                    d.kind = primary.kind;
+                }
+                if primary.supports.is_some() && primary.supports != d.supports {
+                    if let Some(msg) = fallback_issue(&primary.name, primary.supports.as_ref()) {
+                        events.push((Some(id), Severity::Warning, "format", msg));
+                    }
                     d.supports = primary.supports.clone();
                 }
                 if !matches!(d.activity, Activity::Formatting | Activity::Sanitizing) {
@@ -707,6 +714,9 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         primary.model, primary.serial, primary.capacity_bytes
                     ),
                 ));
+                if let Some(msg) = fallback_issue(&name, primary.supports.as_ref()) {
+                    events.push((Some(id), Severity::Warning, "format", msg));
+                }
                 let replaces = replaced_in_bay(&inv.drives, &location);
                 if let Some(old) = replaces.and_then(|o| inv.drives.get(&o)) {
                     events.push((
@@ -944,6 +954,17 @@ async fn reconcile_stormblock(state: &Arc<AppState>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A drive whose plan is not the default (4096+PI type 1): one warning
+/// when its probe arrives or changes, the issue the owner asked to see
+/// rather than a quiet fallback (#82).
+pub fn fallback_issue(name: &str, s: Option<&crate::pi::Supports>) -> Option<String> {
+    match crate::pi::plan(s?, None) {
+        Ok(p) if p.fallback => Some(format!("{name}: planned format {} + {}: {}", p.block_size, p.protection.word(), p.reason)),
+        Ok(_) => None,
+        Err(e) => Some(format!("{name}: no format to plan: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,5 +1176,16 @@ mod tests {
             HealthStatus::Good,
             "streak restarted on candidate change"
         );
+    }
+
+    #[test]
+    fn a_drive_without_4096_pi1_is_an_issue() {
+        use crate::pi::{BlockLength, Supports};
+        let no4k = Supports { protect: true, pi_types: vec![1], block_lengths: vec![BlockLength { length: 512, pi_types: vec![0, 1] }], ..Default::default() };
+        let msg = fallback_issue("sdb", Some(&no4k)).unwrap();
+        assert!(msg.starts_with("sdb: planned format 512 + PI type 1: 4096 with PI type 1 not offered"), "{msg}");
+        let all = Supports { protect: true, pi_types: vec![1], block_lengths: vec![BlockLength { length: 4096, pi_types: vec![0, 1] }], ..Default::default() };
+        assert_eq!(fallback_issue("sdb", Some(&all)), None);
+        assert_eq!(fallback_issue("sdb", None), None);
     }
 }

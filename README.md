@@ -753,7 +753,8 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/history` | the system-data directory, whether history is written, records and findings this run, this boot's assets file (#64) |
 | `GET /api/v1/assets` | this boot's hardware record and what changed since the previous boot (#64); 404 before it is taken |
 | `GET /api/v1/drives/{id}/slabs` | slabs on the disk, the engine's slabs on it, the engine's slab report and the finding (#58) |
-| `GET /api/v1/drives/{id}/supports[?want=4096+type1]` | probe now (INQUIRY PROTECT, VPD 0x00/0x86/0xB1/0xB4, MODE SENSE, READ CAPACITY(16); reads only): block lengths and PI types the drive offers, its current format, and `plannedFormat` (#85) |
+| `GET /api/v1/drives/{id}/supports[?want=4096+type1]` | probe now (INQUIRY PROTECT, VPD 0x00/0x86/0xB1/0xB4, MODE SENSE, READ CAPACITY(16); reads only): block lengths and PI types the drive offers, its current format, and `plannedFormat` (`fallback: true` when it is not 4096+PI1) (#85, #82) |
+| `GET /api/v1/scsi/not-good` | every SCSI command stormdrive sent that did not end GOOD, per device and opcode/page, since start — to hold against `health.io_errors` (the kernel's `ioerr_cnt`, every sender) (#82) |
 | `POST /api/v1/drives/{id}/locate` | `{"on": bool}` |
 | `POST /api/v1/drives/{id}/fleet` | `{"action":"join","format_slab"?,"tier"?}` or `{"action":"leave","drain"?,"force"?}` |
 | `GET·POST·DELETE /api/v1/drives/{id}/drain` | status · start (`?leave=true` retires when empty) · cancel |

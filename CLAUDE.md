@@ -471,6 +471,21 @@ keep becomes an issue. Same pass as #7.
       system-data mount → stormcos#456; /sys ro → #54), all tracked;
       changelog; #70 closed
 
+### #82: 4096+PI1 where offered; probe first; kind; io_errors (P1, 2026-10-10) — in progress
+
+Probe + plan + PI format step shipped with #85 (v0.28.0). Left here:
+- [x] kind from VPD 0xB1 (520-byte ST1200MM0098 read `sas_ssd`), monitor
+      reclassifies with an event
+- [x] `plannedFormat.fallback` + warning event (owner: no quiet fallback
+      from 4096+PI1); dry run rows carry prot type + planned format
+- [x] io_errors: all 18 drives incl. the internal SATA sda grow ~1/min on
+      0.27.1, drives' own uncorrected 0 (sdp 3) → not media errors, not
+      the 520 drives; `GET /api/v1/scsi/not-good` counts our own non-GOOD
+      commands to compare once released
+- [ ] build, v0.28.1, golden; live: read `supports` + not-good on the Dell
+- Formats on the Dell's shelf are gated on stormblock#391 (owner) and run
+  from the console (#85)
+
 ### #85: one shelf drive formatted from the console — probe, PI, safe format (P0, 2026-10-10) — in progress
 
 Owner: "We will have to take a risk. Format a single drive"; then "I want to

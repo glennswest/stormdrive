@@ -297,7 +297,7 @@ mod linux {
             if let Some(p) = cache.get(&key, now) {
                 out.push(Observed {
                     path: format!("/dev/{name}"),
-                    kind: classify(&base, &name),
+                    kind: crate::pi::kind_by_rotation(classify(&base, &name), p.supports.as_ref()),
                     vendor,
                     model,
                     serial,
@@ -379,7 +379,7 @@ mod linux {
             }
             out.push(Observed {
                 path: format!("/dev/{name}"),
-                kind: classify(&base, &name),
+                kind: crate::pi::kind_by_rotation(classify(&base, &name), supports.as_ref()),
                 vendor,
                 model,
                 serial,
