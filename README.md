@@ -117,7 +117,7 @@ are listed under [Not yet](#not-yet).
 - **Drive history and hardware assets in system-data** (#64, stormcos#456):
   the node's kept volume in the data half, which every install keeps
   (stormblock#355 makes it; stormcos mounts it into stormdrive at
-  `history.dir`, default `/data/system-data`). stormdrive never creates that
+  `history.dir`, default `/system-data`). stormdrive never creates that
   directory: while it is absent, history is off and `GET /api/v1/history`
   says so.
   - `history/drives/<wwn-…|serial-…>/<YYYY-MM>.jsonl`: one JSON record a
@@ -138,6 +138,27 @@ are listed under [Not yet](#not-yet).
     finding: in the record and a `history` warning event. `io_errors` (per
     boot) never is. The first sample after an install also grows its
     media-error warning from the history's count.
+  - **What happened to the drive** (#68),
+    `history/drives/<key>/log/<YYYY-MM>.jsonl`: one entry a line for
+    **every event about the drive** (discovered with its bay and shelf,
+    moved, missing, reappeared, kind or sector size changed, format started
+    and finished with the PI read back, controller resets seen, firmware,
+    tests, designation, fleet join/leave, drain, health warnings and
+    recoveries, engine findings, PI fallback). There is also an **action**
+    for every finished operation: worker steps (format, sanitize, ATA
+    security erase, test, partition, enrol), REST formats and firmware
+    updates. An action holds the step and its parameters, the requester, the
+    job, geometry/PI/firmware before and after, and the result and error.
+    That is the erase certificate.
+  - `history/drives/<key>/summary.json`, kept forever: first and last entry,
+    counts of entries, actions and warnings, the last action and the last
+    format, every node and bay the drive was seen in. It is replaced
+    atomically (temp file, sync, rename) and shown as `history` on
+    `/api/v1/drives` and on the Drive object's status.
+  - Keyed by WWN (else model + serial), so a drive moved to another bay,
+    shelf or node keeps its history. Appends are one synced write, and a
+    torn line is skipped on read, so a crash never costs an earlier entry.
+    Logs are pruned by month like the records.
   - `assets/<YYYYMMDDTHHMMSSZ>-<boot_id>.json`, one per boot: system,
     board and BIOS (DMI), CPUs per socket (model, cores, threads,
     microcode), DIMMs (SMBIOS type 17: slot, size, type, speed, maker,
@@ -499,7 +520,7 @@ or only one of `api.tls_cert_file`/`tls_key_file` set.
 | `worker.enroll_per_domain` | `1` | drive-worker enrolls at once per failure domain (shelf, else HBA) |
 | `worker.offer` | `true` | mark blank, healthy, out-of-fleet drives `enrolable`, with an event (#42) |
 | `worker.offer_min_bytes` | `1073741824` | …at least this big |
-| `history.dir` | `/data/system-data` | the system-data volume as mounted for stormdrive (#64); absent = no history or assets, never created |
+| `history.dir` | `/system-data` | the system-data volume as mounted for stormdrive (#64); absent = no history or assets, never created |
 | `history.heartbeat_secs` | `3600` | a drive record when a counter changes, else this often (`monitor.interval_secs` = every sample) |
 | `history.keep_months` | `24` | months of drive history kept |
 
@@ -697,7 +718,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/drives` | every drive, with any running test/format/firmware run inlined |
 | `GET /api/v1/drives/{id}` · `DELETE` | one drive · forget a missing, out-of-fleet drive |
 | `GET /api/v1/drives/{id}/health` | health report + trend |
-| `GET /api/v1/drives/{id}/history?limit=` | the drive's records from system-data, oldest first, the newest `limit` (100) (#64) |
+| `GET /api/v1/drives/{id}/history?limit=` | from system-data: `summary`, `log` (events and actions, #68) and `records` (health counters, #64), oldest first, the newest `limit` (100) of each |
 | `GET /api/v1/history` | the system-data directory, whether history is written, records and findings this run, this boot's assets file (#64) |
 | `GET /api/v1/assets` | this boot's hardware record and what changed since the previous boot (#64); 404 before it is taken |
 | `GET /api/v1/drives/{id}/slabs` | slabs on the disk, the engine's slabs on it, the engine's slab report and the finding (#58) |
@@ -896,7 +917,7 @@ in the golden, sysfs locate LEDs and the post-format rescan fail. SES and
 SG_IO paths work (stormcos#166; a writable `/sys` is in stormpump and ships
 with a release that carries it, #54). The serving pair and node CA are read
 from `/data/stormcert` (the defaults of `[api] tls_*`; the pair itself is
-stormcos#352), and drive history + assets go to `/data/system-data` once
+stormcos#352), and drive history + assets go to `/system-data` once
 stormcos mounts it into the unit (stormcos#456, stormblock#355); until then
 `GET /api/v1/history` says it is off.
 

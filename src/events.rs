@@ -106,14 +106,19 @@ impl EventLog {
         if self.ring.len() == self.cap {
             self.ring.pop_front();
         }
-        self.ring.push_back(Event {
+        let e = Event {
             seq,
             time: SystemTime::now(),
             drive_id,
             severity,
             kind: kind.to_string(),
             message,
-        });
+        };
+        // Every event about a drive also goes into its kept history (#68).
+        if e.drive_id.is_some() {
+            crate::history::send(crate::history::Item::Event(e.clone()));
+        }
+        self.ring.push_back(e);
         seq
     }
 

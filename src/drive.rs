@@ -433,6 +433,10 @@ pub struct Drive {
     /// rotation, current format (#85, `pi.rs`). None until probed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports: Option<crate::pi::Supports>,
+    /// The drive's kept history at a glance (#68): entries, actions, the
+    /// last format; the full log is `GET /api/v1/drives/{id}/history`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<crate::history::Summary>,
     /// The node's engine leaves this drive's slabs unused: it runs those
     /// halves from the network (#58). Folded into the health verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -805,6 +809,7 @@ mod tests {
             firmware: "1".into(),
             vendor: None,
             supports: None,
+            history: None,
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,

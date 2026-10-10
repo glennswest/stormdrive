@@ -510,6 +510,19 @@ pub async fn start(state: Arc<AppState>, drive: Drive, image_name: String, image
                 }
             }
         }
+        crate::history::send(crate::history::Item::Action(
+            drive.id,
+            crate::history::Action {
+                op: "firmware".into(),
+                params: serde_json::json!({ "image": image_name }),
+                result: if err.is_some() { "failed".into() } else { "done".into() },
+                error: err.clone(),
+                requester: None,
+                job: None,
+                before: serde_json::json!({ "firmware": drive.firmware }),
+                after: serde_json::json!({ "firmware": to, "reset_required": reset }),
+            },
+        ));
         st2.events.write().await.push(
             Some(drive.id),
             if err.is_some() { Severity::Error } else { Severity::Info },

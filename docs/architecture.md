@@ -738,7 +738,12 @@ app-system-data (stormcos `docs/SYSTEM-DATA.md`, stormcos#456) is the
 node's record of itself: a volume in the data half that every install
 keeps and only a node reset wipes. stormblock#355 makes and mounts it; stormcos mounts it
 into stormdrive's unit; stormdrive writes two of its parts under
-`history.dir` (default `/data/system-data`). The directory is never
+`history.dir` (default `/system-data`, where stormblock#355 mounts it,
+#76). Besides the health records, each drive has a log of every event about
+it and every operation done to it, with requester and before/after
+(`log/<YYYY-MM>.jsonl`), and a `summary.json` kept forever (#68). The
+events reach the history writer through a channel from the event log, so
+nothing on the event path waits on disk. The directory is never
 created: one on the install-wiped root would look kept and not be. While
 it is absent nothing is written, and `GET /api/v1/history` says why. It is
 checked on every write, so a volume mounted later is picked up.
@@ -1259,7 +1264,7 @@ convention), and CLI flags override the file.
   - `/run/stormblock` for the engine token;
   - `/data/stormcert` for the serving pair, the node CA and stormdrive's
     apiserver token (the pair itself: stormcos#352);
-  - `/data/system-data` for drive history and assets, once stormcos mounts
+  - `/system-data` for drive history and assets, once stormcos mounts
     it (stormcos#456); until then history is off.
 
   It is started on every node profile. See the README's "How it ships".

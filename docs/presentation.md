@@ -221,7 +221,7 @@ health (#19) — once the golden drops its `allow_anonymous` transition (#56).
   - `[kubernetes]` apiserver, credential, `controller`
   - `[firmware]` 32 KiB chunks, 256 MiB image cap, 30 min redundancy wait
   - `[worker]` 8 per HBA, 1 enrol per domain, offer ≥ 1 GiB
-  - `[history]` `/data/system-data`, hourly heartbeat, 24 months
+  - `[history]` `/system-data`, hourly heartbeat, 24 months
 - **Engine token:** config, then `$STORMBLOCK_API_TOKEN`, then the first
   readable token file. It is re-read while absent and on a 401.
 - **Health:** `/api/v1/health` is the stormd liveness probe.
@@ -243,7 +243,7 @@ health (#19) — once the golden drops its `allow_anonymous` transition (#56).
 - **Starts on every node profile** (`boot.d/40-services`).
   - Host network, host `/dev`, host `/sys` (read-only: stormcos#166),
     its own data and log volumes, the engine token from `/run/stormblock`,
-    `/data/stormcert`; `/data/system-data` once mounted (stormcos#456).
+    `/data/stormcert`; `/system-data` once mounted (stormcos#456).
   - stormd restarts it and probes `/api/v1/health`.
 - **Updated** only as a golden composed into a stormcos release; nodes
   clone the release copy-on-write, and a commit alone reaches nothing.

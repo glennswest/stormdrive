@@ -469,6 +469,24 @@ keep becomes an issue. Same pass as #7.
       system-data mount → stormcos#456; /sys ro → #54), all tracked;
       changelog; #70 closed
 
+### #68 + #76: drive history records what happened to the drive; `/system-data` (P1, 2026-10-10) — in progress
+
+Owner: "Stormdrive needs to keep detailed history on drive state and history
+in a data drive". Design (no open decision):
+- every drive-scoped event → the history writer (a channel from
+  `EventLog::push`, so nothing on the event path waits on disk) →
+  `history/drives/<key>/log/<YYYY-MM>.jsonl`; an **action** per finished
+  worker step (requester, job, params, before/after), REST format, firmware
+- `summary.json` per drive, forever, atomic rename; on `/api/v1/drives` and
+  Drive status as `history`; `/api/v1/drives/{id}/history` adds summary + log
+- default dir `/system-data` (#76, stormblock#355); tell stormcos#456
+- not here: induction phases (#75), RAID membership (stormraid), SED (#79)
+  record themselves as events when they exist
+Steps:
+- [x] history.rs Entry/Action/Summary, follow(), events tap, worker/format/
+      firmware actions, API + kube, tests, docs, changelog
+- [ ] build, release, golden; stormcos#456 told; close #68, #76
+
 ### #84: stormdrive serves no page; its UI is stormconsole's drive plugin (owner BUG, 2026-10-10) — DONE (v0.30.0)
 
 Owner: "stormdrive should be part of stormui, as a plugin." A component

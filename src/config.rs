@@ -58,7 +58,7 @@ pub struct HistoryConfig {
 
 impl Default for HistoryConfig {
     fn default() -> Self {
-        Self { dir: "/data/system-data".into(), heartbeat_secs: 3600, keep_months: 24 }
+        Self { dir: "/system-data".into(), heartbeat_secs: 3600, keep_months: 24 }
     }
 }
 

@@ -747,6 +747,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         firmware: primary.firmware.clone(),
                         vendor: primary.vendor.clone(),
                         supports: primary.supports.clone(),
+                        history: None,
                         wwid: primary.wwid.clone(),
                         capacity_bytes: primary.capacity_bytes,
                         block_size: primary.block_size,

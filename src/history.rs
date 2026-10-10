@@ -18,6 +18,18 @@
 //!
 //! The directory is never created: when the system-data volume is not
 //! mounted there, history is off and says so (`GET /api/v1/history`).
+//!
+//! **What happened to the drive** (#68): beside the health records,
+//! `<key>/log/<YYYY-MM>.jsonl` holds one [`Entry`] a line for every event
+//! about the drive (discovered, moved, missing, format started/finished,
+//! controller resets, firmware, tests, designation, fleet, drain, health
+//! warnings…) and an [`Action`] for every finished operation — worker step,
+//! format, firmware update: who asked, what, before and after, the result.
+//! That is the erase certificate as well. `<key>/summary.json` is the
+//! drive's summary, kept forever (replaced atomically: written to a temp
+//! file, synced, renamed). Lines are appended with one write and synced;
+//! a reader skips a torn last line, so a crash never costs an earlier
+//! record. Logs are pruned by month like the records.
 
 use crate::drive::{Drive, HealthStatus};
 use crate::smart::{AtaAttribute, Sample};
@@ -42,6 +54,171 @@ pub struct Identity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bay: Option<String>,
     pub capacity_bytes: u64,
+}
+
+/// One line of a drive's log (#68): an event about it, or an operation's
+/// result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    pub at: String,
+    pub unix: u64,
+    #[serde(default)]
+    pub boot_id: String,
+    #[serde(default)]
+    pub node: String,
+    #[serde(default)]
+    pub stormdrive: String,
+    pub drive: Identity,
+    /// The event kind (`discovered`, `format`, `worker`, …) or `action`.
+    pub kind: String,
+    /// `info`, `warning`, `error`.
+    pub severity: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<Action>,
+}
+
+/// What was done to a drive, and how it ended.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Action {
+    /// `format`, `sanitize`, `security_erase`, `test`, `partition`,
+    /// `enroll`, `firmware`.
+    pub op: String,
+    /// The step's parameters (block size, protection, method, image…).
+    #[serde(default)]
+    pub params: serde_json::Value,
+    /// `done`, `failed`, `interrupted`.
+    pub result: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Who asked (the Kubernetes user), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<String>,
+    /// The worker job (or DriveOperation) it ran under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    /// Geometry and firmware before and after: block size, PI type,
+    /// capacity, firmware revision.
+    #[serde(default)]
+    pub before: serde_json::Value,
+    #[serde(default)]
+    pub after: serde_json::Value,
+}
+
+/// A drive's history at a glance, kept forever (`summary.json`) and shown
+/// on the drive (`/api/v1/drives`, the Drive object's status).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Summary {
+    pub key: String,
+    pub first_at: String,
+    pub last_at: String,
+    pub entries: u64,
+    pub actions: u64,
+    pub warnings: u64,
+    /// The newest operation (op, result, at).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_action: Option<LastAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_format: Option<LastAction>,
+    /// Every node and bay the drive has been seen in.
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    #[serde(default)]
+    pub bays: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LastAction {
+    pub op: String,
+    pub result: String,
+    pub at: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+impl Summary {
+    /// Count one entry in.
+    pub fn add(&mut self, key: &str, e: &Entry) {
+        if self.key.is_empty() {
+            self.key = key.to_string();
+            self.first_at = e.at.clone();
+        }
+        self.last_at = e.at.clone();
+        self.entries += 1;
+        if e.severity != "info" {
+            self.warnings += 1;
+        }
+        if !e.node.is_empty() && !self.nodes.contains(&e.node) {
+            self.nodes.push(e.node.clone());
+        }
+        if let Some(b) = &e.drive.bay {
+            if !self.bays.contains(b) {
+                self.bays.push(b.clone());
+            }
+        }
+        if let Some(a) = &e.action {
+            self.actions += 1;
+            let last = LastAction { op: a.op.clone(), result: a.result.clone(), at: e.at.clone(), params: a.params.clone() };
+            if a.op == "format" {
+                self.last_format = Some(last.clone());
+            }
+            self.last_action = Some(last);
+        }
+    }
+}
+
+/// What the history writer is handed: an event about a drive, or an
+/// operation's result. See [`send`].
+#[derive(Debug, Clone)]
+pub enum Item {
+    Event(crate::events::Event),
+    Action(crate::drive::DriveId, Action),
+}
+
+static TAP: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<Item>> = std::sync::OnceLock::new();
+
+/// Hand an item to the writer task ([`follow`]); nothing when it is not
+/// running (tests, a node without system-data still runs it).
+pub fn send(item: Item) {
+    if let Some(tx) = TAP.get() {
+        let _ = tx.send(item);
+    }
+}
+
+/// The writer: every drive event and operation result into the drive's
+/// log, its summary onto the drive. Started once by `main`.
+pub async fn follow(state: std::sync::Arc<crate::api::AppState>) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    if TAP.set(tx).is_err() {
+        return;
+    }
+    while let Some(item) = rx.recv().await {
+        let (id, kind, severity, message, action, unix) = match item {
+            Item::Event(e) => {
+                let Some(id) = e.drive_id else { continue };
+                let unix = e.time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let sev = serde_json::to_value(e.severity).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                (id, e.kind, sev, e.message, None, unix)
+            }
+            Item::Action(id, a) => {
+                let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let sev = if a.result == "done" { "info" } else { "warning" }.to_string();
+                let msg = match &a.error {
+                    Some(e) => format!("{} {}: {e}", a.op, a.result),
+                    None => format!("{} {}", a.op, a.result),
+                };
+                (id, "action".to_string(), sev, msg, Some(a), unix)
+            }
+        };
+        let Some(d) = state.inventory.read().await.drives.get(&id).cloned() else { continue };
+        let h = state.history.clone();
+        let sum = tokio::task::spawn_blocking(move || h.log(&d, kind, severity, message, action, unix)).await.ok().flatten();
+        if let Some(sum) = sum {
+            if let Some(x) = state.inventory.write().await.drives.get_mut(&id) {
+                x.history = Some(sum);
+            }
+        }
+    }
 }
 
 /// One snapshot of a drive's health.
@@ -313,6 +490,8 @@ pub struct Status {
     pub reason: Option<String>,
     pub boot: Boot,
     pub records_written: u64,
+    /// Log entries written this run (#68).
+    pub entries_written: u64,
     pub findings: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
@@ -330,6 +509,8 @@ pub struct History {
     pub boot: Boot,
     /// The last record per drive key; loaded from the file on first use.
     last: Mutex<HashMap<String, Option<Record>>>,
+    /// Each drive's summary (#68); loaded from `summary.json` on first use.
+    summaries: Mutex<HashMap<String, Summary>>,
     pub status: Mutex<Status>,
 }
 
@@ -342,6 +523,7 @@ impl History {
             keep_months: cfg.keep_months.max(1),
             boot,
             last: Mutex::new(HashMap::new()),
+            summaries: Mutex::new(HashMap::new()),
             status: Mutex::new(status),
         }
     }
@@ -399,17 +581,7 @@ impl History {
             kernel: self.boot.kernel.clone(),
             stormdrive: self.boot.stormdrive.clone(),
             why: String::new(),
-            drive: Identity {
-                id: d.id.0.to_string(),
-                wwn: d.wwid.clone(),
-                serial: d.serial.clone(),
-                model: d.model.clone(),
-                firmware: d.firmware.clone(),
-                kind: serde_json::to_value(d.kind).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
-                path: d.path.clone(),
-                bay: d.location.bay_key(),
-                capacity_bytes: d.capacity_bytes,
-            },
+            drive: identity(d),
             status: serde_json::to_value(status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
             temperature_c: s.temperature_c,
             counters: counters(s),
@@ -465,6 +637,127 @@ impl History {
     pub fn read(&self, d: &Drive, limit: usize) -> Vec<Record> {
         read_records(&self.drive_dir(&key(d)), limit)
     }
+
+    /// One log entry for the drive (#68), and its summary after it. None
+    /// when system-data is not there or the write failed (said in status).
+    pub fn log(&self, d: &Drive, kind: String, severity: String, message: String, action: Option<Action>, unix: u64) -> Option<Summary> {
+        if !self.available() {
+            return None;
+        }
+        let k = key(d);
+        let e = Entry {
+            at: crate::controller::rfc3339(unix),
+            unix,
+            boot_id: self.boot.boot_id.clone(),
+            node: self.boot.node.clone(),
+            stormdrive: self.boot.stormdrive.clone(),
+            drive: identity(d),
+            kind,
+            severity,
+            message,
+            action,
+        };
+        let dir = self.drive_dir(&k);
+        let r = (|| -> anyhow::Result<Summary> {
+            append_line(&dir.join("log"), &e, self.keep_months)?;
+            let mut sums = self.summaries.lock().unwrap_or_else(|x| x.into_inner());
+            let sum = sums.entry(k.clone()).or_insert_with(|| read_summary(&dir).unwrap_or_default());
+            sum.add(&k, &e);
+            write_summary(&dir, sum)?;
+            Ok(sum.clone())
+        })();
+        let mut st = self.status.lock().unwrap_or_else(|x| x.into_inner());
+        match r {
+            Ok(s) => {
+                st.entries_written += 1;
+                Some(s)
+            }
+            Err(err) => {
+                tracing::warn!(drive = %k, "system-data: drive log not written: {err:#}");
+                st.last_error = Some(format!("{k}: {err:#}"));
+                None
+            }
+        }
+    }
+
+    /// The drive's log entries, oldest first, at most `limit` (the newest).
+    pub fn read_log(&self, d: &Drive, limit: usize) -> Vec<Entry> {
+        read_lines(&self.drive_dir(&key(d)).join("log"), limit)
+    }
+
+    /// The drive's summary as kept on disk.
+    pub fn summary(&self, d: &Drive) -> Option<Summary> {
+        read_summary(&self.drive_dir(&key(d)))
+    }
+}
+
+/// Who the drive is and where, for a record or a log entry.
+pub fn identity(d: &Drive) -> Identity {
+    Identity {
+        id: d.id.0.to_string(),
+        wwn: d.wwid.clone(),
+        serial: d.serial.clone(),
+        model: d.model.clone(),
+        firmware: d.firmware.clone(),
+        kind: serde_json::to_value(d.kind).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
+        path: d.path.clone(),
+        bay: d.location.bay_key(),
+        capacity_bytes: d.capacity_bytes,
+    }
+}
+
+/// Append one JSON line to `<dir>/<YYYY-MM>.jsonl` with a single write,
+/// synced; prune old months when a new month starts.
+fn append_line(dir: &Path, e: &Entry, keep_months: u32) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let m = month(e.unix);
+    let file = dir.join(format!("{m}.jsonl"));
+    let new_month = !file.exists();
+    let mut line = serde_json::to_vec(e)?;
+    line.push(b'\n');
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file)?;
+    f.write_all(&line)?;
+    f.sync_data()?;
+    if new_month {
+        prune(dir, &cutoff(&m, keep_months));
+    }
+    Ok(())
+}
+
+fn read_summary(dir: &Path) -> Option<Summary> {
+    serde_json::from_slice(&std::fs::read(dir.join("summary.json")).ok()?).ok()
+}
+
+/// Replace `summary.json` atomically: temp file, sync, rename.
+fn write_summary(dir: &Path, s: &Summary) -> anyhow::Result<()> {
+    let tmp = dir.join(".summary.json.tmp");
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(&serde_json::to_vec_pretty(s)?)?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, dir.join("summary.json"))?;
+    Ok(())
+}
+
+/// Log lines of a directory, oldest first, at most `limit` (the newest);
+/// a torn line is skipped.
+fn read_lines(dir: &Path, limit: usize) -> Vec<Entry> {
+    let mut out: Vec<Entry> = vec![];
+    for p in months(dir).iter().rev() {
+        let Ok(text) = std::fs::read_to_string(p) else { continue };
+        for l in text.lines().rev() {
+            if out.len() >= limit {
+                break;
+            }
+            if let Ok(r) = serde_json::from_str::<Entry>(l) {
+                out.push(r);
+            }
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out.reverse();
+    out
 }
 
 /// Month files of a drive, oldest first.
@@ -674,5 +967,59 @@ mod tests {
         assert!(!root.exists(), "never created");
         let st = h.status.lock().unwrap().clone();
         assert!(!st.active && st.reason.unwrap().contains("not mounted"));
+    }
+
+    #[test]
+    fn log_entries_actions_and_a_summary_that_survive_a_torn_line() {
+        let root = tmp("log");
+        let h = history(&root, "boot-a");
+        let mut d = drive();
+        d.location.bay = Some(3);
+        let t0 = 1_791_640_000;
+        h.log(&d, "discovered".into(), "info".into(), "sda: new drive".into(), None, t0).unwrap();
+        let act = Action {
+            op: "format".into(),
+            params: serde_json::json!({ "block_size": 4096, "protection": "type1" }),
+            result: "done".into(),
+            requester: Some("alice".into()),
+            job: Some("j1".into()),
+            before: serde_json::json!({ "block_size": 520 }),
+            after: serde_json::json!({ "block_size": 4096, "prot_type": 1 }),
+            ..Default::default()
+        };
+        let s = h.log(&d, "action".into(), "info".into(), "format done".into(), Some(act.clone()), t0 + 60).unwrap();
+        assert_eq!((s.entries, s.actions, s.warnings), (2, 1, 0));
+        assert_eq!(s.last_format.as_ref().map(|f| f.result.as_str()), Some("done"));
+        assert_eq!(s.nodes, vec!["n1".to_string()]);
+
+        // A crash mid-append leaves a torn line: it is skipped, nothing
+        // before it is lost, and the next entry still lands.
+        let dir = h.drive_dir(&key(&d)).join("log");
+        let f = std::fs::read_dir(&dir).unwrap().flatten().next().unwrap().path();
+        std::fs::OpenOptions::new().append(true).open(&f).unwrap().write_all(b"{\"at\":\"2026-10").unwrap();
+        let log = h.read_log(&d, 100);
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[1].action.as_ref().unwrap(), &act);
+        assert_eq!(log[1].drive.serial, "S40ABC");
+
+        // A new process (an install later) reads the summary from disk and
+        // counts on; the drive moved bay, its key (WWN) did not.
+        let h2 = history(&root, "boot-b");
+        d.location.bay = Some(9);
+        d.name = "sdq".into();
+        let s2 = h2.log(&d, "location".into(), "warning".into(), "moved".into(), None, t0 + 120).unwrap();
+        assert_eq!((s2.entries, s2.actions, s2.warnings), (3, 1, 1));
+        assert_eq!(s2.first_at, crate::controller::rfc3339(t0));
+        assert_eq!(h2.summary(&d).unwrap(), s2, "summary.json is what was returned");
+        assert!(!h2.drive_dir(&key(&d)).join(".summary.json.tmp").exists(), "renamed into place");
+        // Health records and log lines do not mix.
+        assert!(h2.read(&d, 100).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_log_without_the_volume() {
+        let h = history(Path::new("/nonexistent/stormdrive-sysdata"), "b");
+        assert!(h.log(&drive(), "discovered".into(), "info".into(), "x".into(), None, 1).is_none());
     }
 }

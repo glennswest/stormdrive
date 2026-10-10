@@ -733,7 +733,7 @@ async fn get_drive_history(
     let limit = q.limit.unwrap_or(100).clamp(1, 10_000);
     let h = s.history.clone();
     let d2 = d.clone();
-    let (active, records) = tokio::task::spawn_blocking(move || (h.available(), h.read(&d2, limit)))
+    let (active, records, log, summary) = tokio::task::spawn_blocking(move || (h.available(), h.read(&d2, limit), h.read_log(&d2, limit), h.summary(&d2)))
         .await
         .map_err(|e| ApiError::internal(format!("history read: {e}")))?;
     Ok(Json(json!({
@@ -741,6 +741,8 @@ async fn get_drive_history(
         "name": d.name,
         "key": crate::history::key(&d),
         "active": active,
+        "summary": summary,
+        "log": log,
         "records": records,
     })))
 }

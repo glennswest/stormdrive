@@ -402,10 +402,28 @@ async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, res
             }
         }
     }
-    let (prot, after, resets) = {
+    let (prot, after, resets, from, to) = {
         let run = handle.run.lock().unwrap();
-        (run.protection, run.prot_type_after, run.resets.clone())
+        (run.protection, run.prot_type_after, run.resets.clone(), run.from_block_size, run.to_block_size)
     };
+    // Kept history (#68). A worker step records its own action (with the
+    // requester); this is for the REST format routes and a re-attach.
+    let worker_owned = state.worker.jobs.lock().unwrap().values().any(|j| j.drives.iter().any(|dj| dj.drive == drive.id && dj.state == crate::worker::DjState::Running));
+    if !worker_owned {
+        crate::history::send(crate::history::Item::Action(
+            drive.id,
+            crate::history::Action {
+                op: "format".into(),
+                params: serde_json::json!({ "block_size": to, "protection": prot, "resets": resets }),
+                result: if err.is_some() { "failed".into() } else { "done".into() },
+                error: err.clone(),
+                requester: None,
+                job: None,
+                before: serde_json::json!({ "block_size": from }),
+                after: serde_json::json!({ "block_size": result.as_ref().ok(), "prot_type": after }),
+            },
+        ));
+    }
     let mut events = state.events.write().await;
     for r in &resets {
         events.push(Some(drive.id), Severity::Warning, "format", format!("{}: controller reset during the format — {r}; no new format starts until stormdrive restarts", drive.name));

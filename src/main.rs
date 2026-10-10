@@ -126,6 +126,8 @@ async fn main() -> anyhow::Result<()> {
     // format/test/firmware run left busy (#39): watch it or idle it,
     // before the monitor or the API sees a stale `activity`.
     stormdrive::worker::recover(state.clone()).await;
+    // Drive events and operation results into each drive's kept log (#68).
+    tokio::spawn(stormdrive::history::follow(state.clone()));
     tokio::spawn(stormdrive::monitor::run(state.clone()));
     // Drive objects and DriveOperations in the apiserver (#45).
     if let (Some(k), true) = (&kube, state.config.kubernetes.controller) {

@@ -70,7 +70,7 @@ offer = true                # mark blank, healthy, out-of-fleet drives `enrolabl
 offer_min_bytes = 1073741824 # …when at least this big (1 GiB)
 
 [history]                   # app-system-data (#64): drive history + hardware assets, kept across installs
-dir = "/data/system-data"   # the system-data volume as mounted for stormdrive; absent = off (never created)
+dir = "/system-data"   # the system-data volume as mounted for stormdrive; absent = off (never created)
 heartbeat_secs = 3600       # a drive record when a counter changes, else this often (monitor interval = every sample)
 keep_months = 24            # history/drives/<drive>/<YYYY-MM>.jsonl older than this are removed
 

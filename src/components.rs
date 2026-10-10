@@ -633,6 +633,7 @@ mod tests {
             firmware: "1".into(),
             vendor: None,
             supports: None,
+            history: None,
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,

@@ -1057,6 +1057,22 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
         state.worker.save().await;
         let result = run_step(&state, &job, idx, &drive, &step, &steps).await;
         drop(permit);
+        // The drive's kept history (#68): what was done, by whom, before
+        // and after — the erase certificate for a sanitize or an erase.
+        let after = state.inventory.read().await.drives.get(&drive_id).map(geometry).unwrap_or_default();
+        crate::history::send(crate::history::Item::Action(
+            drive_id,
+            crate::history::Action {
+                op: step.name().into(),
+                params: serde_json::to_value(&step).unwrap_or_default(),
+                result: if result.is_ok() { "done".into() } else { "failed".into() },
+                error: result.as_ref().err().cloned(),
+                requester: Some(requester.who.clone()),
+                job: Some(job.clone()),
+                before: geometry(&drive),
+                after,
+            },
+        ));
         match result {
             Ok(note) => {
                 state.worker.with(&job, idx, |d| {
@@ -1072,6 +1088,17 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
             }
         }
     }
+}
+
+/// A drive's geometry and firmware, for a history action's before/after.
+pub fn geometry(d: &Drive) -> Value {
+    json!({
+        "block_size": d.block_size,
+        "prot_type": d.supports.as_ref().map(|s| s.current_prot_type),
+        "capacity_bytes": d.capacity_bytes,
+        "firmware": d.firmware,
+        "usable": d.usable,
+    })
 }
 
 async fn fail(state: &Arc<AppState>, job: &str, idx: usize, id: DriveId, why: String) {
