@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.31.0] — 2026-10-10
+
+### Added
+- Drive history logs every drive event and every operation (requester, params, before/after, result) in system-data, with a per-drive summary kept forever (#68)
+
+### Fixed
+- `[history] dir` defaults to `/system-data` (#76)
+
 ### 2026-10-10 (#68, #76)
 - **feat:** drive history records what happened to the drive, not only its counters (#68): every drive event goes into `history/drives/<key>/log/<YYYY-MM>.jsonl`, and every finished operation goes in as an action (worker steps, REST formats, firmware): requester, job, params, before/after geometry/PI/firmware, result. `summary.json` per drive is kept forever and replaced atomically. Appends are single synced writes and torn lines are skipped. `history` is shown on `/api/v1/drives` and the Drive status; `GET /api/v1/drives/{id}/history` adds `summary` and `log`
 - **fix:** `[history] dir` defaults to `/system-data`, where stormblock#355 mounts the system-data volume (was `/data/system-data`); docs and the example config follow (#76)
