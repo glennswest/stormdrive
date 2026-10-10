@@ -563,6 +563,20 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
                 let m = Metric::new("temp", t.to_string()).unit("°C");
                 metrics.push(if t >= 45 { m.tone("warn") } else { m });
             }
+            // #81: shelf ID, IOM paths, and what the shelf is unhappy about.
+            let sm = crate::shelfview::summarize(r, &BTreeMap::new());
+            if let Some(id) = &sm.shelf_id {
+                metrics.push(Metric::new("shelf id", id.clone()).tone("muted"));
+            }
+            let mp = &sm.multipath;
+            if mp.ioms_installed > 0 {
+                let m = Metric::new("iom paths", format!("{}/{}", mp.ioms_with_path, mp.ioms_installed));
+                metrics.push(if mp.ioms_with_path < mp.ioms_installed { m.tone("warn") } else { m });
+            }
+            for p in &sm.problems {
+                let st = format!("{:?}", p.status).to_lowercase();
+                detail.push(format!("{}: {st}", p.element));
+            }
             let base = format!("/api/v1/shelves/{key}");
             actions.push(act("locate-on", "Locate shelf", "POST", format!("{base}/locate/on"), true, false));
             actions.push(act("locate-off", "Shelf LED off", "POST", format!("{base}/locate/off"), true, false));
