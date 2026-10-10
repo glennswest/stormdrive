@@ -139,8 +139,11 @@ Location {                         // controller → shelf → bay hierarchy
 }
 // Lifecycle is three ORTHOGONAL fields, not one state ladder:
 Membership  = out | fleet          // is the drive handed to stormblock?
-Designation = none | reserved | spare | failed   // operator-set; applies
-                                                 // both in fleet and out
+Designation = none | reserved | spare | failed | system   // operator-set;
+                                     // applies both in fleet and out; system
+                                     // (#66) = the install's system drive(s),
+                                     // kept in system-data
+                                     // (stormdrive/system-drives.json)
 Activity    = idle | testing | draining | formatting | sanitizing | updating_firmware | missing
 HealthStatus = unknown | good | warning | failing | failed
 HealthReport {
@@ -802,6 +805,19 @@ type 127 or a truncated structure, and is unit-tested on a synthetic
 table. Kernel `MemTotal` is recorded and not compared (it moves with the
 kernel's reservations). DMI serials and the SMBIOS table are root-only:
 without root they are null or absent. The newest 1000 boot files are kept.
+
+**System drives** (`stormdrive/system-drives.json`, #66, `system.rs`). The
+install picks the system drive by the owner's rule 3 (stormblock#351):
+install-over, else a drive designated `system` here, else one unambiguous
+drive, else it stops. `data_dir` does not survive an install, so the
+`system`-designated drives are written here too, by WWN and serial with
+model, kind, size, shelf and bay (`present: false` for one not seen this
+run). `system::sync` runs after every discovery pass and on every change to
+or from `system`: the first time system-data is there it reads the file
+and designates each drive it names (WWN, else model + serial) that has no
+designation, then writes the file (tmp, fsync, rename) only when the set
+changed. A drive the file names with another designation here keeps it (a
+warning event); from the first match on, the inventory is the truth.
 
 ### Events (`events.rs`)
 A ring of 4096, each entry `{seq, time, drive_id?, severity, kind,

@@ -129,6 +129,15 @@ are listed under [Not yet](#not-yet).
     commands or power-on hours, which move on every read), when its verdict,
     firmware or bay changes, and otherwise every `history.heartbeat_secs`.
     Months older than `history.keep_months` are removed.
+  - `stormdrive/system-drives.json` (#66): the drives designated `system`
+    — `{version, node, updated, stormdrive, drives: [{id, wwn, serial,
+    model, kind, capacity_bytes, shelf, bay, path, present}]}` — rewritten
+    atomically whenever the set changes. After an install (inventory gone)
+    it is read once: each drive it names (by WWN, else model + serial) with
+    no designation is designated `system` again, with an event; a drive
+    designated otherwise is left alone, with a warning; a drive not seen
+    keeps its line (`present: false`). `GET /api/v1/system-drives` shows
+    the designated drives and the file.
   - **Findings:** each record is compared with the drive's last one, read
     back from the file at start, so across restarts and installs. An error
     counter that grows (media errors, reallocated, pending, offline or
@@ -190,8 +199,17 @@ are listed under [Not yet](#not-yet).
 - **Fleet** (`src/fleet.rs`, `src/stormblock.rs`). A drive's lifecycle is
   three separate fields:
   - `membership`: `out` or `fleet`. `fleet` means handed to stormblock.
-  - `designation`: `none`, `reserved`, `spare` or `failed`. The operator sets
-    it.
+  - `designation`: `none`, `reserved`, `spare`, `failed` or `system`. The
+    operator sets it.
+  - `system` (#66) marks the node's system drive, or each drive of its
+    system set: where the install lays the system half (the owner's install
+    rule 3, after install-over; stormblock#351). It is refused on a fleet
+    drive (the install would lay over its data). A system drive is never
+    offered, auto-added, joined, or given a data slab by a worker job or a
+    DrivePolicy; the REST format and destructive test refuse it, and a
+    worker step that destroys needs it named in `destroy`. The set is also
+    written to system-data, where the install can read it, and read back
+    after an install (see below).
   - `activity`: `idle`, `testing`, `draining`, `formatting`,
     `updating_firmware` or `missing`.
 
@@ -420,7 +438,7 @@ stormdrive's suites follow stormcentral's
 
 | Suite | Budget | What it proves |
 |---|---|---|
-| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled, or the reason it is not; slabs on each disk vs the engine's report (`drive-slabs`, #58); system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); card, placement (+304), feed, kube Drives, events, HBAs, `/metrics` (every drive by serial) |
+| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled, or the reason it is not; slabs on each disk vs the engine's report (`drive-slabs`, #58); system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); `system-drives` (the designated drives listed and in the install's file, #66); card, placement (+304), feed, kube Drives, events, HBAs, `/metrics` (every drive by serial) |
 | `medium` | < 30 min | 404 envelope, malformed requests refused (400); reads with no or a bogus credential refused (`reads-need-a-credential`, #19); writes without a storage-admin refused (`writes-need-storage-admin`, #45); malformed worker jobs refused, dry run only (`worker-refusals`); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost |
 | `long` | the night window | waves until the window ends: 4 + drives/8 API readers (4–64) and a smoke test on every idle, usable drive; p50/p95, errors, drives left busy, stuck or timed-out health reads, event growth. A wave slower than 2× the first (+250 ms), or leaving residue, fails |
 
@@ -727,7 +745,8 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `POST /api/v1/drives/{id}/locate` | `{"on": bool}` |
 | `POST /api/v1/drives/{id}/fleet` | `{"action":"join","format_slab"?,"tier"?}` or `{"action":"leave","drain"?,"force"?}` |
 | `GET·POST·DELETE /api/v1/drives/{id}/drain` | status · start (`?leave=true` retires when empty) · cancel |
-| `POST /api/v1/drives/{id}/designation` | `{"designation":"none\|reserved\|spare\|failed"}` |
+| `POST /api/v1/drives/{id}/designation` | `{"designation":"none\|reserved\|spare\|failed\|system"}`; `system` on a fleet drive 409 (#66) |
+| `GET /api/v1/system-drives` | the drives designated `system`, and `system_data`: the install's file (`stormdrive/system-drives.json`), what it holds, the last error (#66) |
 | `GET·PUT·POST /api/v1/drives/{id}/overcommit` | `{"enabled":bool,"ratio"?}`; GET adds promisable/committed/headroom |
 | `GET·POST /api/v1/drives/{id}/test`, `POST …/test/cancel` | `{"kind":"smoke\|read_scan\|destructive_sample"}` |
 | `POST /api/v1/drives/{id}/enroll[?tier=]` | an offered (`enrolable`) drive → partition + enroll as a data slab (worker job; 409 otherwise) (#42) |

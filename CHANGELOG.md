@@ -3,6 +3,10 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#66)
+- **feat:** a `system` designation (#66): the node's system drive or system set, the second rung of the owner's install rule (stormblock#351). Set like any designation (storage-admin), refused on a fleet drive (409). A system drive is never offered, auto-added, joined, policy-enrolled or given a data partition/slab; the REST format and destructive test refuse it; a destroying worker step needs it named in `destroy`. Feed action "Mark system drive"
+- **feat:** the system drives are written to system-data, `stormdrive/system-drives.json` (WWN, serial, model, kind, size, shelf, bay), atomically when the set changes, for the install to read; after an install the file designates its drives again. `GET /api/v1/system-drives`; short suite `system-drives`
+
 ## [v0.31.0] — 2026-10-10
 
 ### Added
