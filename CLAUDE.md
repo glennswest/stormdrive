@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.29.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.30.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -481,10 +481,11 @@ serves an API and a components feed, not its own app UI.
       the summary card only
 - [x] docs (README, architecture, presentation, CLAUDE.md module map,
       version locations), changelog
-- [ ] what moves: rack map/filters/grouping, drive pane, Prepare + Jobs,
+- [x] what moves: rack map/filters/grouping, drive pane, Prepare + Jobs,
       firmware store, shelf pane (#81), sign-in → stormconsole#131; #55 and
       #60 move there (closed here), #41 obsolete
-- [ ] build, release, golden
+- [x] build VM on 4ae0dc9: clippy -D warnings --locked, 13 test binaries
+      (259 unit; #87 was the TLS harness still expecting `/` = 200); v0.30.0
 
 ### #82: 4096+PI1 where offered; probe first; kind; io_errors (P1, 2026-10-10) — in progress
 

@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.30.0] — 2026-10-10
+
+### Breaking
+- No page: `web/` and the `/`, `/ui`, `/assets/*` routes are removed; the UI is stormconsole's drive plugin (stormconsole#131). API, feed and resources unchanged (#84)
+
 ### 2026-10-10 (#84)
 - **BREAKING:** stormdrive serves no page (owner: "stormdrive should be part of stormui, as a plugin"): `web/` (the Svelte page, its committed dist and `web/rebuild.sh`) is removed with the `/`, `/ui`, `/ui/`, `/assets/*` routes and the gate's page exceptions (open assets, the 401 sign-in shell). Those paths are now refused like any read without a credential (401) and unknown with one (404). Its views move to stormconsole's `drive` plugin (stormconsole#131); the API, the components feed and the `storage.storm.io` resources stay (#84)
 - **test:** the test container drops the page checks (short `page`, medium `page-under-ui`); `reads-need-a-credential` checks `/` is 401; the TLS harness checks the old page paths are refused (#84)
