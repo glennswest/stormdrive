@@ -254,7 +254,7 @@ async fn allow_anonymous_is_the_old_behaviour_with_credentials_still_checked() {
     for c in [&plain, &tls] {
         let base = if std::ptr::eq(c, &plain) { d.http("") } else { d.https("") };
         assert_eq!(status(c, &format!("{base}/api/v1/drives"), None).await, 200);
-        assert_eq!(status(c, &format!("{base}/"), None).await, 200);
+        assert_eq!(status(c, &format!("{base}/"), None).await, 404, "no page (#84)");
         assert_eq!(status(c, &format!("{base}/api/v1/drives"), Some("made-up")).await, 401);
         assert_eq!(status(c, &format!("{base}/api/v1/drives"), Some("bob-token")).await, 403);
         // Writes keep the #45 gate.
