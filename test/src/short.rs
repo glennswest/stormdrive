@@ -23,6 +23,7 @@ pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("health-verdicts", health_verdicts(api)).await;
     r.run("drive-slabs", drive_slabs(api)).await;
     r.run("system-data", system_data(api)).await;
+    r.run("system-drives", system_drives(api)).await;
     r.run("summary-card", summary_card(api)).await;
     r.run("placement", placement(api)).await;
     r.run("components-feed", components_feed(api)).await;
@@ -184,6 +185,39 @@ async fn system_data(api: &Api) -> Outcome {
         items.len(),
         a["changes"].as_array().map(Vec::len).unwrap_or_default()
     ))
+}
+
+/// The system-designated drives (#66): the route lists exactly the drives
+/// designated `system`, and with system-data mounted the install's file is
+/// written and names each of them. Read only.
+async fn system_drives(api: &Api) -> Outcome {
+    api.need((0, 32, 0), "system designation (#66)")?;
+    let v = api.get("api/v1/system-drives").await?.json("GET /api/v1/system-drives")?;
+    let listed: Vec<String> = v["designated"].as_array().into_iter().flatten().map(|e| s(e, "id").to_string()).collect();
+    let marked: Vec<String> = crate::drives(api).await?.iter().filter(|d| s(d, "designation") == "system").map(|d| s(d, "id").to_string()).collect();
+    for id in &marked {
+        ensure(listed.contains(id), format!("{id} is designated system but not listed"))?;
+    }
+    ensure(listed.len() == marked.len(), format!("{} listed, {} designated system", listed.len(), marked.len()))?;
+    let st = api.get("api/v1/history").await?.json("GET /api/v1/history")?;
+    if st["active"] != true {
+        return Err(Why::Skip(format!("{} system drive(s); system-data not mounted, no file for the install", marked.len())));
+    }
+    // The first discovery pass writes the file; give it a moment.
+    let mut file = v["system_data"].clone();
+    for _ in 0..30 {
+        if file["written"] == true {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        file = api.get("api/v1/system-drives").await?.json("GET /api/v1/system-drives")?["system_data"].clone();
+    }
+    ensure(file["written"] == true, format!("system-data is active but {} was not written in 30 s: {}", s(&file, "file"), file["last_error"]))?;
+    let in_file: Vec<String> = file["drives"].as_array().into_iter().flatten().map(|e| s(e, "id").to_string()).collect();
+    for id in &marked {
+        ensure(in_file.contains(id), format!("{id} is designated system but not in {}", s(&file, "file")))?;
+    }
+    Ok(format!("{} system drive(s), {} in {}", marked.len(), in_file.len(), s(&file, "file")))
 }
 
 /// The stormd card: a known health word, and its Drives count is the list's.

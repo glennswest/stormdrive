@@ -310,6 +310,16 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
         if let Some(what) = held {
             return Err(format!("holds {what} — name it in \"destroy\" by id, WWN or serial to allow"));
         }
+        // The node's system drive (#66) is never a destroy target unnamed,
+        // even blank: a policy or a shelf-wide job must not take it.
+        if d.designation == Designation::System {
+            return Err("designated system — name it in \"destroy\" by id, WWN or serial to allow".into());
+        }
+    }
+    if d.designation == Designation::System
+        && steps.iter().any(|s| matches!(s, Step::Partition { role: Role::Data } | Step::Enroll { role: Role::Data, .. }))
+    {
+        return Err("designated system: it takes the system half, not a data slab".into());
     }
     let formats_first = steps.iter().any(|s| matches!(s, Step::Format { .. }));
     for s in steps {
@@ -1654,6 +1664,22 @@ mod tests {
         let sib = Context { nvme_siblings: 1, ..cx() };
         assert!(guard(&nv, &[Step::Sanitize { method: SanitizeMethod::Block }], false, &sib).unwrap_err().contains("namespace"));
         assert!(guard(&nv, &[FMT], false, &sib).is_ok());
+    }
+
+    #[test]
+    fn a_system_drive_is_destroyed_only_when_named_and_never_takes_data() {
+        let sys = drive(|d| d.designation = Designation::System);
+        // Blank, but designated system: a shelf-wide or policy job must
+        // name it to format it (#66).
+        assert!(guard(&sys, &[FMT], false, &cx()).unwrap_err().contains("designated system"));
+        assert!(guard(&sys, &[FMT], true, &cx()).is_ok());
+        // A data slab never goes on it, named or not.
+        assert!(guard(&sys, &[FMT, part(), enroll()], true, &cx()).unwrap_err().contains("system half"));
+        let as_system = [Step::Partition { role: Role::System }, Step::Enroll { tier: None, role: Role::System }];
+        assert!(guard(&sys, &as_system, true, &cx()).is_ok(), "laid out as a system drive when named");
+        // Reading it is fine.
+        let smoke = [Step::Test { kind: crate::drivetest::TestKind::Smoke }];
+        assert!(guard(&sys, &smoke, false, &cx()).is_ok());
     }
 
     #[test]

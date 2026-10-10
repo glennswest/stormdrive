@@ -358,6 +358,9 @@ mod tests {
         assert_eq!(verdict(&p, &d, false), Verdict::Skip("designated spare".into()));
         d.designation = Designation::Failed;
         assert_eq!(verdict(&p, &d, false), Verdict::Skip("designated failed".into()));
+        // The node's system drive (#66) never gets a data slab by policy.
+        d.designation = Designation::System;
+        assert_eq!(verdict(&p, &d, false), Verdict::Skip("designated system".into()));
         let mut d = base.clone();
         d.health.status = Some(HealthStatus::Failing);
         assert!(matches!(verdict(&p, &d, false), Verdict::Skip(r) if r.contains("Failing")));

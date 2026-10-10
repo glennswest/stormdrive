@@ -216,6 +216,8 @@ async fn tick(
         let cached = discovery::probe_cache().lock().map(|c| c.len()).unwrap_or_default();
         state.poller.record_discovery(started.elapsed().as_millis() as u64, seen, cached);
         refresh_assets(state).await;
+        // The system drives where the install reads them (#66).
+        crate::system::sync(state).await;
     }
 
     refresh_offers(state).await;

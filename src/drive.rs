@@ -268,6 +268,25 @@ pub enum Designation {
     Spare,
     /// Operator declared it bad (health can also conclude this on its own).
     Failed,
+    /// The node's system drive, or one of its system set (#66): what the
+    /// install lays the system half on (the owner's install rule 3, after
+    /// install-over). Never offered, auto-added or enrolled for data, and
+    /// never a destroy target unless named. Kept in system-data
+    /// (`stormdrive/system-drives.json`) where the install can read it.
+    System,
+}
+
+impl Designation {
+    /// The word on the wire (`none`, `reserved`, …).
+    pub fn word(self) -> &'static str {
+        match self {
+            Designation::None => "none",
+            Designation::Reserved => "reserved",
+            Designation::Spare => "spare",
+            Designation::Failed => "failed",
+            Designation::System => "system",
+        }
+    }
 }
 
 /// May the slabs on this drive promise more than they hold (#13)? Off by
@@ -601,6 +620,9 @@ impl Drive {
         if self.designation == Designation::Reserved {
             return Some("designated reserved".into());
         }
+        if self.designation == Designation::System {
+            return Some("designated system: the install lays the system half on it, not data".into());
+        }
         if self.activity != Activity::Idle {
             return Some(format!("activity is {:?}", self.activity));
         }
@@ -619,11 +641,24 @@ impl Drive {
         None
     }
 
+    /// Why this drive cannot take designation `to` now (#66). `system` on
+    /// a fleet drive is refused: the install would lay the system half over
+    /// the data the engine placed there. Leave the fleet first.
+    pub fn designation_blocker(&self, to: Designation) -> Option<String> {
+        if to == Designation::System && self.designation != Designation::System && self.membership == Membership::Fleet {
+            return Some("in the fleet: its data would be laid over by the install — leave (drain) first".into());
+        }
+        None
+    }
+
     /// Destructive tests are only allowed on drives that are out of the
     /// fleet and present.
     pub fn destructive_test_blocker(&self) -> Option<String> {
         if self.membership == Membership::Fleet {
             return Some("in the fleet — destructive tests need an out-of-fleet drive".into());
+        }
+        if self.designation == Designation::System {
+            return Some("designated system — clear the designation first".into());
         }
         if let Some(who) = &self.in_use_by {
             return Some(format!("in use: holds data for {who}"));
@@ -751,6 +786,9 @@ impl Drive {
         }
         if self.designation == Designation::Reserved {
             return Some("designated reserved".into());
+        }
+        if self.designation == Designation::System {
+            return Some("designated system — a worker job naming it in \"destroy\" may format it".into());
         }
         if self.kind == DriveKind::NvmeSsd {
             return Some("NVMe: use namespace format (not implemented)".into());
@@ -982,6 +1020,28 @@ mod tests {
         assert!(back.usable);
         assert_eq!(back.physical_block_size, 0);
         assert!(!back.needs_reformat());
+    }
+
+    #[test]
+    fn a_system_drive_is_never_data_and_never_formatted_unnamed() {
+        let mut d = base_drive();
+        d.designation = Designation::System;
+        assert!(d.fleet_join_blocker().unwrap().contains("system"));
+        assert!(d.destructive_test_blocker().unwrap().contains("system"));
+        assert!(d.format_blocker().unwrap().contains("destroy"));
+        assert!(d.offer_blocker(0).unwrap().contains("System"), "never offered for data");
+        assert_eq!(serde_json::to_value(Designation::System).unwrap(), "system");
+        assert_eq!(Designation::System.word(), "system");
+        let back: Designation = serde_json::from_value(serde_json::json!("system")).unwrap();
+        assert_eq!(back, Designation::System);
+
+        // A fleet drive can't become the system drive: the install would
+        // lay over the engine's data. Out of the fleet it can.
+        let mut f = base_drive();
+        f.membership = Membership::Fleet;
+        assert!(f.designation_blocker(Designation::System).unwrap().contains("leave"));
+        assert!(f.designation_blocker(Designation::Spare).is_none());
+        assert!(base_drive().designation_blocker(Designation::System).is_none());
     }
 
     #[test]

@@ -64,6 +64,8 @@ pub struct AppState {
     pub history: Arc<crate::history::History>,
     /// This boot's hardware assets record, once taken (#64).
     pub assets: RwLock<Option<crate::assets::Assets>>,
+    /// The system-designated drives in system-data, for the install (#66).
+    pub system_drives: Arc<crate::system::SystemDrives>,
 }
 
 impl AppState {
@@ -195,6 +197,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}/history", get(get_drive_history))
         // app-system-data (#64): drive history status, this boot's assets.
         .route("/api/v1/history", get(history_status))
+        .route("/api/v1/system-drives", get(system_drives))
         .route("/api/v1/assets", get(get_assets))
         .route("/api/v1/drives/{id}/locate", post(set_locate))
         // Parameter-less action routes: a stormview renderer invokes
@@ -749,6 +752,21 @@ async fn get_drive_history(
 
 /// `GET /api/v1/history` — where drive history and assets go, and whether
 /// they are being written (#64).
+/// The system-designated drives as written to system-data for the install
+/// (#66): the file, what is in it, and the last error.
+async fn system_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let inv = s.inventory.read().await;
+    let now: Vec<_> = inv
+        .drives
+        .values()
+        .filter(|d| d.designation == Designation::System)
+        .map(crate::system::entry)
+        .collect();
+    drop(inv);
+    let st = s.system_drives.status();
+    Json(json!({ "designated": now, "system_data": st }))
+}
+
 async fn history_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let h = s.history.clone();
     let st = tokio::task::spawn_blocking(move || {
@@ -981,6 +999,9 @@ async fn set_designation(
     let (name, from, membership) = {
         let mut inv = s.inventory.write().await;
         let d = inv.drives.get_mut(&did).expect("resolved id present");
+        if let Some(why) = d.designation_blocker(body.designation) {
+            return Err(ApiError::conflict(format!("{}: {why}", d.name)));
+        }
         let from = d.designation;
         d.designation = body.designation;
         (d.name.clone(), from, d.membership)
@@ -1016,6 +1037,9 @@ async fn set_designation(
                 }
             }
         }
+    }
+    if from == Designation::System || body.designation == Designation::System {
+        crate::system::sync(&s).await;
     }
     s.persist().await;
     Ok(Json(json!({ "id": did, "from": from, "to": body.designation, "drain": drain })))

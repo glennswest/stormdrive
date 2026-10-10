@@ -4,7 +4,7 @@
 # sectors) is reformatted to 4096 first. Needs storage-admin (#50).
 #
 # Never touched: a drive in the fleet, holding data (a slab, a RAID set, a
-# filesystem), designated reserved/spare/failed, or failing. A drive whose
+# filesystem), designated reserved/spare/failed/system, or failing. A drive whose
 # job fails is not tried again until the policy is edited.
 #
 # Try dryRun: true first; status.nodes.<node>.drives says, per drive, what

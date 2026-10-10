@@ -330,6 +330,14 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         true,
     ));
     actions.push(act(
+        "mark-system",
+        "Mark system drive",
+        "POST",
+        format!("{base}/designation/system"),
+        d.designation != Designation::System && d.designation_blocker(Designation::System).is_none(),
+        true,
+    ));
+    actions.push(act(
         "clear-designation",
         "Clear mark",
         "POST",

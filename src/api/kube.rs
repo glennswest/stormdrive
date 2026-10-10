@@ -256,6 +256,9 @@ async fn patch_drive(
         let from = {
             let mut inv = s.inventory.write().await;
             let d = inv.drives.get_mut(&did).expect("resolved id present");
+            if let Some(why) = d.designation_blocker(des) {
+                return status_error(StatusCode::CONFLICT, "Conflict", format!("{}: {why}", d.name));
+            }
             let from = d.designation;
             d.designation = des;
             from
@@ -266,6 +269,9 @@ async fn patch_drive(
             "designation",
             format!("{}: {from:?} → {des:?} (kube)", drive.name),
         );
+        if from == Designation::System || des == Designation::System {
+            crate::system::sync(&s).await;
+        }
         if des == Designation::Failed && drive.membership == Membership::Fleet && s.stormblock.enabled() {
             let _ = s.stormblock.report_health(&drive.stormblock_path(), "failed", Some("operator designation"), false).await;
             if let Some(d) = s.inventory.write().await.drives.get_mut(&did) {

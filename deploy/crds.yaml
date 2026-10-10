@@ -193,7 +193,7 @@ spec:
       schema:
         openAPIV3Schema:
           type: object
-          description: Which drives of the selected nodes become stormblock slabs of which tier, reformatted first when the kernel cannot use them. Each node's stormdrive applies it to its own drives through the drive worker, never to a drive in the fleet, holding data (a slab, a RAID set, a filesystem), designated reserved, spare or failed, or failing.
+          description: Which drives of the selected nodes become stormblock slabs of which tier, reformatted first when the kernel cannot use them. Each node's stormdrive applies it to its own drives through the drive worker, never to a drive in the fleet, holding data (a slab, a RAID set, a filesystem), designated reserved, spare, failed or system, or failing.
           required: [spec]
           properties:
             spec:
