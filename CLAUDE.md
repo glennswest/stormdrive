@@ -622,7 +622,9 @@ Steps:
       posted; the format via the console (#85), gated on stormblock#391 (which
       format: 4096+PI probe) and a storage-admin bearer → #30.
       2026-10-10 check: Dell still 0.27.1, shelf 17/24 (bays 0-16),
-      stormblock#391 closed; re-proposed after stormcos#426
+      stormblock#391 closed. `propose --after` a release bounced
+      (stormcentral#562) → `shipped` (closes with stormcos#426); the live
+      steps above continue on #30
 
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 
