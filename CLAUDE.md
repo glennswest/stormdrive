@@ -504,7 +504,9 @@ Steps:
 - [x] docs, changelog; build VM on a36d297 (v0.28.0): clippy -D warnings
       --locked, 257 unit + harnesses; `web/rebuild.sh --check` 14 JS + 3
       page, dist identical; contract on stormconsole#131; stormcos#369
-      told (CRDs with `protection`, controller on). Golden requested
+      told (CRDs with `protection`, controller on). Golden
+      `golden-stormdrive-fe5413834883` (second try; the first hit
+      stormcentral#549), stormcos#426; #85 proposed after stormcos#369
 - [ ] Live: probe bay 0 on the Dell once v0.28.0 is there (anonymous
       `GET /api/v1/drives/ca0aa25f…/supports`), post it; the owner formats
       from the console (stormconsole#131) once stormcos#369 ships
@@ -541,7 +543,9 @@ Steps:
 - [x] docs/netapp-shelf.md: every SAS/SCSI command stormdrive sends, the
       DS224C element map, multipath; page shelf pane (IOMs, PSUs, paths);
       feed shelf card: shelf id, IOM paths, problems (1995f9d…d3ed8c2)
-- **Parked 2026-10-10 for P0 #85.** All code + docs pushed (up to the plan
+- **Built in v0.28.0** (a36d297, golden-stormdrive-fe5413834883,
+  stormcos#426) with #85; remaining: check against the live shelf once the
+  release is on the Dell, then close. (Was parked for P0 #85.) All code + docs pushed (up to the plan
   commit after d3ed8c2). NOT yet built: two VM builds were lost to a
   stormcentral self-update drain/restart. Next: `SC_BUILD_VM=1 sc-build
   'cargo clippy --workspace --all-targets -- -D warnings && cargo test
