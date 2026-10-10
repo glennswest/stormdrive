@@ -503,6 +503,12 @@ Steps:
 - [x] docs/netapp-shelf.md: every SAS/SCSI command stormdrive sends, the
       DS224C element map, multipath; page shelf pane (IOMs, PSUs, paths);
       feed shelf card: shelf id, IOM paths, problems (1995f9d…d3ed8c2)
+- **Parked 2026-10-10 for P0 #85.** All code + docs pushed (up to the plan
+  commit after d3ed8c2). NOT yet built: two VM builds were lost to a
+  stormcentral self-update drain/restart. Next: `SC_BUILD_VM=1 sc-build
+  'cargo clippy --workspace --all-targets -- -D warnings && cargo test
+  --workspace'` (fix what it finds), `SC_BUILD_VM=1 web/rebuild.sh` (commit
+  web/dist), then `web/rebuild.sh --check`, comment + golden
 - [ ] sc-build, release, golden; the live format waits on #82 (which
       format: 4096+PI probe) and a storage-admin bearer → #30
 
