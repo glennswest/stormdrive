@@ -429,6 +429,10 @@ pub struct Drive {
     /// offset, read in discovery (#58).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slab_parts: Vec<crate::contents::SlabPart>,
+    /// What a SCSI drive can be formatted to: block lengths, PI types,
+    /// rotation, current format (#85, `pi.rs`). None until probed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports: Option<crate::pi::Supports>,
     /// The node's engine leaves this drive's slabs unused: it runs those
     /// halves from the network (#58). Folded into the health verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -517,6 +521,9 @@ pub const USABLE_BLOCK_SIZES: [u32; 2] = [512, 4096];
 pub struct FormatRecord {
     pub from_block_size: u32,
     pub to_block_size: u32,
+    /// The protection information asked for (#85).
+    #[serde(default)]
+    pub protection: crate::pi::Protection,
     /// `running`, `done`, `failed`, `interrupted` (stormdrive restarted, #39).
     pub state: String,
     pub started: Option<SystemTime>,
@@ -797,6 +804,7 @@ mod tests {
             serial: "S".into(),
             firmware: "1".into(),
             vendor: None,
+            supports: None,
             wwid: None,
             capacity_bytes: 1 << 30,
             block_size: 512,

@@ -337,7 +337,12 @@ pub mod cdb {
     }
     /// FMTDATA=1 (a parameter list follows), defect list format 0.
     pub fn format_unit() -> [u8; 6] {
-        [0x04, 0x10, 0, 0, 0, 0]
+        format_unit_pi(0)
+    }
+    /// The same, with FMTPINFO (byte 1 bits 7:6; #85): 00b no protection
+    /// information, 10b type 1 (with PFU 000b in the parameter list).
+    pub fn format_unit_pi(fmtpinfo: u8) -> [u8; 6] {
+        [0x04, ((fmtpinfo & 0x03) << 6) | 0x10, 0, 0, 0, 0]
     }
     /// PCV=1: the named diagnostic page.
     pub fn receive_diagnostic(page: u8, alloc: u16) -> [u8; 6] {
@@ -581,9 +586,14 @@ impl Device {
     /// FORMAT UNIT with a parameter list. With `immed`, returns once the
     /// drive accepts the command; poll `test_unit_ready` for progress.
     pub fn format_unit(&self, immed: bool) -> Result<()> {
+        self.format_unit_pi(immed, 0)
+    }
+
+    /// FORMAT UNIT with FMTPINFO (see `cdb::format_unit_pi`).
+    pub fn format_unit_pi(&self, immed: bool, fmtpinfo: u8) -> Result<()> {
         let mut p = format_unit_param(immed);
         let t = if immed { T_FORMAT_IMMED } else { T_FORMAT_BLOCKING };
-        self.io(&cdb::format_unit(), Dir::ToDevice, &mut p, t).map(|_| ())
+        self.io(&cdb::format_unit_pi(fmtpinfo), Dir::ToDevice, &mut p, t).map(|_| ())
     }
 
     pub fn receive_diagnostic(&self, page: u8) -> Result<Vec<u8>> {

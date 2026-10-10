@@ -54,7 +54,7 @@ spec:
           properties:
             spec:
               type: object
-              description: The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here.
+              description: "The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here. Set `format: {blockSize: 4096|512, protection: none|type1}` to ask for a format: the node plans it into status.plannedFormat; a DriveOperation with that format step runs it (#85)."
               x-kubernetes-preserve-unknown-fields: true
             status:
               type: object
@@ -134,6 +134,7 @@ spec:
                       op: { type: string, enum: [format, sanitize, security_erase, test, partition, enroll] }
                       blockSize: { type: integer, description: "format: 512 or 4096." }
                       block_size: { type: integer }
+                      protection: { type: string, enum: [none, type1], description: "format: T10 PI to format with (SCSI; the drive must offer it — Drive status.supports)." }
                       method: { type: string, enum: [block, crypto, overwrite], description: "sanitize." }
                       kind: { type: string, enum: [smoke, read_scan, destructive_sample], description: "test: which drive test (a failed one stops the drive's later steps)." }
                       enhanced: { type: boolean, description: "security_erase: enhanced erase (default: when the drive supports it)." }

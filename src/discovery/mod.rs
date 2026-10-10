@@ -36,6 +36,8 @@ pub struct Observed {
     pub contents: Option<String>,
     /// The stormblock slabs on it, with their role and offset (#58).
     pub slabs: Vec<crate::contents::SlabPart>,
+    /// SCSI: block lengths and PI the drive offers (#85).
+    pub supports: Option<crate::pi::Supports>,
 }
 
 /// Is a sector size one the kernel will drive?
@@ -149,6 +151,7 @@ pub struct Probed {
     pub in_use_by: Option<String>,
     pub contents: Option<String>,
     pub slabs: Vec<crate::contents::SlabPart>,
+    pub supports: Option<crate::pi::Supports>,
     pub at: std::time::Instant,
 }
 
@@ -307,6 +310,7 @@ mod linux {
                     in_use_by: p.in_use_by.clone(),
                     contents: p.contents.clone(),
                     slabs: p.slabs.clone(),
+                    supports: p.supports.clone(),
                     name,
                 });
                 continue;
@@ -339,6 +343,15 @@ mod linux {
                     sectors * 512,
                 ),
             };
+            // What it can be formatted to (#85): read-only VPD/INQUIRY,
+            // cached with the rest of the probe.
+            let supports = if answered && name.starts_with("sd") {
+                let sg = crate::scsi::sg_path_in(&sys.join("block").join(&name).join("device/scsi_generic").to_string_lossy())
+                    .unwrap_or_else(|| node(&name));
+                crate::pi::probe(&sg).ok()
+            } else {
+                None
+            };
             let (in_use_by, slabs) = if sectors > 0 {
                 crate::contents::probe_slabs(&node(&name))
             } else {
@@ -359,6 +372,7 @@ mod linux {
                         in_use_by: in_use_by.clone(),
                         contents: contents.clone(),
                         slabs: slabs.clone(),
+                        supports: supports.clone(),
                         at: now,
                     },
                 );
@@ -378,6 +392,7 @@ mod linux {
                 in_use_by,
                 contents,
                 slabs,
+                supports,
                 name,
             });
         }
@@ -458,7 +473,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         let key = ProbeKey { name: "sdc".into(), dev: "8:32".into(), sectors: 1000, wwid: Some("naa.1".into()) };
         let mut c = ProbeCache::default();
-        c.put(key.clone(), Probed { block_size: 4096, physical_block_size: 4096, capacity_bytes: 1, in_use_by: None, contents: None, slabs: vec![], at: t0 });
+        c.put(key.clone(), Probed { block_size: 4096, physical_block_size: 4096, capacity_bytes: 1, in_use_by: None, contents: None, slabs: vec![], supports: None, at: t0 });
         assert!(c.get(&key, t0 + std::time::Duration::from_secs(30)).is_some());
         assert!(c.get(&key, t0 + PROBE_REFRESH).is_none(), "refreshed every ten minutes");
         let swapped = ProbeKey { wwid: Some("naa.2".into()), ..key.clone() };

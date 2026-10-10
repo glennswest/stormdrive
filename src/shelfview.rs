@@ -404,9 +404,14 @@ mod tests {
     #[test]
     fn problems_are_the_bad_individual_elements_not_the_overall_ones() {
         let s = summarize(&ds224c(), &hbas());
-        assert_eq!(s.problems.len(), 1, "{:?}", s.problems);
+        // The Dell's DS224C: bay 5's slot is noncritical, and the enclosure
+        // element (status ok) has FAILURE INDICATION set — the shelf's
+        // fault LED is lit. Overall elements (all zero) are not problems.
+        assert_eq!(s.problems.len(), 2, "{:?}", s.problems);
         assert_eq!(s.problems[0].element, "device slot 1 (bay 5)");
         assert_eq!(s.problems[0].status, ElementStatus::Noncritical);
+        assert_eq!(s.problems[1].element, "enclosure 0");
+        assert_eq!(s.problems[1].flags, vec!["failure indicated".to_string()]);
 
         // The page says critical and no element does → the page's flag.
         let mut rep = ds224c();

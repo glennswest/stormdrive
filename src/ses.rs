@@ -472,8 +472,24 @@ fn decode_element(t: u8, index: u32, overall: bool, b: [u8; 4]) -> Element {
             }
         }
         ET_ENCLOSURE => {
+            // SES-3 enclosure status: byte 2 bit 1 FAILURE INDICATION, bit
+            // 0 WARNING INDICATION (the shelf's own fault/warning LED);
+            // byte 3 bit 1 / bit 0 the same as requested by a client.
+            // Bits 7:2 of both are power-cycle timing, not faults.
             e.ident = b[1] & 0x80 != 0;
-            e.fault = b[3] & 0xc0 != 0 || b[2] & 0x02 != 0;
+            e.fault = b[2] & 0x02 != 0 || b[3] & 0x02 != 0;
+            if b[2] & 0x02 != 0 {
+                e.flags.push("failure indicated".into());
+            }
+            if b[2] & 0x01 != 0 {
+                e.flags.push("warning indicated".into());
+            }
+            if b[3] & 0x02 != 0 {
+                e.flags.push("failure requested".into());
+            }
+            if b[3] & 0x01 != 0 {
+                e.flags.push("warning requested".into());
+            }
         }
         ET_ESC_ELECTRONICS | ET_SAS_EXPANDER | ET_SAS_CONNECTOR => {
             e.ident = b[1] & 0x80 != 0;

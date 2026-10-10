@@ -61,8 +61,12 @@ how to find out more.
 
 ### Why the shelf reads "noncritical"
 
-On 0.27.1 only one individual element is not OK: the **device slot for bay
-5** (drive sdg, ST1200MM0098 `W402BS6M0000K842E9RP`). Its status code is 3
+The **enclosure element** reports status OK with FAILURE INDICATION set
+(byte 2 bit 1; raw `01 00 02 00`): the shelf's own fault LED is lit.
+stormdrive lists it in `problems` as "enclosure 0: failure indicated".
+Before #81, stormdrive tested the wrong bits of byte 3, the power-off
+duration. On 0.27.1 only one individual element is not OK: the **device
+slot for bay 5** (drive sdg, ST1200MM0098 `W402BS6M0000K842E9RP`). Its status code is 3
 (noncritical), and its flag bits are all clear. The drive's own health is
 good: no uncorrected errors and no predicted failure. The IOM does not say
 why in the status page. From this release, stormdrive reads page 0x03 (help

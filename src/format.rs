@@ -6,12 +6,17 @@
 //! 2. MODE SENSE(10) page 1 for the current block descriptor; MODE
 //!    SELECT(10) with a descriptor carrying the new block length and a
 //!    block count of 0 ("all"); MODE SELECT(6) if the drive rejects (10).
-//! 3. FORMAT UNIT, FMTDATA + IMMED. If IMMED is refused, the blocking form
-//!    with a day-long timeout.
-//! 4. TEST UNIT READY every few seconds; the drive answers NOT READY
-//!    04/04 with a progress indication until it is done.
+//! 3. FORMAT UNIT, FMTDATA + IMMED, FMTPINFO for protection information
+//!    (#85: type 1 = 10b, PFU 000b). If IMMED is refused, the blocking
+//!    form with a day-long timeout.
+//! 4. TEST UNIT READY every 30 s; the drive answers NOT READY 04/04 with a
+//!    progress indication until it is done. Meanwhile the drive's HBA
+//!    (mpt3sas `ioc_reset_count`) is watched: a controller reset is
+//!    recorded on the run, raised as an event, and no new format starts
+//!    until stormdrive restarts (the format already on the drive goes on).
 //! 5. Kernel rescan (`device/rescan`; delete + targeted host scan if sd
-//!    still sees 0 blocks), then READ CAPACITY again to verify.
+//!    still sees 0 blocks), then READ CAPACITY again to verify the block
+//!    length **and** the protection (PROT_EN, P_TYPE).
 //!
 //! Many drives at once is the normal case (a shelf of them): each runs in
 //! its own task, the drive does the work, the host only polls. There is
@@ -19,6 +24,7 @@
 
 use crate::api::AppState;
 use crate::drive::{Activity, Drive, DriveId, FormatRecord};
+use crate::pi::Protection;
 use crate::events::Severity;
 use crate::scsi::{self, Device, Error as ScsiError};
 use serde::Serialize;
@@ -50,6 +56,34 @@ pub struct FormatRun {
     pub error: Option<String>,
     /// Whether the drive took IMMED (progress is reportable).
     pub immediate: bool,
+    pub protection: Protection,
+    /// PI type READ CAPACITY reports after (0 = off).
+    pub prot_type_after: Option<u8>,
+    /// Controller (IOC) resets seen on the drive's HBA while it ran.
+    pub resets: Vec<String>,
+}
+
+/// Set once a controller reset is seen during a format: nothing new
+/// starts until stormdrive restarts (owner, #85: "on any host or IOC
+/// reset, stop starting anything").
+static RESET_HOLD: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn reset_hold() -> Option<String> {
+    RESET_HOLD.lock().unwrap().clone()
+}
+
+/// mpt3sas counts its IOC resets in sysfs; None for drivers without it.
+fn ioc_resets(host: Option<&str>) -> Option<u64> {
+    let host = host?;
+    std::fs::read_to_string(format!("/sys/class/scsi_host/{host}/ioc_reset_count")).ok()?.trim().parse().ok()
+}
+
+/// A reset seen now vs the count at the start → a line to record, once.
+pub fn reset_seen(host: &str, before: Option<u64>, now: Option<u64>) -> Option<String> {
+    match (before, now) {
+        (Some(b), Some(n)) if n > b => Some(format!("{host}: IOC reset count {b} → {n}")),
+        _ => None,
+    }
 }
 
 pub struct FormatHandle {
@@ -90,14 +124,19 @@ pub fn interpret_tur(r: &Result<(), ScsiError>) -> Result<Option<Option<u8>>, St
     }
 }
 
-const POLL: Duration = Duration::from_secs(5);
+const POLL: Duration = Duration::from_secs(30);
 const MAX_WAIT: Duration = Duration::from_secs(48 * 60 * 60);
 
 fn dev_path(drive: &Drive) -> String {
     scsi::sg_path_for_block(&drive.name).unwrap_or_else(|| drive.path.clone())
 }
 
-fn run_blocking(drive: &Drive, to: u32, handle: &FormatHandle) -> Result<u32, String> {
+fn run_blocking(drive: &Drive, to: u32, prot: Protection, handle: &FormatHandle) -> Result<u32, String> {
+    if let Some(why) = reset_hold() {
+        return Err(format!("not started: {why}; no new format starts until stormdrive restarts"));
+    }
+    let host = drive.location.controller.as_ref().and_then(|c| c.scsi_host.clone());
+    let resets0 = ioc_resets(host.as_deref());
     handle.set_phase("prepare");
     let dev = Device::open(&dev_path(drive)).map_err(|e| format!("open: {e}"))?;
     // Clear a pending unit attention so it does not fail the first real
@@ -127,8 +166,13 @@ fn run_blocking(drive: &Drive, to: u32, handle: &FormatHandle) -> Result<u32, St
     }
 
     handle.set_phase("format");
-    let immediate = match dev.format_unit(true) {
+    let immediate = match dev.format_unit_pi(true, prot.fmtpinfo()) {
         Ok(()) => true,
+        Err(ScsiError::Sense(s)) if s.is_illegal_request() && prot != Protection::None => {
+            // Refused with PI asked for: the drive does not do it — never
+            // fall back to a format the operator did not choose.
+            return Err(format!("format unit with {}: refused ({s})", prot.word()));
+        }
         Err(ScsiError::Sense(s)) if s.is_illegal_request() => {
             tracing::info!(drive = %drive.name, "IMMED refused ({s}); blocking format");
             handle.run.lock().unwrap().immediate = false;
@@ -141,8 +185,16 @@ fn run_blocking(drive: &Drive, to: u32, handle: &FormatHandle) -> Result<u32, St
     if immediate {
         handle.set_phase("formatting");
         let t0 = Instant::now();
+        let mut seen = resets0;
         loop {
             std::thread::sleep(POLL);
+            let now = ioc_resets(host.as_deref());
+            if let Some(line) = reset_seen(host.as_deref().unwrap_or("?"), seen, now) {
+                tracing::warn!(drive = %drive.name, "{line} during a format");
+                *RESET_HOLD.lock().unwrap() = Some(format!("{line} during {}'s format", drive.name));
+                handle.run.lock().unwrap().resets.push(line);
+                seen = now;
+            }
             match interpret_tur(&dev.test_unit_ready())? {
                 None => break,
                 Some(p) => handle.set_progress(p),
@@ -163,11 +215,15 @@ fn run_blocking(drive: &Drive, to: u32, handle: &FormatHandle) -> Result<u32, St
 
     handle.set_phase("verify");
     let after = dev.read_capacity16().map_err(|e| format!("read capacity after format: {e}"))?;
+    handle.run.lock().unwrap().prot_type_after = Some(after.prot_type);
     if after.block_len != to {
         return Err(format!(
             "drive reports {}-byte blocks after formatting to {to}",
             after.block_len
         ));
+    }
+    if after.prot_type != prot.prot_type() {
+        return Err(verify_prot_error(prot, after.prot_type));
     }
     // sd may need a delete + re-add to drop its "unsupported sector size"
     // conclusion; do it per path when the rescan did not take.
@@ -242,8 +298,17 @@ fn readd_block(name: &str) {
 #[cfg(not(target_os = "linux"))]
 fn readd_block(_name: &str) {}
 
+/// READ CAPACITY after the format reports another protection than asked.
+fn verify_prot_error(prot: Protection, got: u8) -> String {
+    format!(
+        "drive reports {} after formatting with {}",
+        if got == 0 { "no PI".to_string() } else { format!("PI type {got}") },
+        prot.word()
+    )
+}
+
 /// Start a format on one drive. Caller has checked `format_blocker`.
-pub async fn start(state: Arc<AppState>, drive: Drive, to: u32) -> Arc<FormatHandle> {
+pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection) -> Arc<FormatHandle> {
     let handle = Arc::new(FormatHandle {
         run: Mutex::new(FormatRun {
             drive: drive.id,
@@ -257,6 +322,9 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32) -> Arc<FormatHan
             finished: None,
             error: None,
             immediate: true,
+            protection: prot,
+            prot_type_after: None,
+            resets: vec![],
         }),
     });
     state.formats.write().await.insert(drive.id, handle.clone());
@@ -267,6 +335,7 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32) -> Arc<FormatHan
             d.format = Some(FormatRecord {
                 from_block_size: drive.block_size,
                 to_block_size: to,
+                protection: prot,
                 state: "running".into(),
                 started: Some(SystemTime::now()),
                 finished: None,
@@ -279,8 +348,11 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32) -> Arc<FormatHan
         Severity::Warning,
         "format",
         format!(
-            "{}: FORMAT UNIT {} → {} bytes/sector started (all data destroyed)",
-            drive.name, drive.block_size, to
+            "{}: FORMAT UNIT {} → {} bytes/sector, {} started (all data destroyed)",
+            drive.name,
+            drive.block_size,
+            to,
+            prot.word()
         ),
     );
     state.persist().await;
@@ -289,7 +361,7 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32) -> Arc<FormatHan
     tokio::spawn(async move {
         let h3 = h2.clone();
         let d2 = drive.clone();
-        let result = tokio::task::spawn_blocking(move || run_blocking(&d2, to, &h3))
+        let result = tokio::task::spawn_blocking(move || run_blocking(&d2, to, prot, &h3))
             .await
             .unwrap_or_else(|e| Err(format!("format task panicked: {e}")));
         finish(&state, &h2, &drive, result).await;
@@ -330,15 +402,29 @@ async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, res
             }
         }
     }
-    state.events.write().await.push(
+    let (prot, after, resets) = {
+        let run = handle.run.lock().unwrap();
+        (run.protection, run.prot_type_after, run.resets.clone())
+    };
+    let mut events = state.events.write().await;
+    for r in &resets {
+        events.push(Some(drive.id), Severity::Warning, "format", format!("{}: controller reset during the format — {r}; no new format starts until stormdrive restarts", drive.name));
+    }
+    let read_back = match after {
+        Some(0) => ", no PI read back".to_string(),
+        Some(t) => format!(", PI type {t} read back"),
+        None => String::new(),
+    };
+    events.push(
         Some(drive.id),
         if err.is_some() { Severity::Error } else { Severity::Info },
         "format",
         match &result {
-            Ok(bs) => format!("{}: formatted to {bs}-byte sectors; kernel rescanned", drive.name),
+            Ok(bs) => format!("{}: formatted to {bs}-byte sectors with {}{read_back}; kernel rescanned", drive.name, prot.word()),
             Err(e) => format!("{}: format FAILED: {e}", drive.name),
         },
     );
+    drop(events);
     state.persist().await;
 }
 
@@ -349,6 +435,7 @@ async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, res
 pub async fn reattach(state: Arc<AppState>, drive: Drive) -> Arc<FormatHandle> {
     let rec = drive.format.clone().unwrap_or_default();
     let to = rec.to_block_size;
+    let prot = rec.protection;
     let handle = Arc::new(FormatHandle {
         run: Mutex::new(FormatRun {
             drive: drive.id,
@@ -362,6 +449,9 @@ pub async fn reattach(state: Arc<AppState>, drive: Drive) -> Arc<FormatHandle> {
             finished: None,
             error: None,
             immediate: true,
+            protection: prot,
+            prot_type_after: None,
+            resets: vec![],
         }),
     });
     state.formats.write().await.insert(drive.id, handle.clone());
@@ -375,7 +465,7 @@ pub async fn reattach(state: Arc<AppState>, drive: Drive) -> Arc<FormatHandle> {
     tokio::spawn(async move {
         let h3 = h2.clone();
         let d2 = drive.clone();
-        let result = tokio::task::spawn_blocking(move || reattach_blocking(&d2, to, &h3))
+        let result = tokio::task::spawn_blocking(move || reattach_blocking(&d2, to, prot, &h3))
             .await
             .unwrap_or_else(|e| Err(format!("format task panicked: {e}")));
         finish(&state, &h2, &drive, result.map_err(|e| format!("{e} (after a restart)"))).await;
@@ -383,7 +473,7 @@ pub async fn reattach(state: Arc<AppState>, drive: Drive) -> Arc<FormatHandle> {
     handle
 }
 
-fn reattach_blocking(drive: &Drive, to: u32, handle: &FormatHandle) -> Result<u32, String> {
+fn reattach_blocking(drive: &Drive, to: u32, prot: Protection, handle: &FormatHandle) -> Result<u32, String> {
     let dev = Device::open(&dev_path(drive)).map_err(|e| format!("open: {e}"))?;
     let t0 = Instant::now();
     loop {
@@ -408,6 +498,10 @@ fn reattach_blocking(drive: &Drive, to: u32, handle: &FormatHandle) -> Result<u3
             "drive reports {}-byte blocks, not the {to} it was being formatted to: the format did not complete",
             after.block_len
         ));
+    }
+    handle.run.lock().unwrap().prot_type_after = Some(after.prot_type);
+    if after.prot_type != prot.prot_type() {
+        return Err(verify_prot_error(prot, after.prot_type));
     }
     Ok(after.block_len)
 }
@@ -438,6 +532,16 @@ mod tests {
         assert_eq!(interpret_tur(&sense(6, 0x29, 0x00, None)).unwrap(), Some(None), "unit attention");
         assert!(interpret_tur(&sense(3, 0x31, 0x01, None)).is_err(), "format command failed");
         assert!(interpret_tur(&Err(ScsiError::Unsupported("x"))).is_err());
+    }
+
+    #[test]
+    fn reset_lines_and_prot_errors() {
+        assert_eq!(reset_seen("host0", Some(2), Some(3)).as_deref(), Some("host0: IOC reset count 2 → 3"));
+        assert_eq!(reset_seen("host0", Some(2), Some(2)), None);
+        assert_eq!(reset_seen("host0", None, Some(3)), None, "no counter at the start: nothing to compare");
+        assert_eq!(verify_prot_error(Protection::Type1, 0), "drive reports no PI after formatting with PI type 1");
+        assert_eq!(crate::scsi::cdb::format_unit_pi(Protection::Type1.fmtpinfo())[1], 0x90, "FMTPINFO 10b + FMTDATA");
+        assert_eq!(crate::scsi::cdb::format_unit_pi(0)[1], 0x10);
     }
 
     #[test]

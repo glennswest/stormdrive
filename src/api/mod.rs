@@ -1718,7 +1718,7 @@ async fn start_formats(
     }
     let mut started = Vec::new();
     for d in drives {
-        let h = crate::format::start(s.clone(), d, block_size).await;
+        let h = crate::format::start(s.clone(), d, block_size, crate::pi::Protection::None).await;
         let run = h.run.lock().unwrap().clone();
         started.push(serde_json::to_value(run).unwrap_or_default());
     }

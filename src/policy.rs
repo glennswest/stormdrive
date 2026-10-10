@@ -181,7 +181,7 @@ impl PolicySpec {
     pub fn steps_for(&self, needs_reformat: bool) -> Vec<Step> {
         let mut steps = vec![];
         if let (true, Some(bs)) = (needs_reformat, self.reformat) {
-            steps.push(Step::Format { block_size: bs });
+            steps.push(Step::Format { block_size: bs, protection: crate::pi::Protection::None });
         }
         steps.push(Step::Partition { role: self.enroll.role });
         steps.push(Step::Enroll { tier: Some(self.enroll.tier.clone()), role: self.enroll.role });
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(
             steps,
             vec![
-                Step::Format { block_size: 4096 },
+                Step::Format { block_size: 4096, protection: crate::pi::Protection::None },
                 Step::Partition { role: Role::Data },
                 Step::Enroll { tier: Some("warm".into()), role: Role::Data },
             ]

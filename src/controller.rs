@@ -795,7 +795,7 @@ mod tests {
             id: "j1".into(),
             created: SystemTime::now(),
             select: Select { drives: vec!["sdb".into()], ..Default::default() },
-            steps: vec![Step::Format { block_size: 4096 }],
+            steps: vec![Step::Format { block_size: 4096, protection: crate::pi::Protection::None }],
             destroy: vec![],
             drives: states
                 .iter()
@@ -853,7 +853,7 @@ mod tests {
         });
         let r: crate::worker::Request = serde_json::from_value(spec).unwrap();
         assert!(r.dry_run);
-        assert_eq!(r.steps[0], Step::Format { block_size: 4096 });
+        assert_eq!(r.steps[0], Step::Format { block_size: 4096, protection: crate::pi::Protection::None });
         assert_eq!(r.select.bays.as_deref(), Some("0-11"));
     }
 

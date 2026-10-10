@@ -85,6 +85,10 @@ pub enum Step {
     Format {
         #[serde(alias = "blockSize")]
         block_size: u32,
+        /// T10 protection information (#85): `none` (default) or `type1`.
+        /// PI needs a SCSI drive whose probe says it offers it.
+        #[serde(default)]
+        protection: crate::pi::Protection,
     },
     Sanitize { method: SanitizeMethod },
     /// ATA SECURITY ERASE UNIT (#36). `enhanced`: None = when supported.
@@ -140,7 +144,8 @@ impl Step {
     }
     pub fn describe(&self) -> String {
         match self {
-            Step::Format { block_size } => format!("format → {block_size}"),
+            Step::Format { block_size, protection: crate::pi::Protection::None } => format!("format → {block_size}"),
+            Step::Format { block_size, protection } => format!("format → {block_size} + {}", protection.word()),
             Step::Sanitize { method } => format!("sanitize ({})", serde_json::to_value(method).unwrap_or_default().as_str().unwrap_or("?")),
             Step::Test { kind } => format!("test ({})", serde_json::to_value(kind).unwrap_or_default().as_str().unwrap_or("?")),
             Step::SecurityErase { enhanced } => match enhanced {
@@ -170,7 +175,7 @@ pub fn validate_steps(steps: &[Step]) -> Result<(), String> {
             return Err(format!("{} must come before the steps after it: low-level (format, sanitize), then partition, then enroll", s.name()));
         }
         rank = s.rank();
-        if let Step::Format { block_size } = s {
+        if let Step::Format { block_size, .. } = s {
             if !crate::format::valid_target(*block_size) {
                 return Err(format!("block_size {block_size}: use 512 or 4096"));
             }
@@ -311,6 +316,17 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
         match s {
             Step::SecurityErase { .. } if !matches!(d.kind, DriveKind::SataHdd | DriveKind::SataSsd) => {
                 return Err("ATA security erase is for SATA drives; use sanitize".into());
+            }
+            Step::Format { block_size, protection } if *protection != crate::pi::Protection::None => {
+                if d.kind == DriveKind::NvmeSsd {
+                    return Err("PI formats are SCSI only here; NVMe end-to-end protection is not built".into());
+                }
+                let Some(sup) = &d.supports else {
+                    return Err("not probed yet: what the drive offers (PI types, block lengths) is unknown".into());
+                };
+                if sup.offers(*block_size, *protection).is_none() {
+                    return Err(crate::pi::plan(sup, Some((*block_size, *protection))).err().unwrap_or_default());
+                }
             }
             Step::Sanitize { .. } if d.kind == DriveKind::NvmeSsd && cx.nvme_siblings > 0 => {
                 return Err(format!(
@@ -1069,7 +1085,7 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
     let (j, i) = (job.to_string(), idx);
     let progress = move |pct: Option<u8>, phase: &str| st.worker.progress(&j, i, pct, phase);
     match step {
-        Step::Format { block_size } if d.kind == DriveKind::NvmeSsd => {
+        Step::Format { block_size, .. } if d.kind == DriveKind::NvmeSsd => {
             set_activity(state, d.id, Activity::Formatting).await;
             let (path, name, bs) = (d.path.clone(), d.name.clone(), *block_size);
             let r = tokio::task::spawn_blocking(move || crate::erase::nvme_format(&path, &name, bs, &progress))
@@ -1088,17 +1104,17 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
             state.persist().await;
             r.map(|s| format!("Format NVM to {s}-byte blocks"))
         }
-        Step::Format { block_size } => {
+        Step::Format { block_size, protection } => {
             // The SCSI path is the existing format job (records, events,
             // rescan and verify included); the worker waits on it.
-            let handle = crate::format::start(state.clone(), d.clone(), *block_size).await;
+            let handle = crate::format::start(state.clone(), d.clone(), *block_size, *protection).await;
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 let run = handle.run.lock().unwrap().clone();
                 state.worker.progress(job, idx, run.progress_pct, &format!("format: {}", run.phase));
                 match run.state {
                     crate::format::FormatState::Running => continue,
-                    crate::format::FormatState::Done => return Ok(format!("FORMAT UNIT to {block_size}-byte sectors")),
+                    crate::format::FormatState::Done => return Ok(format!("FORMAT UNIT to {block_size}-byte sectors, {}", protection.word())),
                     crate::format::FormatState::Failed => return Err(run.error.unwrap_or_else(|| "format failed".into())),
                 }
             }
@@ -1497,7 +1513,7 @@ mod tests {
         Context { stormblock: true, ..Default::default() }
     }
 
-    const FMT: Step = Step::Format { block_size: 4096 };
+    const FMT: Step = Step::Format { block_size: 4096, protection: crate::pi::Protection::None };
     fn part() -> Step {
         Step::Partition { role: Role::Data }
     }
@@ -1512,7 +1528,7 @@ mod tests {
         assert!(validate_steps(&[]).is_err());
         assert!(validate_steps(&[part(), FMT]).unwrap_err().contains("before"));
         assert!(validate_steps(&[FMT, FMT]).unwrap_err().contains("twice"));
-        assert!(validate_steps(&[Step::Format { block_size: 520 }]).is_err());
+        assert!(validate_steps(&[Step::Format { block_size: 520, protection: crate::pi::Protection::None }]).is_err());
         assert!(validate_steps(&[Step::Partition { role: Role::System }, enroll()]).unwrap_err().contains("differ"));
         // The JSON shape the API takes.
         let s: Vec<Step> = serde_json::from_value(json!([
