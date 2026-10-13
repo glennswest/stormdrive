@@ -514,7 +514,8 @@ Steps:
 - [x] designation + guards + tests · [x] system-drives.json + reload + tests
       (9d397e1, ded9e1f docs)
 - [x] build VM on 17acb00 (#92 was a match arm's discarded u64): clippy
-      -D warnings --locked, 268 unit + harnesses; v0.32.0; golden; #66 closed
+      -D warnings --locked, 268 unit + harnesses; v0.32.0 (8fc7ed0); golden `golden-stormdrive-4d5adbb4fdd3`, stormcos#426;
+      #66 closed, contract on stormblock#351
 
 ### #84: stormdrive serves no page; its UI is stormconsole's drive plugin (owner BUG, 2026-10-10) — DONE (v0.30.0)
 
