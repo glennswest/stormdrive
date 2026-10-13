@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.32.0] — 2026-10-13
+
+### Added
+- A `system` designation, kept in system-data (`stormdrive/system-drives.json`) for the install to read; never offered, enrolled for data or destroyed unnamed (#66)
+
+### 2026-10-13
+- **fix:** `system::sync` did not compile (a match arm's event id not discarded) (#92)
+
 ### 2026-10-10 (#66)
 - **feat:** a `system` designation (#66): the node's system drive or system set, the second rung of the owner's install rule (stormblock#351). Set like any designation (storage-admin), refused on a fleet drive (409). A system drive is never offered, auto-added, joined, policy-enrolled or given a data partition/slab; the REST format and destructive test refuse it; a destroying worker step needs it named in `destroy`. Feed action "Mark system drive"
 - **feat:** the system drives are written to system-data, `stormdrive/system-drives.json` (WWN, serial, model, kind, size, shelf, bay), atomically when the set changes, for the install to read; after an install the file designates its drives again. `GET /api/v1/system-drives`; short suite `system-drives`

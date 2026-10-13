@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.31.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.32.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -490,7 +490,7 @@ Steps:
       `golden-stormdrive-fd0a54680e42`, stormcos#426; stormcos#456 told
       `/system-data`; #68, #76 closed. Live once system-data is mounted
 
-### #66: a `system` designation the install can read (P1, 2026-10-10) — in progress
+### #66: a `system` designation the install can read (P1, 2026-10-10) — DONE (v0.32.0)
 
 Owner's install rule 3 (stormdrive#58 comment, stormblock#351): the system
 drive is install-over, else "a drive designated `system` in stormdrive",
@@ -507,12 +507,14 @@ is the system drive, the 2 TB HDD keeps data (stormblock#402).
   (system-data), the system-designated drives by WWN/serial with model,
   kind, size, shelf/bay; rewritten when the set changes; read back after an
   install (inventory wiped) and the designation re-applied by WWN/serial
-- open (owner): the install reading system-data before it chooses, vs an
-  on-disk marker; and the designation outranking install-over (X9: old
-  system slab on the HDD) — asked on #66, stormblock#351 told
+- not ours: how the install reads system-data before it chooses, and
+  whether the designation outranks install-over (X9: old system slab on
+  the HDD) are the installer's rule (stormblock#351), told the contract
 Steps:
-- [ ] designation + guards + tests · [ ] system-drives.json + reload + tests
-- [ ] docs, changelog, build, release, golden; question on #66
+- [x] designation + guards + tests · [x] system-drives.json + reload + tests
+      (9d397e1, ded9e1f docs)
+- [x] build VM on 17acb00 (#92 was a match arm's discarded u64): clippy
+      -D warnings --locked, 268 unit + harnesses; v0.32.0; golden; #66 closed
 
 ### #84: stormdrive serves no page; its UI is stormconsole's drive plugin (owner BUG, 2026-10-10) — DONE (v0.30.0)
 
