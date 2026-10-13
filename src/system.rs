@@ -259,7 +259,7 @@ pub async fn sync(state: &Arc<crate::api::AppState>) {
                     format!("{who}: {file} names it the system drive, but it is designated {} here: left as it is", des.word()),
                 ),
                 None => log.push(Some(*id), Severity::Info, "designation", format!("{who}: none → system (kept in {file})")),
-            }
+            };
         }
     }
 
