@@ -595,6 +595,10 @@ Steps:
 - [ ] Live: probe bay 0 on the Dell once v0.28.0 is there (anonymous
       `GET /api/v1/drives/ca0aa25f…/supports`), post it; the owner formats
       from the console (stormconsole#131) once stormcos#369 ships
+- 2026-10-28: stormcos#369 done (controller on in the golden). Dell
+  C2NR0Q2 down (no ping, no :9092): item waits on a power-on, probe
+  tcp://192.168.30.2:9092. stormconsole#131 waits on this probe, so no
+  `--after` it (circular). Next: probe bay 0, post it on #85 and #131
 
 ### #81: NetApp DS224C (IOM12) shelf management (P1, 2026-10-10) — in progress
 
