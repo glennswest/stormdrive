@@ -706,27 +706,40 @@ pub fn build_ident_control(status_raw: &[u8], element_offset: usize, element_typ
             ctl[3] = st[3] & 0x20;
             ctl[2] = if on { 0x02 } else { 0 };
         }
+        ET_ENCLOSURE => {
+            // RQST IDENT byte 1 bit 7; byte 3 bits 1/0 REQUEST FAILURE /
+            // WARNING are kept as requested (a zero there clears them).
+            // Byte 2 (power cycle request) stays 0.
+            ctl[1] = if on { 0x80 } else { 0 };
+            ctl[3] = st[3] & 0x03;
+        }
         _ => {
-            // Enclosure, PSU, cooling, temperature, expander, connector,
-            // ESC: RQST IDENT is byte 1 bit 7.
+            // PSU, cooling, temperature, expander, connector, ESC: RQST
+            // IDENT is byte 1 bit 7.
             ctl[1] = if on { 0x80 } else { 0 };
         }
     }
     Some(page)
 }
 
-/// Like [`build_ident_control`], for a slot's FAULT indicator (#44): RQST
-/// FAULT (byte 3 bit 5) set or cleared, its IDENT kept as the status page
-/// shows it. None for anything but a (array) device slot.
+/// Like [`build_ident_control`], for a FAULT indicator, its IDENT kept as
+/// the status page shows it: a slot's RQST FAULT (byte 3 bit 5, #44), or
+/// the enclosure's REQUEST FAILURE (byte 3 bit 1, the shelf's own fault
+/// LED, #83; its REQUEST WARNING kept). None for any other element.
 pub fn build_fault_control(status_raw: &[u8], element_offset: usize, element_type: u8, on: bool) -> Option<Vec<u8>> {
-    if !matches!(element_type, ET_DEVICE_SLOT | ET_ARRAY_DEVICE_SLOT) {
+    if !matches!(element_type, ET_DEVICE_SLOT | ET_ARRAY_DEVICE_SLOT | ET_ENCLOSURE) {
         return None;
     }
     let mut page = build_ident_control(status_raw, element_offset, element_type, false)?;
     let st = &status_raw[element_offset..element_offset + 4];
     let ctl = &mut page[element_offset..element_offset + 4];
-    ctl[2] = st[2] & 0x02;
-    ctl[3] = if on { 0x20 } else { 0 };
+    if element_type == ET_ENCLOSURE {
+        ctl[1] = st[1] & 0x80;
+        ctl[3] = (st[3] & 0x01) | if on { 0x02 } else { 0 };
+    } else {
+        ctl[2] = st[2] & 0x02;
+        ctl[3] = if on { 0x20 } else { 0 };
+    }
     Some(page)
 }
 
@@ -1150,11 +1163,14 @@ mod linux {
         out
     }
 
-    /// Set or clear a bay's FAULT indicator through the shelf's first
-    /// reachable ESP (#44).
-    pub fn set_fault(rep: &ShelfReport, bay: u32, on: bool) -> std::io::Result<()> {
+    /// Set or clear a bay's FAULT indicator (#44), or the shelf's own
+    /// when `bay` is None (#83), through the shelf's first reachable ESP.
+    pub fn set_fault(rep: &ShelfReport, bay: Option<u32>, on: bool) -> std::io::Result<()> {
         let err = std::io::Error::other;
-        let pos = find_slot_element(&rep.elements, bay).ok_or_else(|| err(format!("shelf {}: no slot element for bay {bay}", rep.key)))?;
+        let pos = match bay {
+            Some(b) => find_slot_element(&rep.elements, b).ok_or_else(|| err(format!("shelf {}: no slot element for bay {b}", rep.key)))?,
+            None => find_enclosure_element(&rep.elements).ok_or_else(|| err(format!("shelf {}: no enclosure element", rep.key)))?,
+        };
         let et = rep.elements[pos].element_type;
         let mut last = None;
         for esp in &rep.esps {
@@ -1289,8 +1305,8 @@ pub fn read_page(rep: &ShelfReport, esp: Option<&str>, page: u8) -> std::io::Res
     }
 }
 
-/// A bay's fault LED via SES (#44).
-pub fn set_fault(rep: &ShelfReport, bay: u32, on: bool) -> std::io::Result<()> {
+/// A bay's fault LED via SES (#44), or the shelf's when `bay` is None (#83).
+pub fn set_fault(rep: &ShelfReport, bay: Option<u32>, on: bool) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         linux::set_fault(rep, bay, on)
@@ -1512,7 +1528,27 @@ mod tests {
         assert_eq!(page[12], 0, "slot 0 untouched");
         let off = build_fault_control(&st, element_offset(2), ET_ARRAY_DEVICE_SLOT, false).unwrap();
         assert_eq!(off[19], 0, "fault cleared");
-        assert!(build_fault_control(&st, element_offset(6), ET_ENCLOSURE, true).is_none(), "only a slot has a fault LED here");
+        assert!(build_fault_control(&st, element_offset(4), ET_TEMPERATURE, true).is_none(), "a sensor has no fault request");
+    }
+
+    #[test]
+    fn enclosure_fault_and_ident_keep_each_other() {
+        let mut st = status_page();
+        let at = element_offset(6);
+        st[at + 1] |= 0x80; // IDENT on
+        st[at + 2] = 0x3f; // power-cycle bits in the status: never echoed
+        st[at + 3] |= 0x01; // WARNING requested
+        let page = build_fault_control(&st, at, ET_ENCLOSURE, true).unwrap();
+        assert_eq!(page[at], 0x80, "selected");
+        assert_eq!(page[at + 1], 0x80, "IDENT kept");
+        assert_eq!(page[at + 2], 0, "no power cycle request");
+        assert_eq!(page[at + 3], 0x03, "REQUEST FAILURE + the warning kept");
+        let off = build_fault_control(&st, at, ET_ENCLOSURE, false).unwrap();
+        assert_eq!(off[at + 3], 0x01, "failure cleared, warning kept");
+        // IDENT off keeps a requested failure.
+        st[at + 3] = 0x02;
+        let id = build_ident_control(&st, at, ET_ENCLOSURE, false).unwrap();
+        assert_eq!((id[at + 1], id[at + 2], id[at + 3]), (0, 0, 0x02));
     }
 
     #[test]

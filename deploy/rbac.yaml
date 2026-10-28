@@ -21,10 +21,10 @@ metadata:
   name: stormdrive-controller
 rules:
   - apiGroups: ["storage.storm.io"]
-    resources: ["drives"]
+    resources: ["drives", "shelves"]
     verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: ["storage.storm.io"]
-    resources: ["drives/status", "driveoperations/status", "drivepolicies/status"]
+    resources: ["drives/status", "shelves/status", "driveoperations/status", "drivepolicies/status"]
     verbs: ["get", "patch", "update"]
   - apiGroups: ["storage.storm.io"]
     resources: ["driveoperations", "drivepolicies"]

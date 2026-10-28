@@ -32,6 +32,20 @@
 //!   tagged with the policy, and keeps `status.nodes.<node>` (phase, and
 //!   per drive: skipped and why, queued, running, enrolled, failed).
 //!   Deleting a policy cancels its jobs' queued steps.
+//!
+//! - **`Shelf`** (#83) — one per SES enclosure this node sees, named by its
+//!   key: status, conditions and Events from `shelfobj.rs`. Its `spec` is the
+//!   user's: `identify` and `faultLed` are sent to the enclosure when it
+//!   shows otherwise, and `defaultFormat` plans the drives in it whose own
+//!   Drive has no `spec.format`. A Shelf another node writes (a shelf cabled
+//!   to two nodes) is left to that node; its `defaultFormat` still counts.
+//!   A write to a Shelf or Drive spec is the apiserver's to authorise
+//!   (`storage-admin`): the LEDs change nothing on the data, and a format
+//!   still needs a DriveOperation with a stamped requester.
+//!
+//! On a Drive, two `spec` fields are the user's and never written by the
+//! node: `format` (#85) and `identify` (#83, the drive's locate LED, sent
+//! when it changes).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -171,6 +185,16 @@ pub struct Controller {
     policy_status: HashMap<String, String>,
     /// When a policy last probed a drive's contents and skipped it.
     probed: HashMap<(String, crate::drive::DriveId), Instant>,
+    /// Shelf status last written (fingerprint, when).
+    shelf_written: HashMap<String, (String, Instant)>,
+    /// Shelf LED requests sent: (shelf, "identify"|"faultLed") → wanted,
+    /// so a request is not resent every pass while the next SES scan
+    /// catches up (or when the enclosure refuses it).
+    shelf_led_sent: HashMap<(String, &'static str), bool>,
+    /// Each Shelf's `spec.defaultFormat`, last read.
+    shelf_defaults: HashMap<String, (u32, crate::pi::Protection)>,
+    /// Drive `spec.identify` last applied, per Drive object.
+    drive_ident: HashMap<String, bool>,
 }
 
 /// Run the controller until the process ends. One pass every
@@ -178,10 +202,26 @@ pub struct Controller {
 pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
     tracing::info!(apiserver = kube.base(), node = %state.node_name, "kubernetes: keeping Drive objects and running DriveOperations");
     let every = Duration::from_secs(state.config.kubernetes.interval_secs);
-    let mut c = Controller { state, kube, written: HashMap::new(), op_status: HashMap::new(), policy_status: HashMap::new(), probed: HashMap::new() };
+    let mut c = Controller {
+        state,
+        kube,
+        written: HashMap::new(),
+        op_status: HashMap::new(),
+        policy_status: HashMap::new(),
+        probed: HashMap::new(),
+        shelf_written: HashMap::new(),
+        shelf_led_sent: HashMap::new(),
+        shelf_defaults: HashMap::new(),
+        drive_ident: HashMap::new(),
+    };
     let mut last_err = String::new();
     loop {
         let r = async {
+            // Shelves first: their defaultFormat goes into the drives' plan.
+            // A failed Shelf pass keeps the last defaults it read.
+            if let Err(e) = c.shelves().await {
+                tracing::warn!("kubernetes: {e}");
+            }
             c.drives().await?;
             c.operations().await?;
             c.policies().await
@@ -215,7 +255,21 @@ impl Controller {
             .collect();
         let objs: Vec<Value> = {
             let inv = self.state.inventory.read().await;
-            inv.drives.values().map(|d| apiserver_drive_with(d, &node, wants.get(&d.id.0.to_string()).copied())).collect()
+            inv.drives
+                .values()
+                .map(|d| {
+                    let id = d.id.0.to_string();
+                    let shelf = d.location.shelf.as_ref().and_then(|s| s.key()).and_then(|k| self.shelf_defaults.get(&k).copied());
+                    let (want, from) = match (wants.get(&id).copied(), shelf) {
+                        (Some(w), _) => (Some(w), "drive"),
+                        (None, Some(w)) => (Some(w), "shelf"),
+                        (None, None) => (None, "preference"),
+                    };
+                    let mut o = apiserver_drive_with(d, &node, want);
+                    o["status"]["formatFrom"] = json!(from);
+                    o
+                })
+                .collect()
         };
         let mine: HashSet<String> = objs.iter().filter_map(|o| o["metadata"]["name"].as_str().map(str::to_string)).collect();
         for o in objs {
@@ -243,6 +297,182 @@ impl Controller {
                 }
                 self.written.remove(name);
             }
+        }
+        // `spec.identify`: the drive's locate LED, sent when it changes.
+        for item in list["items"].as_array().into_iter().flatten() {
+            let (Some(name), Some(on)) = (item["metadata"]["name"].as_str(), item["spec"]["identify"].as_bool()) else { continue };
+            if !mine.contains(name) || self.drive_ident.get(name) == Some(&on) {
+                continue;
+            }
+            let drive = {
+                let inv = self.state.inventory.read().await;
+                inv.resolve(name).cloned()
+            };
+            let Some(d) = drive else { continue };
+            let shelves = self.state.shelves.read().await.clone();
+            let (dname, loc) = (d.name.clone(), d.location.clone());
+            let r = tokio::task::spawn_blocking(move || crate::topology::set_locate(&dname, &loc, &shelves, on)).await;
+            let r = r.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
+            let what = if on { "on" } else { "off" };
+            match r {
+                Ok(()) => {
+                    self.event_on("Drive", item, "Normal", "Identify", &format!("{}: locate LED {what}", d.name)).await;
+                    self.state.events.write().await.push(Some(d.id), crate::events::Severity::Info, "locate", format!("{}: locate LED {what} (Drive spec.identify)", d.name));
+                }
+                Err(e) => self.event_on("Drive", item, "Warning", "IdentifyFailed", &format!("{}: locate LED {what}: {e}", d.name)).await,
+            }
+            // Once per change either way: a refused LED is not retried
+            // every pass (set it again to retry).
+            self.drive_ident.insert(name.to_string(), on);
+        }
+        Ok(())
+    }
+
+    /// Keep a Shelf object per enclosure this node sees (#83), act on its
+    /// LEDs, and read every Shelf's `defaultFormat`.
+    async fn shelves(&mut self) -> Result<(), String> {
+        use crate::shelfobj::{self, BayDrive, ShelfSpec};
+        let list = match self.kube.get(&path("shelves", None)).await {
+            Ok(l) => l,
+            // The CRD is not installed: no Shelf objects, no defaults.
+            Err(e) if e.code() == Some(404) => {
+                self.shelf_defaults.clear();
+                return Ok(());
+            }
+            Err(e) => return Err(format!("listing Shelves: {e}")),
+        };
+        let node = self.state.node_name.clone();
+        let me = label_value(&node);
+        let existing: HashMap<String, Value> = list["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| Some((i["metadata"]["name"].as_str()?.to_string(), i.clone())))
+            .collect();
+        self.shelf_defaults = existing
+            .iter()
+            .filter_map(|(k, o)| Some((k.clone(), ShelfSpec::parse(&o["spec"]).default_format?)))
+            .collect();
+        let reports = self.state.shelves.read().await.clone();
+        let hba = crate::api::hba_sas_names(&self.state).await;
+        let mut bays: HashMap<String, Vec<BayDrive>> = HashMap::new();
+        {
+            let inv = self.state.inventory.read().await;
+            let mut ds: Vec<&crate::drive::Drive> = inv.drives.values().collect();
+            ds.sort_by(|a, b| (a.location.bay, &a.name).cmp(&(b.location.bay, &b.name)));
+            for d in ds {
+                let Some(k) = d.location.shelf.as_ref().and_then(|s| s.key()) else { continue };
+                bays.entry(k).or_default().push(BayDrive {
+                    bay: d.location.bay,
+                    drive: d.id.0.to_string(),
+                    name: d.name.clone(),
+                    model: d.model.clone(),
+                    health: serde_json::to_value(d.health.status()).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                    block_size: d.block_size,
+                    needs_reformat: d.needs_reformat(),
+                });
+            }
+        }
+        for (key, rep) in &reports {
+            let cur = existing.get(key);
+            if let Some(o) = cur {
+                let writer = o["metadata"]["labels"]["storm.io/node"].as_str();
+                if writer.is_some() && writer != me.as_deref() {
+                    continue; // another node's view of a shared shelf
+                }
+            }
+            let sm = crate::shelfview::summarize(rep, &hba);
+            let prev = cur.map(|o| o["status"].clone()).unwrap_or(Value::Null);
+            let now = chrono_now();
+            let obj = shelfobj::shelf_object(rep, &sm, bays.get(key).map(Vec::as_slice).unwrap_or(&[]), &node, &prev, &now);
+            let target = match cur {
+                Some(o) => o.clone(),
+                None => {
+                    let body = json!({ "apiVersion": obj["apiVersion"], "kind": "Shelf", "metadata": obj["metadata"], "spec": {} });
+                    match self.kube.create_retried(&path("shelves", None), &body).await {
+                        Ok(v) => {
+                            tracing::info!("kubernetes: Shelf {key} created");
+                            v
+                        }
+                        Err(crate::kubeapi::KubeError::Status(409, _)) => body,
+                        Err(e) => return Err(format!("creating Shelf {key}: {e}")),
+                    }
+                }
+            };
+            for (kind, reason, msg) in shelfobj::transitions(&shelfobj::conditions(rep, &sm), &prev["conditions"]) {
+                self.event_on("Shelf", &target, kind, &reason, &msg).await;
+                let sev = if kind == "Warning" { crate::events::Severity::Warning } else { crate::events::Severity::Info };
+                self.state.events.write().await.push(None, sev, "shelf", format!("shelf {key}: {reason}: {msg}"));
+            }
+            let fp = shelfobj::fingerprint(&obj);
+            let due = match self.shelf_written.get(key) {
+                Some((p, at)) => *p != fp || at.elapsed() >= REFRESH,
+                None => true,
+            };
+            if due {
+                if cur.is_some() {
+                    // Labels: the writer's node (an object made before it had one).
+                    let _ = self.kube.merge_patch(&path("shelves", Some(key)), &json!({ "metadata": { "labels": obj["metadata"]["labels"] } })).await;
+                }
+                self.kube
+                    .merge_patch(&format!("{}/status", path("shelves", Some(key))), &json!({ "status": obj["status"] }))
+                    .await
+                    .map_err(|e| format!("Shelf {key} status: {e}"))?;
+                self.shelf_written.insert(key.clone(), (fp, Instant::now()));
+            }
+            // LEDs the spec asks for that the enclosure does not show.
+            let spec = ShelfSpec::parse(&target["spec"]);
+            let (ident_shown, fault_shown, _) = shelfobj::leds(rep);
+            for (what, shown) in [("identify", ident_shown), ("faultLed", fault_shown)] {
+                if self.shelf_led_sent.get(&(key.clone(), what)).copied() == shown && shown.is_some() {
+                    self.shelf_led_sent.remove(&(key.clone(), what)); // caught up
+                }
+            }
+            let (ident, fault) = shelfobj::led_actions(&spec, rep);
+            for (what, want) in [("identify", ident), ("faultLed", fault)] {
+                let Some(on) = want else { continue };
+                if self.shelf_led_sent.get(&(key.clone(), what)) == Some(&on) {
+                    continue;
+                }
+                let r2 = rep.clone();
+                let r = tokio::task::spawn_blocking(move || {
+                    if what == "identify" {
+                        crate::ses::set_ident(&r2, None, on)
+                    } else {
+                        crate::ses::set_fault(&r2, None, on)
+                    }
+                })
+                .await;
+                let r = r.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
+                let led = if what == "identify" { "locate LED" } else { "fault LED" };
+                let state = if on { "on" } else { "off" };
+                match r {
+                    Ok(()) => {
+                        self.event_on("Shelf", &target, "Normal", if what == "identify" { "Identify" } else { "FaultLed" }, &format!("shelf {led} {state}")).await;
+                        self.state.events.write().await.push(None, crate::events::Severity::Info, "locate", format!("shelf {key}: {led} {state} (Shelf spec.{what})"));
+                    }
+                    Err(e) => {
+                        let reason = if what == "identify" { "IdentifyFailed" } else { "FaultLedFailed" };
+                        self.event_on("Shelf", &target, "Warning", reason, &format!("shelf {led} {state}: {e}")).await;
+                    }
+                }
+                self.shelf_led_sent.insert((key.clone(), what), on);
+            }
+        }
+        // Shelves this node wrote and no longer sees.
+        for (key, o) in &existing {
+            if reports.contains_key(key) || o["metadata"]["labels"]["storm.io/node"].as_str() != me.as_deref() {
+                continue;
+            }
+            if o["status"]["present"] == json!(false) {
+                continue;
+            }
+            self.kube
+                .merge_patch(&format!("{}/status", path("shelves", Some(key))), &json!({ "status": { "present": false } }))
+                .await
+                .map_err(|e| format!("Shelf {key} status: {e}"))?;
+            self.event_on("Shelf", o, "Warning", "NotSeen", &format!("shelf {key} is no longer seen by {node}")).await;
+            self.shelf_written.remove(key);
         }
         Ok(())
     }

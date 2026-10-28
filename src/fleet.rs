@@ -268,7 +268,7 @@ async fn sync_fault_leds(state: &Arc<AppState>) {
             tracing::debug!(%shelf, "fault LED: shelf not visible over SES");
             continue;
         };
-        let r = tokio::task::spawn_blocking(move || crate::ses::set_fault(&rep, bay, on)).await;
+        let r = tokio::task::spawn_blocking(move || crate::ses::set_fault(&rep, Some(bay), on)).await;
         match r {
             Ok(Ok(())) => {
                 {

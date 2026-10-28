@@ -15,6 +15,9 @@
 #   slabs of which tier, reformatted first when they need it — the node's
 #   stormdrive does it without anyone running an operation. Only
 #   storage-admin can create one; its requester is re-checked the same way.
+# - Shelf (#83): one per SES enclosure, written by the node that sees it
+#   (status, conditions; issues are Events on it). Its spec is the user's:
+#   identify, faultLed, defaultFormat. Changing spec is storage-admin's.
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -54,7 +57,7 @@ spec:
           properties:
             spec:
               type: object
-              description: "The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here. Set `format: {blockSize: 4096|512, protection: none|type1}` to ask for a format: the node plans it into status.plannedFormat; a DriveOperation with that format step runs it (#85)."
+              description: "The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here. Set `format: {blockSize: 4096|512, protection: none|type1}` to ask for a format: the node plans it into status.plannedFormat (status.formatFrom says whether the drive's own format, its Shelf's defaultFormat or the 4096+PI1 preference decided it); a DriveOperation with that format step runs it (#85). Set `identify: true|false` for the drive's locate LED (#83)."
               x-kubernetes-preserve-unknown-fields: true
             status:
               type: object
@@ -254,3 +257,74 @@ spec:
                   type: object
                   description: "Per node: phase (Active, Planned, Waiting, Suspended, Refused, Pending, Invalid), message, requester, observedGeneration, and drives by stable id: state (skipped, planned, queued, running, enrolled, failed, refused, cancelled, interrupted), reason, job, steps, generation."
                   x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: shelves.storage.storm.io
+spec:
+  group: storage.storm.io
+  scope: Cluster
+  names:
+    kind: Shelf
+    plural: shelves
+    singular: shelf
+    shortNames: [shf]
+    categories: [storage]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Node, type: string, jsonPath: .status.node }
+        - { name: Model, type: string, jsonPath: .status.model }
+        - { name: ID, type: string, jsonPath: .status.shelfId }
+        - { name: State, type: string, jsonPath: .status.state }
+        - { name: Healthy, type: string, jsonPath: ".status.conditions[?(@.type=='Healthy')].status" }
+        - { name: SinglePath, type: string, jsonPath: ".status.conditions[?(@.type=='SinglePath')].status" }
+        - { name: Identify, type: boolean, jsonPath: .status.identify, priority: 1 }
+        - { name: Serial, type: string, jsonPath: .status.serial, priority: 1 }
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: A disk shelf (SES enclosure) as the stormdrive of the node that sees it reports it (#83). The name is the shelf's key (its SES logical id). Issues are Kubernetes Events on it.
+          properties:
+            spec:
+              type: object
+              description: Yours; the node never writes it.
+              properties:
+                identify: { type: boolean, description: "The shelf's locate LED (enclosure IDENT)." }
+                faultLed: { type: boolean, description: "The shelf's fault LED (enclosure REQUEST FAILURE)." }
+                defaultFormat:
+                  type: object
+                  description: The format planned for a drive in this shelf whose own Drive has no spec.format (a RAID set or a drive decides its own; this is only the default for drives not yet assigned). Running it is still a DriveOperation.
+                  required: [blockSize]
+                  properties:
+                    blockSize: { type: integer, enum: [512, 4096] }
+                    protection: { type: string, enum: [none, type1], default: none }
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                node: { type: string }
+                present: { type: boolean, description: "False once the node no longer sees the shelf." }
+                vendor: { type: string, nullable: true }
+                model: { type: string, nullable: true }
+                shelfId: { type: string, nullable: true }
+                serial: { type: string, nullable: true }
+                state: { type: string }
+                identify: { type: boolean, nullable: true }
+                faultLed: { type: boolean, nullable: true, description: "Fault requested by a client (spec.faultLed or anyone else)." }
+                faultIndicated: { type: boolean, nullable: true, description: "The shelf's own failure indication." }
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type: { type: string, enum: [Healthy, SinglePath, PSUDegraded, FanDegraded, OverTemp] }
+                      status: { type: string, enum: ["True", "False", Unknown] }
+                      reason: { type: string }
+                      message: { type: string }
+                      lastTransitionTime: { type: string }

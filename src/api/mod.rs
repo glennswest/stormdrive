@@ -1355,7 +1355,7 @@ async fn ws_components(
 
 /// This node's HBA SAS addresses → "host0 0000:01:00.0", so a shelf
 /// connector can say what it is cabled to.
-async fn hba_sas_names(s: &AppState) -> BTreeMap<String, String> {
+pub(crate) async fn hba_sas_names(s: &AppState) -> BTreeMap<String, String> {
     s.hbas
         .read()
         .await
