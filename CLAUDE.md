@@ -87,7 +87,10 @@ src/
   scsi.rs         raw SCSI over SG_IO: INQUIRY/VPD, READ CAPACITY(16), MODE SENSE/
                   SELECT, FORMAT UNIT, TUR progress, RECEIVE/SEND DIAGNOSTIC,
                   WRITE BUFFER; sense decoding portable + unit-tested
-  ses.rs          SES-2 pages 0x01/0x02/0x07/0x0A, shelf reports, IDENT control
+  ses.rs          SES-2 pages 0x01/0x02/0x07/0x0A, shelf reports, IDENT/FAULT
+                  control (bay or the enclosure)
+  shelfview.rs    shelf summary: IOMs, PSUs, connectors, multipath, problems (#81)
+  shelfobj.rs     the Shelf object: status, conditions, transitions, spec (#83)
   format.rs       sector-size reformat jobs (520 → 512/4096)
   worker.rs       the drive worker (#5): select × steps jobs, guards, lanes,
                   jobs.json, restart recovery, prep phase
@@ -625,11 +628,12 @@ format approval = DriveOperation (#85). Design here (no open decision):
 - Drive `spec.identify` → the drive's locate LED, applied on change
 - enrol stays a DriveOperation (`op: enroll`): it carries the requester
 Steps:
-- [ ] ses: enclosure fault control (keep IDENT), ident keeps requested failure
-- [ ] shelfobj.rs (pure): object, conditions, transitions, spec parse; tests
-- [ ] controller: Shelf pass (create/status/Events/LEDs), default format
-      into the Drive plan, Drive spec.identify; CRD + rbac; kube harness
-- [ ] docs (README, architecture), changelog; build VM; release; golden
+- [x] ses: enclosure fault control (keep IDENT), ident keeps requested failure
+- [x] shelfobj.rs (pure): object, conditions, transitions, spec parse; tests
+- [x] controller: Shelf pass (create/status/Events/LEDs), default format
+      into the Drive plan, Drive spec.identify; CRD + rbac (b9fb272)
+- [x] docs (README, architecture), changelog (1a49d66)
+- [ ] build VM; release; golden
 
 ### #81: NetApp DS224C (IOM12) shelf management (P1, 2026-10-10) — in progress
 
