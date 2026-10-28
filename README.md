@@ -529,7 +529,7 @@ or only one of `api.tls_cert_file`/`tls_key_file` set.
 | `kubernetes.ca_file` | `""` | its CA; empty = `$STORMDRIVE_KUBE_CA`, then the service account's (`/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`) |
 | `kubernetes.token_file` | `""` | stormdrive's own credential (re-read every call); empty = `$STORMDRIVE_KUBE_TOKEN_FILE`, then the service account's (`…/serviceaccount/token`) |
 | `kubernetes.insecure` | `false` | skip TLS verification (lab only) |
-| `kubernetes.controller` | `true` | keep `Drive` objects, run this node's `DriveOperation`s and the `DrivePolicy`s that select it |
+| `kubernetes.controller` | `true` | keep `Drive` and `Shelf` objects, run this node's `DriveOperation`s and the `DrivePolicy`s that select it |
 | `kubernetes.interval_secs` | `5` | between controller passes |
 | `firmware.chunk_kib` | `32` | download chunk; raised to the drive's offset boundary |
 | `firmware.max_image_mib` | `256` | largest image upload (also the request body limit) |
@@ -650,7 +650,7 @@ stable id, WWN or serial.
 
 ### As Kubernetes objects
 
-With `[kubernetes]` set, each node's stormdrive keeps three cluster-scoped kinds
+With `[kubernetes]` set, each node's stormdrive keeps four cluster-scoped kinds
 in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
 `deploy/rbac.yaml`, stormcos#302):
 
@@ -658,7 +658,11 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   `storm.io/node`, `storm.io/shelf`, `storm.io/bay`, …; status has model,
   size, sector size (`blockSize`, 520 = needs reformat), enclosure, bay, SAS
   address, health, owner, prep. `kubectl get drives`. Writing one changes
-  nothing (the node puts its report back).
+  nothing (the node puts its report back), except two `spec` fields that
+  are yours: `format {blockSize, protection}` (#85: planned into
+  `status.plannedFormat`, with `status.formatFrom` = `drive`, `shelf` or
+  `preference`; a DriveOperation runs it) and `identify` (#83: the drive's
+  locate LED, sent when you change it, an Event on the Drive either way).
 - **`DriveOperation`**: a drive-worker job as an object (`node`, `select`,
   `steps`, `destroy`, `dryRun`, `resume`) — see
   `deploy/driveoperation.example.yaml`. Only storage-admin can create one.
@@ -708,7 +712,38 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   (skipped and why, planned, queued, running, enrolled, failed), job and
   steps. Each decision is also a Kubernetes Event on the policy.
 
+- **`Shelf`** (#83), one per SES enclosure this node sees, named by its
+  key (the SES logical id), labelled `storm.io/node` (a shelf cabled to two
+  nodes is written by the first; the other leaves it alone). Status: vendor,
+  model, shelf ID, serial, state, SES paths (with IOM firmware), IOMs, PSUs,
+  connectors, multipath, fans (rpm, speed code 0–7), temperatures (with page
+  0x05 limits), bays → drives, problems, the LEDs as the enclosure shows
+  them (`identify`, `faultLed`, `faultIndicated`), `present` (false once the
+  node no longer sees it), and `conditions`:
+  - `Healthy` (every element OK), `SinglePath` (one ESP, or IOMs with no
+    path), `PSUDegraded`, `FanDegraded`, `OverTemp` (a sensor's own
+    over-temperature flag, critical status, or at/over its page-0x05 high
+    warning).
+
+  Issues are Kubernetes **Events** on the Shelf: one per condition change
+  (Warning into a bad state, Normal out of it; a new Shelf is quiet unless
+  something is already wrong), `NotSeen`, and each LED change it makes or
+  fails to make. The `spec` is yours (storage-admin) and never written by
+  the node:
+  - `identify` / `faultLed` (bool): the shelf's locate LED (enclosure IDENT)
+    and fault LED (enclosure REQUEST FAILURE), sent when the enclosure shows
+    otherwise; a refused request is not resent until you change it;
+  - `defaultFormat {blockSize: 512|4096, protection: none|type1}`: the
+    format planned for a drive in the shelf whose Drive has no
+    `spec.format`. The format belongs to a RAID set or a drive; the shelf
+    only gives the default for drives not yet assigned. Running it is still
+    a DriveOperation.
+
+  Fan control (`cooling`) is not built: #90 (measure the shelf first).
+
 ```bash
+kubectl get shelves
+kubectl patch shelf 500a09800e359135 --type merge -p '{"spec":{"identify":true}}'
 kubectl get drives -l storm.io/node=c2nr0q2 -o wide
 kubectl apply -f deploy/driveoperation.example.yaml   # dryRun: true first
 kubectl get driveoperations

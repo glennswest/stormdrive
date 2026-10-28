@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-28 (#83)
+- **feat:** `Shelf` resource (`storage.storm.io/v1`, deploy/crds.yaml): one per SES enclosure, written by the node that sees it. Status has identity, paths, IOMs, PSUs, fans (rpm, speed code), temperatures, bays → drives, problems, LEDs and conditions Healthy / SinglePath / PSUDegraded / FanDegraded / OverTemp. A condition change raises a Kubernetes Event on the Shelf. `present: false` once the node no longer sees the shelf
+- **feat:** Shelf `spec.identify` / `spec.faultLed` set the shelf's locate and fault LEDs (enclosure IDENT / REQUEST FAILURE); `spec.defaultFormat` plans the format of its drives that have no `spec.format` of their own (Drive `status.formatFrom`: drive / shelf / preference)
+- **feat:** Drive `spec.identify`: the drive's locate LED, sent when it changes, an Event on the Drive
+- **fix:** an enclosure IDENT request cleared a requested failure indication (control byte 3 left 0); it is now kept
+- **chore:** rbac: the controller role covers `shelves` and `shelves/status`
+- Fan control (`cooling`) is not built: #90
+
 ## [v0.32.0] — 2026-10-13
 
 ### Added

@@ -921,6 +921,29 @@ The route table, request bodies and handle resolution are in the
     (`worker.max_per_hba`) and the enroll runs one per failure domain, as
     for any job. Whether low-level steps should also run one per domain is
     #37.
+- **Shelves as objects (#83, `shelfobj.rs`).** Owner (2026-10-10): all
+  management via CRDs, stormdrive the controller, the UI stormconsole's.
+  The controller's first pass each round:
+  - lists `shelves` (404 = CRD absent: quiet, no defaults) and reads every
+    Shelf's `spec.defaultFormat` (the drives' plan takes it next);
+  - for each enclosure this node sees and no other node writes: creates the
+    Shelf (`spec: {}`), builds the status (pure `shelf_object` from the
+    `ShelfReport` and `shelfview::summarize`), raises an Event per condition
+    transition (pure `transitions`), and writes the status when its
+    fingerprint changes (fan rpm and temperatures excluded) or every 5 min;
+  - sends `spec.identify` / `spec.faultLed` when the enclosure element shows
+    otherwise (`led_actions`): `ses::set_ident` / `ses::set_fault` with no
+    bay act on the enclosure element. The fault request is REQUEST FAILURE
+    (byte 3 bit 1) with REQUEST WARNING and IDENT kept; an IDENT request
+    keeps a requested failure (a zero there would clear it). A request is
+    sent once per change; a refused one waits for the spec to change;
+  - marks a Shelf it wrote and no longer sees `present: false` (NotSeen).
+
+  On Drives, `spec.identify` drives `topology::set_locate` once per change.
+  `formatFrom` says what planned the format: the Drive's `spec.format`,
+  else its Shelf's `defaultFormat`, else #82's preference. RAID sets
+  declare their own format in stormraid's `RaidSet` (stormraid#54).
+  `cooling` waits on #90.
 - **`/metrics`** (#18, `metrics.rs`): Prometheus text, a read like any
   other (#19), from cached state. `smartctl_exporter` names (`smartctl_device_temperature`,
   `_power_on_seconds`, `_percentage_used`, `_media_errors`, …) where one
@@ -941,7 +964,7 @@ credential, 404 with one. Its views (shelf/HBA grouping, filters, the drive
 and shelf panes, bulk actions, Prepare and Jobs, the firmware store, offered
 drives, IOM firmware) belong to stormconsole's `drive` plugin
 (stormconsole#131), over this API, the feed and the Drive / DriveOperation /
-DrivePolicy resources.
+DrivePolicy / Shelf resources.
 
 ### The components feed (`/api/v1/components`, `/ws/components`)
 Every drive, shelf and HBA as a stormview `ComponentSummary`, so stormd,
