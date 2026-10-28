@@ -656,6 +656,8 @@ Steps:
       stormblock#391 closed. `propose --after` a release bounced
       (stormcentral#562) → `shipped` (closes with stormcos#426); the live
       steps above continue on #30
+- 2026-10-28: #30 parked on the Dell being up (down today; probe
+  tcp://192.168.30.2:9092), same as #85
 
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 
