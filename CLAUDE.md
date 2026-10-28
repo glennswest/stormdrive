@@ -600,6 +600,37 @@ Steps:
   tcp://192.168.30.2:9092. stormconsole#131 waits on this probe, so no
   `--after` it (circular). Next: probe bay 0, post it on #85 and #131
 
+### #83: the Shelf resource — status, conditions, Events, identify, fault LED, default format (P1, 2026-10-28) — in progress
+
+Owner (2026-10-10): all management via CRDs; stormdrive is the controller;
+the page is stormconsole#131's; the format belongs to a RaidSet or a drive,
+the shelf only gives a **default** for drives not yet assigned. Already
+built: Drive `spec.format` → `status.supports/currentFormat/plannedFormat`,
+format approval = DriveOperation (#85). Design here (no open decision):
+- CRD `Shelf` (`storage.storm.io/v1`, cluster, status subresource), one per
+  SES enclosure, named by its key (logical id), label `storm.io/node` = the
+  node that writes it (a second node seeing the same shelf leaves it alone)
+- `spec` (the user's; the node never writes it): `identify` (shelf locate
+  LED, enclosure IDENT), `faultLed` (enclosure REQUEST FAILURE),
+  `defaultFormat {blockSize, protection}` → the plan of a drive in that
+  shelf with no `spec.format` of its own
+- `status`: identity (shelf ID, serial, model, vendor), IOMs + paths, PSUs,
+  fans (rpm, speed code), temperatures (+ thresholds), bays → drives,
+  `problems`, `identify`/`faultLed` as the enclosure reports them,
+  `conditions`: Healthy, SinglePath, PSUDegraded, FanDegraded, OverTemp
+  (monitor.temp_warn_c/temp_crit_c or the sensor's own flags)
+- issues = Kubernetes Events on the Shelf when a condition changes, and on
+  every LED change it makes (or fails to make)
+- `cooling` is **not** built: #90 (owner: "dig more" — measure first)
+- Drive `spec.identify` → the drive's locate LED, applied on change
+- enrol stays a DriveOperation (`op: enroll`): it carries the requester
+Steps:
+- [ ] ses: enclosure fault control (keep IDENT), ident keeps requested failure
+- [ ] shelfobj.rs (pure): object, conditions, transitions, spec parse; tests
+- [ ] controller: Shelf pass (create/status/Events/LEDs), default format
+      into the Drive plan, Drive spec.identify; CRD + rbac; kube harness
+- [ ] docs (README, architecture), changelog; build VM; release; golden
+
 ### #81: NetApp DS224C (IOM12) shelf management (P1, 2026-10-10) — in progress
 
 The shelf is on the Dell (C2NR0Q2, mpt3sas host0): `NETAPP DS22412IOM12A`,
