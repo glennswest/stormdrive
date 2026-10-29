@@ -3,6 +3,15 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.33.0] — 2026-10-29
+
+### Added
+- `Shelf` resource: status, conditions (Healthy, SinglePath, PSUDegraded, FanDegraded, OverTemp), Events on condition changes; `spec.identify`, `spec.faultLed`, `spec.defaultFormat` (#83)
+- Drive `spec.identify` (locate LED) and `status.formatFrom` (#83)
+
+### Fixed
+- An enclosure IDENT request no longer clears a requested failure indication (#83)
+
 ### 2026-10-28 (#83)
 - **feat:** `Shelf` resource (`storage.storm.io/v1`, deploy/crds.yaml): one per SES enclosure, written by the node that sees it. Status has identity, paths, IOMs, PSUs, fans (rpm, speed code), temperatures, bays → drives, problems, LEDs and conditions Healthy / SinglePath / PSUDegraded / FanDegraded / OverTemp. A condition change raises a Kubernetes Event on the Shelf. `present: false` once the node no longer sees the shelf
 - **feat:** Shelf `spec.identify` / `spec.faultLed` set the shelf's locate and fault LEDs (enclosure IDENT / REQUEST FAILURE); `spec.defaultFormat` plans the format of its drives that have no `spec.format` of their own (Drive `status.formatFrom`: drive / shelf / preference)
