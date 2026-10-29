@@ -1,0 +1,39 @@
+# What stormdrive-test needs beyond the runner's namespace-only Role
+# (stormcentral docs/test-standard.md, #303).
+#
+# The pod runs on the pod network: no host network, no privilege, no host
+# paths. It reads the node's stormdrive on :9092 with the run's
+# ServiceAccount token (#19), which stormdrive checks with a
+# SubjectAccessReview for `get` on storage.storm.io: `drives` for most reads,
+# `enclosures` for shelves, `driveoperations` for worker jobs,
+# `firmwareimages` for the image store (src/kubeauth.rs read_access).
+# cluster_read (stormcentral#55) grants exactly those reads, nothing more.
+#
+# No write is granted: every write on :9092 needs storage-admin (#45), so
+# medium's write checks (designation / overcommit round-trips, smoke test,
+# read-scan cancel) report skip without a STORM_STORMDRIVE_TOKEN, and the
+# refusals checks see 401/403 before any guard (stormdrive#53, #28).
+
+[short]
+cluster_read = [
+  { apiGroup = "storage.storm.io", resource = "drives" },
+  { apiGroup = "storage.storm.io", resource = "enclosures" },
+  { apiGroup = "storage.storm.io", resource = "driveoperations" },
+  { apiGroup = "storage.storm.io", resource = "firmwareimages" },
+]
+
+[medium]
+cluster_read = [
+  { apiGroup = "storage.storm.io", resource = "drives" },
+  { apiGroup = "storage.storm.io", resource = "enclosures" },
+  { apiGroup = "storage.storm.io", resource = "driveoperations" },
+  { apiGroup = "storage.storm.io", resource = "firmwareimages" },
+]
+
+[long]
+cluster_read = [
+  { apiGroup = "storage.storm.io", resource = "drives" },
+  { apiGroup = "storage.storm.io", resource = "enclosures" },
+  { apiGroup = "storage.storm.io", resource = "driveoperations" },
+  { apiGroup = "storage.storm.io", resource = "firmwareimages" },
+]
