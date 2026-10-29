@@ -366,7 +366,7 @@ impl Controller {
                     bay: d.location.bay,
                     drive: d.id.0.to_string(),
                     name: d.name.clone(),
-                    model: d.model.clone(),
+                    model: (!d.model.is_empty()).then(|| d.model.clone()),
                     health: serde_json::to_value(d.health.status()).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
                     block_size: d.block_size,
                     needs_reformat: d.needs_reformat(),
