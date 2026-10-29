@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-29
+- **test:** `test/requires.toml` declares `cluster_read` on drives, enclosures, driveoperations and firmwareimages (storage.storm.io) for short/medium/long, so the run's ServiceAccount passes the read gate (#53, #28)
+
 ## [v0.33.0] — 2026-10-29
 
 ### Added

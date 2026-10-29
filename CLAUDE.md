@@ -611,6 +611,10 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [x] test/requires.toml: cluster_read drives, enclosures,
       driveoperations, firmwareimages for short/medium/long (d8fa964)
 - [ ] short on pvetest1 at d8fa964; medium; findings → issues
+- 2026-10-29: run c038a8d4f6 applied the grant, then the container hit
+  CreateContainerError on pvetest1 (stormvm, stormupdate, stormrdp and
+  stormcluster too) → stormcentral#1144; #28 proposed after it. Next: rerun
+  short, then medium; close #53 once the drive reads pass
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
