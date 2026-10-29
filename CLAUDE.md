@@ -633,7 +633,10 @@ Steps:
 - [x] controller: Shelf pass (create/status/Events/LEDs), default format
       into the Drive plan, Drive spec.identify; CRD + rbac (b9fb272)
 - [x] docs (README, architecture), changelog (1a49d66)
-- [ ] build VM; release; golden
+- [x] build VM on 6b6cde2 (clippy -D warnings --locked, 275 unit +
+      harnesses; b9fb272 had a String/Option type error → #95/#96) and on
+      7d49daf (v0.33.0); golden requested (build e23fbd3a4073); contract on
+      stormconsole#131; #83 closed. Live: the Dell's shelf, with #30
 
 ### #81: NetApp DS224C (IOM12) shelf management (P1, 2026-10-10) — in progress
 
