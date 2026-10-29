@@ -711,6 +711,10 @@ Steps:
       steps above continue on #30
 - 2026-10-28: #30 parked on the Dell being up (down today; probe
   tcp://192.168.30.2:9092), same as #85
+- 2026-10-29: still down (no route; its BMC 192.168.11.151 answers →
+  powered off). #30 is a power-on card for the owner, back by itself when
+  tcp://192.168.30.2:9092 answers. Next: SES decode vs the DS224C, hot-add
+  list, shelf dry run on #30 before any format
 
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 
