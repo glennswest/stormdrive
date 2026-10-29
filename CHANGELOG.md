@@ -5,6 +5,7 @@
 
 ### 2026-10-29
 - **test:** `test/requires.toml` declares `cluster_read` on drives, enclosures, driveoperations and firmwareimages (storage.storm.io) for short/medium/long, so the run's ServiceAccount passes the read gate (#53, #28)
+- **docs:** refreshed from the code since 2026-10-16: README test section covers `test/requires.toml`; the Shelf resource (#83) docs checked against `shelfobj.rs`, `controller.rs`, `deploy/crds.yaml`, `rbac.yaml`
 
 ## [v0.33.0] — 2026-10-29
 

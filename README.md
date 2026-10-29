@@ -451,6 +451,11 @@ and `test/src/pick.rs` (unit-tested) decides what they may touch:
 - **Tests:** they only read.
 
 `test/stormdrive-test.yaml` states the suites' metadata and requirements.
+`test/requires.toml` declares what the run's ServiceAccount needs beyond the
+runner's namespace Role: `cluster_read` (`get` on `drives`, `enclosures`,
+`driveoperations`, `firmwareimages` in `storage.storm.io`) for short, medium
+and long, which is what the read gate (#19) checks. No write is granted, so
+medium's write checks skip without a `STORM_STORMDRIVE_TOKEN` (#53).
 
 `cargo test` also runs `tests/suites.rs`: all three suites against this
 daemon, started on the build box with stormblock off and no drives. That
