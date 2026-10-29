@@ -603,6 +603,17 @@ Steps:
   tcp://192.168.30.2:9092. stormconsole#131 waits on this probe, so no
   `--after` it (circular). Next: probe bay 0, post it on #85 and #131
 
+### #28 (+ #53): first live test-container run (2026-10-29) — in progress
+
+stormcentral#63 closed; runs reach the node now. Run cb3c69bfad (short,
+110be5a, pvetest1, stormdrive 0.32.0): api-up passed, every read 403 — the
+run's ServiceAccount had no `get` on storage.storm.io (#53).
+- [x] test/requires.toml: cluster_read drives, enclosures,
+      driveoperations, firmwareimages for short/medium/long (d8fa964)
+- [ ] short on pvetest1 at d8fa964; medium; findings → issues
+- [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
+      (engine token), hbas; the page item is obsolete (#84)
+
 ### #83: the Shelf resource — status, conditions, Events, identify, fault LED, default format (P1, 2026-10-28) — DONE (v0.33.0)
 
 Owner (2026-10-10): all management via CRDs; stormdrive is the controller;
