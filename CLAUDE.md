@@ -603,7 +603,7 @@ Steps:
   tcp://192.168.30.2:9092. stormconsole#131 waits on this probe, so no
   `--after` it (circular). Next: probe bay 0, post it on #85 and #131
 
-### #83: the Shelf resource — status, conditions, Events, identify, fault LED, default format (P1, 2026-10-28) — in progress
+### #83: the Shelf resource — status, conditions, Events, identify, fault LED, default format (P1, 2026-10-28) — DONE (v0.33.0)
 
 Owner (2026-10-10): all management via CRDs; stormdrive is the controller;
 the page is stormconsole#131's; the format belongs to a RaidSet or a drive,
