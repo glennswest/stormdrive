@@ -602,6 +602,11 @@ Steps:
   C2NR0Q2 down (no ping, no :9092): item waits on a power-on, probe
   tcp://192.168.30.2:9092. stormconsole#131 waits on this probe, so no
   `--after` it (circular). Next: probe bay 0, post it on #85 and #131
+- 2026-11-03: Dell up (0.32.0, controller on) but the shelf is gone from it:
+  `/api/v1/shelves` empty, all 17 shelf drives `missing` since 2026-10-10
+  23:15Z, bay 0 `supports` → 409 missing. Posted on #85; item waits on the
+  shelf being re-cabled/powered (owner's hands, wait-owner --action). /dev/sdb
+  is now the STORMBOOTX USB stick, managed as `sata_hdd` owner free → #100
 
 ### #28 (+ #53): first live test-container run (2026-10-29) — in progress
 
