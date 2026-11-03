@@ -720,6 +720,9 @@ Steps:
   powered off). #30 is a power-on card for the owner, back by itself when
   tcp://192.168.30.2:9092 answers. Next: SES decode vs the DS224C, hot-add
   list, shelf dry run on #30 before any format
+- 2026-11-03: Dell up, but the shelf is not attached (shelves empty, 17
+  drives missing since 2026-10-10 23:15Z). #30 is a person's-step card
+  (re-cable/power the shelf), same as #85
 
 ### #72: nothing on a create/enrol path costs O(capacity) (review, P1, 2026-10-08) — DONE (v0.27.1)
 
