@@ -126,7 +126,8 @@ retry/            workspace crate: one backoff helper for every remote call (#71
 test/             test container (#11): /test short|medium|long, pick.rs = safety
 tests/            suites.rs (the three suites against this daemon on every
                   cargo test), kube.rs (stand-in apiserver: gate, controller,
-                  DrivePolicy), restart.rs, tls.rs, chassis160.rs (#31)
+                  DrivePolicy), restart.rs, tls.rs, chassis160.rs (#31),
+                  engine_tls.rs (engine client over https, #101)
 ```
 
 Not in the tree (design only, see docs/architecture.md): a sequencer, a
@@ -176,7 +177,8 @@ node-and-above stays with stormblock. Shared label vocabulary: `site`,
 `shelf`, `bay`, `pcie_slot` (ours). See docs/architecture.md "Position in
 the distributed hierarchy"; stormblock#72 carries the placement ask.
 
-- **stormblock** (`http://127.0.0.1:9090`, `Authorization: Bearer`, v17+):
+- **stormblock** (`http://127.0.0.1:9090`, or `https://` verified against
+  `stormblock.ca_file`, #101; `Authorization: Bearer`, v17+):
   `GET/POST /api/v1/drives {path,labels,uuid}`, `DELETE /api/v1/drives/{id}`,
   `PUT …/{id}/labels`, `GET …/{id}/slabs`, `POST …/{id}/health`,
   `GET/POST/DELETE …/{id}/drain`, `GET/POST /api/v1/slabs`, and
@@ -638,7 +640,7 @@ issue's, no open decision):
 - not here: a client pair (stormcos#374 step 2 "or as well as the token"): the
   token keeps working over https, and destructive verbs need admin anyway
 Steps:
-- [ ] config + client + tests/engine_tls.rs (test CA ok, other CA refused, CA
+- [x] config + client + tests/engine_tls.rs (test CA ok, other CA refused, CA
       absent then appearing, renewal, plain still works)
 - [ ] docs, changelog; build VM; say the keys on stormcos#374; v0.33.2; golden
 

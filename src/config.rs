@@ -183,6 +183,10 @@ impl Default for MonitorConfig {
 pub struct StormBlockConfig {
     pub enabled: bool,
     pub url: String,
+    /// The CA (PEM) an `https://` engine's certificate is verified against,
+    /// and the only one trusted: the node CA (stormcos#374). Read on every
+    /// call, so a renewal needs no restart. Not read for `http://`.
+    pub ca_file: String,
     /// Phase 4: register qualified drives with stormblock automatically.
     /// Explicit opt-in; discovery/monitoring never depends on it.
     pub auto_add: bool,
@@ -229,6 +233,7 @@ impl Default for StormBlockConfig {
         Self {
             enabled: true,
             url: "http://127.0.0.1:9090".into(),
+            ca_file: "/data/stormcert/ca.crt".into(),
             auto_add: false,
             auto_format_slab: true,
             push_health: true,

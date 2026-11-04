@@ -29,6 +29,9 @@ sample_timeout_secs = 10    # a read slower than this is a failed sample
 [stormblock]
 enabled  = true
 url      = "http://127.0.0.1:9090"
+# An https:// url is verified against this CA and nothing else (the node CA,
+# stormcos#374). Read on every call. Not read for http://.
+ca_file  = "/data/stormcert/ca.crt"
 auto_add = false            # register qualified drives automatically (with location labels + stable uuid)
 auto_format_slab = true     # …and format a slab on them, tier from tier_map / kind
 push_health = true          # Failing/Failed → stormblock quarantines the drive and its legs (and itself drains a failed one)

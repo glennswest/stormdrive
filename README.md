@@ -519,7 +519,8 @@ or only one of `api.tls_cert_file`/`tls_key_file` set.
 | `monitor.max_concurrent` | `8` | health reads in flight |
 | `monitor.sample_timeout_secs` | `10` | a slower read is a failed sample |
 | `stormblock.enabled` | `true` | talk to stormblock at all |
-| `stormblock.url` | `http://127.0.0.1:9090` | the engine's management API |
+| `stormblock.url` | `http://127.0.0.1:9090` | the engine's management API; `http://` or `https://` |
+| `stormblock.ca_file` | `/data/stormcert/ca.crt` | the CA an `https://` engine's certificate is verified against, and the only one trusted (no built-in roots, no skip, no redirect to http). Read on every call, so a renewal needs no restart. A file gone or not a CA keeps the last good one; with none, every engine call is refused and the log says why. Not read for `http://` |
 | `stormblock.auto_add` | `false` | register qualified drives on its own |
 | `stormblock.auto_format_slab` | `true` | …and format a slab on them |
 | `stormblock.push_health` | `true` | report Failing/Failed (and recovery) to the engine; the engine drains a drive reported `failed` on its own, and rebuilds its volumes when its `[rebuild] automatic` is on |
@@ -984,7 +985,10 @@ with a release that carries it, #54). The serving pair and node CA are read
 from `/data/stormcert` (the defaults of `[api] tls_*`; the pair itself is
 stormcos#352), and drive history + assets go to `/system-data` once
 stormcos mounts it into the unit (stormcos#456, stormblock#355); until then
-`GET /api/v1/history` says it is off.
+`GET /api/v1/history` says it is off. The engine URL stays `http://` in the
+registry config until stormcos turns on the engine's pair and changes it
+(stormcos#374); `stormblock.ca_file` already defaults to the CA file the unit
+mounts.
 
 The node's HTTPRoute publishes it by name (`drive.storm1.g8.lo` in stormcos
 `deploy/manifests/85-routes.yaml`). stormconsole on :9094 reads its

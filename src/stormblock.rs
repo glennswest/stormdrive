@@ -60,7 +60,7 @@ const DEFAULT_ADMIN_TOKEN_FILE: &str = "/run/stormblock-admin/admin_token";
 #[derive(Clone)]
 pub struct StormBlockClient {
     cfg: StormBlockConfig,
-    http: reqwest::Client,
+    transport: Arc<Transport>,
     /// The engine's bearer token. The engine mints it at boot, possibly
     /// after we start, and may rotate it: `None` is re-read on every call,
     /// and a 401 re-reads it once.
@@ -71,6 +71,107 @@ pub struct StormBlockClient {
     /// or the service account's): the engine reviews it for `storage-admin`
     /// when no admin token is at hand (#46).
     kube_token_file: Option<PathBuf>,
+}
+
+/// How calls reach the engine. `http://` is one client. `https://` (:9090 from
+/// the node CA, stormblock#203, stormcos#374) trusts the CA file and nothing
+/// else: no built-in roots, no skip, and no redirect down to http, where the
+/// bearer would go in the clear.
+///
+/// The file is read on every call, so a renewed CA or one that appears after
+/// start needs no restart. A file gone or unreadable as a CA keeps the last
+/// good one; with none, every call is refused in the handshake.
+struct Transport {
+    /// The plain client; for an https engine, the one that trusts nothing.
+    base: reqwest::Client,
+    /// `Some` for an https engine: the CA file (`None` inside: none named).
+    https: Option<Option<PathBuf>>,
+    /// The CA file's bytes and the client that trusts them.
+    trusted: RwLock<Option<(Vec<u8>, reqwest::Client)>>,
+    /// What is wrong with the CA file now, said once when it changes.
+    problem: RwLock<Option<String>>,
+}
+
+fn engine_client() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().timeout(ENGINE_TIMEOUT)
+}
+
+fn https_engine_client() -> reqwest::ClientBuilder {
+    engine_client().tls_built_in_root_certs(false).https_only(true)
+}
+
+/// A client that trusts exactly the certificates in `pem`.
+fn client_trusting(pem: &[u8]) -> anyhow::Result<reqwest::Client> {
+    let certs = reqwest::Certificate::from_pem_bundle(pem)?;
+    anyhow::ensure!(!certs.is_empty(), "no certificate in it");
+    let mut b = https_engine_client();
+    for c in certs {
+        b = b.add_root_certificate(c);
+    }
+    Ok(b.build()?)
+}
+
+impl Transport {
+    fn new(url: &str, ca_file: &str) -> Self {
+        let https = url.trim().to_ascii_lowercase().starts_with("https://");
+        let base = if https { https_engine_client() } else { engine_client() };
+        Self {
+            base: base.build().expect("reqwest client"),
+            https: https.then(|| non_empty(ca_file).map(PathBuf::from)),
+            trusted: RwLock::new(None),
+            problem: RwLock::new(None),
+        }
+    }
+
+    fn client(&self) -> reqwest::Client {
+        let Some(ca_file) = &self.https else { return self.base.clone() };
+        let Some(ca_file) = ca_file else {
+            self.say(Some("stormblock.ca_file is empty".to_string()));
+            return self.base.clone();
+        };
+        let now = match std::fs::read(ca_file) {
+            Ok(pem) => {
+                if let Some((have, c)) = self.trusted.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    if *have == pem {
+                        self.say(None);
+                        return c.clone();
+                    }
+                }
+                client_trusting(&pem).map(|c| (pem, c)).map_err(|e| format!("{}: {e:#}", ca_file.display()))
+            }
+            Err(e) => Err(format!("{}: {e}", ca_file.display())),
+        };
+        match now {
+            Ok((pem, c)) => {
+                tracing::info!("stormblock: trusting the CA in {}", ca_file.display());
+                *self.trusted.write().unwrap_or_else(|e| e.into_inner()) = Some((pem, c.clone()));
+                self.say(None);
+                c
+            }
+            Err(why) => {
+                self.say(Some(why));
+                let trusted = self.trusted.read().unwrap_or_else(|e| e.into_inner());
+                trusted.as_ref().map_or_else(|| self.base.clone(), |(_, c)| c.clone())
+            }
+        }
+    }
+
+    /// Log the CA file's problem when it changes, not on every call.
+    fn say(&self, now: Option<String>) {
+        let mut problem = self.problem.write().unwrap_or_else(|e| e.into_inner());
+        if *problem == now {
+            return;
+        }
+        if let Some(why) = &now {
+            let using = if self.trusted.read().unwrap_or_else(|e| e.into_inner()).is_some() {
+                "keeping the CA last read"
+            } else {
+                "every engine call is refused until there is one"
+            };
+            tracing::warn!("stormblock is https and its CA cannot be used: {why}; {using}");
+        }
+        *problem = now;
+    }
 }
 
 /// Where the engine token comes from, in stormblock's own CLI order: a
@@ -162,16 +263,14 @@ impl StormBlockClient {
             std::env::var("STORMBLOCK_ADMIN_TOKEN_FILE").ok(),
             &[DEFAULT_ADMIN_TOKEN_FILE],
         );
+        let transport = Arc::new(Transport::new(&cfg.url, &cfg.ca_file));
         let token = TokenSource::from_config(&cfg).read();
         if token.is_none() && cfg.enabled {
             tracing::warn!("no stormblock engine token yet; engine calls will retry the lookup");
         }
         Self {
             cfg,
-            http: reqwest::Client::builder()
-                .timeout(ENGINE_TIMEOUT)
-                .build()
-                .expect("reqwest client"),
+            transport,
             token: Arc::new(RwLock::new(token)),
             admin,
             kube_token_file: None,
@@ -183,6 +282,12 @@ impl StormBlockClient {
     pub fn with_kube_token_file(mut self, file: Option<PathBuf>) -> Self {
         self.kube_token_file = file;
         self
+    }
+
+    /// The client for the next engine call: an https engine's trusts the CA
+    /// file as it is now.
+    fn http(&self) -> reqwest::Client {
+        self.transport.client()
     }
 
     /// Re-read the engine token and remember it; the new value.
@@ -338,7 +443,7 @@ impl StormBlockClient {
     /// GET /api/v1/drives — stormblock's view of its open drives.
     pub async fn list_drives(&self) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.url("/api/v1/drives")), Idempotent::Yes)
+            .send(self.http().get(self.url("/api/v1/drives")), Idempotent::Yes)
             .await?
             .error_for_status()?
             .json()
@@ -378,7 +483,7 @@ impl StormBlockClient {
         // The fleet loop retries a failed add after its backoff, and
         // reconcile adopts a drive the engine did open.
         Ok(self
-            .send(self.http.post(self.url("/api/v1/drives")).json(&body), Idempotent::No)
+            .send(self.http().post(self.url("/api/v1/drives")).json(&body), Idempotent::No)
             .await?
             .error_for_status()?
             .json()
@@ -401,7 +506,7 @@ impl StormBlockClient {
             map.insert("drive".into(), Value::String(u.to_string()));
         }
         let req = self
-            .http
+            .http()
             .put(self.drive_url(id_or_path, "/labels"))
             .json(&serde_json::json!({ "labels": map }));
         // A PUT of the whole label set: safe to repeat.
@@ -431,7 +536,7 @@ impl StormBlockClient {
             "drive": { "uuid": uuid.to_string(), "wwn": wwn, "serial": serial, "path": path },
         });
         let resp = self
-            .send(self.http.put(self.drive_url(path, "/overcommit")).json(&body), Idempotent::Yes)
+            .send(self.http().put(self.drive_url(path, "/overcommit")).json(&body), Idempotent::Yes)
             .await?;
         if matches!(resp.status(), reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED) {
             return Ok(false);
@@ -446,7 +551,7 @@ impl StormBlockClient {
         let q = if force { "?force=true" } else { "" };
         // Retried: closing a closed drive is a 404, and a 404 after an
         // earlier try may have reached the engine means that try closed it.
-        let (resp, tries) = self.call(Call::Admin, self.http.delete(self.drive_url(id_or_path, q)), Idempotent::Yes).await?;
+        let (resp, tries) = self.call(Call::Admin, self.http().delete(self.drive_url(id_or_path, q)), Idempotent::Yes).await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND && tries > 1 {
             return Ok(());
         }
@@ -458,7 +563,7 @@ impl StormBlockClient {
     /// identity (stormblock#70 item 2). Empty means nothing lives there.
     pub async fn drive_slabs(&self, id_or_path: &str) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.drive_url(id_or_path, "/slabs")), Idempotent::Yes)
+            .send(self.http().get(self.drive_url(id_or_path, "/slabs")), Idempotent::Yes)
             .await?
             .error_for_status()?
             .json()
@@ -469,7 +574,7 @@ impl StormBlockClient {
     /// GET /api/v1/slabs — the whole pool, for the summary card.
     pub async fn list_slabs(&self) -> anyhow::Result<Vec<Value>> {
         let v: Value = self
-            .send(self.http.get(self.url("/api/v1/slabs")), Idempotent::Yes)
+            .send(self.http().get(self.url("/api/v1/slabs")), Idempotent::Yes)
             .await?
             .error_for_status()?
             .json()
@@ -480,14 +585,14 @@ impl StormBlockClient {
     /// GET /api/v1/health — the engine's own health; its `slabs` says where
     /// the node's system and data halves run (stormblock#322/#344, #58).
     pub async fn node_health(&self) -> anyhow::Result<Value> {
-        Ok(self.send(self.http.get(self.url("/api/v1/health")), Idempotent::Yes).await?.error_for_status()?.json().await?)
+        Ok(self.send(self.http().get(self.url("/api/v1/health")), Idempotent::Yes).await?.error_for_status()?.json().await?)
     }
 
     /// GET /api/v1/arrays — the engine's RAID sets with their members'
     /// state, drive and labels (stormblock#252). None: an engine without
     /// arrays (404).
     pub async fn list_arrays(&self) -> anyhow::Result<Option<Vec<Value>>> {
-        let resp = self.send(self.http.get(self.url("/api/v1/arrays")), Idempotent::Yes).await?;
+        let resp = self.send(self.http().get(self.url("/api/v1/arrays")), Idempotent::Yes).await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -500,7 +605,7 @@ impl StormBlockClient {
     /// The engine walks every volume's extent map for it, so it gets longer
     /// than the client's 5 s: 30 s a try, under `ENGINE_SLOW`.
     pub async fn list_volumes_placed(&self) -> anyhow::Result<Vec<Value>> {
-        let req = self.http.get(self.url("/api/v1/volumes?placement=true"));
+        let req = self.http().get(self.url("/api/v1/volumes?placement=true"));
         let v: Value = self.call(Call::Slow, req, Idempotent::Yes).await?.0.error_for_status()?.json().await?;
         Ok(items(v, "volumes"))
     }
@@ -514,7 +619,7 @@ impl StormBlockClient {
         if let Some(r) = role {
             body["role"] = serde_json::json!(r);
         }
-        let req = self.http.post(self.url("/api/v1/slabs")).json(&body);
+        let req = self.http().post(self.url("/api/v1/slabs")).json(&body);
         // Not retried once it may have reached the engine: a second format
         // of a drive that took the first is refused (or worse). The worker
         // and the fleet loop report the failure; nothing repeats it blind.
@@ -540,7 +645,7 @@ impl StormBlockClient {
         drain: bool,
     ) -> anyhow::Result<Value> {
         let req = self
-            .http
+            .http()
             .post(self.drive_url(id_or_path, "/health"))
             .json(&serde_json::json!({ "state": state, "reason": reason, "drain": drain }));
         // Sets the drive's state to `state`: the same report twice is the
@@ -559,7 +664,7 @@ impl StormBlockClient {
             // Not retried once it may have reached the engine (a drain
             // already running answers 409): the fleet tick retries a pending
             // drain and adopts one the engine already runs (#43).
-            .send(self.http.post(self.drive_url(id_or_path, "/drain")), Idempotent::No)
+            .send(self.http().post(self.drive_url(id_or_path, "/drain")), Idempotent::No)
             .await?
             .error_for_status()?
             .json()
@@ -569,7 +674,7 @@ impl StormBlockClient {
     /// GET /api/v1/drives/{id}/drain — where the drain is.
     pub async fn drain_status(&self, id_or_path: &str) -> anyhow::Result<Option<DrainStatus>> {
         let resp = self
-            .send(self.http.get(self.drive_url(id_or_path, "/drain")), Idempotent::Yes)
+            .send(self.http().get(self.drive_url(id_or_path, "/drain")), Idempotent::Yes)
             .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -580,7 +685,7 @@ impl StormBlockClient {
     /// DELETE /api/v1/drives/{id}/drain — stop a drain; what moved stays moved.
     /// Ordinary on the engine (detach-like): the node token.
     pub async fn cancel_drain(&self, id_or_path: &str) -> anyhow::Result<()> {
-        self.send(self.http.delete(self.drive_url(id_or_path, "/drain")), Idempotent::Yes)
+        self.send(self.http().delete(self.drive_url(id_or_path, "/drain")), Idempotent::Yes)
             .await?
             .error_for_status()?;
         Ok(())

@@ -1169,6 +1169,13 @@ stormblock v11 closed the loop (stormblock#70, #71); this side closed in
 stormdrive 0.5.0. `stormblock.rs` is the client, `fleet.rs` the policy the
 monitor tick runs after every discovery/health round:
 
+- **Transport** (#101, stormcos#374): `stormblock.url` is `http://` or `https://`.
+  An https engine is verified against `stormblock.ca_file` (the node CA) and
+  nothing else: no built-in roots, no skip, no redirect down to http. The file
+  is read on every call, so a renewal needs no restart; a file gone or not a CA
+  keeps the last good one; with none every call is refused. A refused handshake
+  is retried and reported like an engine that is not there (`retry::Infra`). The
+  node token is what authenticates; no client certificate is presented.
 - **Authenticated (stormblock#107, v17).** Every engine call carries
   `Authorization: Bearer <token>`; without it all of `/api/v1` is a 401.
   The token is found the way stormblock's own CLI finds it:

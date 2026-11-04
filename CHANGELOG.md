@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-04
+- **feat:** the engine client works with an `https://` `stormblock.url` (stormcos#374, #101): new key `stormblock.ca_file` (default `/data/stormcert/ca.crt`, the node CA) is the only CA trusted, with no built-in roots, no skip and no redirect down to http. It is read on every call, so a renewal needs no restart. `http://` keeps working unchanged
+
 ## [v0.33.1] — 2026-11-04
 
 ### Fixed
