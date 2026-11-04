@@ -623,6 +623,27 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #102: a state file the reset cut must not stop stormdrive (P0, forge1, 2026-11-04) — in progress
+
+forge1 (12.58) crash-loops on start: `Error: expected value at line 1 column
+1`. Only `Inventory::load` is fatal at start (`system::read` is not: sync logs
+it). The message is not an empty file (that reads "EOF while parsing a value
+at line 1 column 0"): the file starts with a byte no JSON starts with, most
+likely NULs, a write the warm reset cut. `write_atomic` is tmp + rename with
+no fsync, so that is how it got there. Design (the issue's ask, no open
+decision):
+- `write_atomic`: fsync the temp file, rename, fsync the directory (inventory,
+  events, jobs, assets all go through it)
+- `inventory::load_state`: never fatal. Absent = nothing; blank (empty, NULs,
+  whitespace) = absent, said; unparseable or unreadable = moved to
+  `<file>.unreadable` (kept, not overwritten by the next persist), said with
+  the file, size and first bytes. Inventory, jobs.json, events.json use it; a
+  warning event at start names each one
+- errors that stay fatal name the file (config, listen address)
+Steps:
+- [ ] load_state + write_atomic + callers + tests (unit, real daemon)
+- [ ] docs, changelog, build VM, v0.33.1, golden, close #102
+
 ### #83: the Shelf resource — status, conditions, Events, identify, fault LED, default format (P1, 2026-10-28) — DONE (v0.33.0)
 
 Owner (2026-10-10): all management via CRDs; stormdrive is the controller;
