@@ -623,6 +623,25 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #101: engine client over https with the node CA (stormcos#374, 2026-11-04) — in progress
+
+The engine's :9090 moves to TLS from the node CA (stormblock#203), plain and
+https both answer during the move (`tls_mode = "optional"`, stormblock#525).
+stormcos changes the URL and CA in our config when the pair is on. Design (the
+issue's, no open decision):
+- `stormblock.ca_file` (default `/data/stormcert/ca.crt`: the unit already
+  mounts it and waits for it, so no new bind)
+- `https://` engine URL: only that CA is trusted (built-in roots off, no skip),
+  https only (no redirect down to http). File re-read each call: a renewed CA
+  needs no restart; a file gone or unparseable keeps the last good one, and with
+  none every call is refused, said once, never falls back. `http://` as before
+- not here: a client pair (stormcos#374 step 2 "or as well as the token"): the
+  token keeps working over https, and destructive verbs need admin anyway
+Steps:
+- [ ] config + client + tests/engine_tls.rs (test CA ok, other CA refused, CA
+      absent then appearing, renewal, plain still works)
+- [ ] docs, changelog; build VM; say the keys on stormcos#374; v0.33.2; golden
+
 ### #102: a state file the reset cut must not stop stormdrive (P0, forge1, 2026-11-04) — DONE (v0.33.1)
 
 forge1 (12.58) crash-loops on start: `Error: expected value at line 1 column
