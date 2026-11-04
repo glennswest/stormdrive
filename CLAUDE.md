@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.33.1** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.34.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -625,7 +625,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #101: engine client over https with the node CA (stormcos#374, 2026-11-04) — in progress
+### #101: engine client over https with the node CA (stormcos#374, 2026-11-04) — DONE (v0.34.0)
 
 The engine's :9090 moves to TLS from the node CA (stormblock#203), plain and
 https both answer during the move (`tls_mode = "optional"`, stormblock#525).
@@ -642,7 +642,8 @@ issue's, no open decision):
 Steps:
 - [x] config + client + tests/engine_tls.rs (test CA ok, other CA refused, CA
       absent then appearing, renewal, plain still works)
-- [ ] docs, changelog; build VM; say the keys on stormcos#374; v0.33.2; golden
+- [x] docs, changelog; build VM; keys on stormcos#374; v0.34.0 (a new config
+      key, so minor); golden requested. Live: once stormcos switches the URL
 
 ### #102: a state file the reset cut must not stop stormdrive (P0, forge1, 2026-11-04) — DONE (v0.33.1)
 
