@@ -1867,8 +1867,8 @@ async fn get_image(
 }
 
 /// Raw upload: `PUT /api/v1/firmware/images/<name>` with the file as the
-/// body. Written to a temp file and renamed, so a half-upload never
-/// becomes an image.
+/// body. Written to a temp file, synced and renamed, so a half-upload or a
+/// reset never becomes an image.
 async fn put_image(
     State(s): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -1886,8 +1886,9 @@ async fn put_image(
     let img = tokio::task::spawn_blocking(move || -> std::io::Result<crate::firmware::Image> {
         std::fs::create_dir_all(&dir)?;
         let tmp = dir.join(format!(".{n2}.upload"));
-        std::fs::write(&tmp, &data)?;
+        crate::inventory::write_synced(&tmp, &data)?;
         std::fs::rename(&tmp, dir.join(&n2))?;
+        crate::inventory::sync_dir(&dir);
         Ok(crate::firmware::Image {
             name: n2,
             size: data.len() as u64,

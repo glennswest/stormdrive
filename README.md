@@ -381,8 +381,14 @@ are listed under [Not yet](#not-yet).
 - **Inventory** (`src/inventory.rs`). The drive records, including
   designations, overcommit, the last format and firmware results, and the
   trends, are kept in `<data_dir>/inventory.json`. It is compact JSON,
-  written tmp + rename and only when it changed. Without `data_dir` it is in
-  memory only.
+  written temp file + fsync + rename and only when it changed. Without
+  `data_dir` it is in memory only. A state file (`inventory.json`,
+  `events.json`, `jobs.json`) never stops the start (#102): blank (empty, or
+  only NULs and whitespace) counts as absent; one that cannot be read or
+  parsed moves to `<file>.unreadable`. Either way a `state_file` warning event
+  names the file, and discovery finds the drives again. What the inventory
+  alone held is then gone: designations (`system` comes back from
+  system-data), overcommit, trends, lit fault bays (#67).
 
 ## Build and test
 

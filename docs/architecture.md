@@ -178,9 +178,17 @@ can be formatted on it with a tier. Independently of membership:
 `missing` means the inventory remembers a drive the node can't see.
 
 The inventory (all `Drive` records + wear-trend samples) persists to
-`<data_dir>/inventory.json` with atomic tmp+rename writes, so identity,
-first_seen, and trend history survive restarts — deliberately the opposite of
-stormblock's in-memory `Vec<DriveInfo>`.
+`<data_dir>/inventory.json` with atomic writes (temp file, fsync, rename, fsync
+of the directory), so identity, first_seen, and trend history survive restarts
+and resets — deliberately the opposite of stormblock's in-memory
+`Vec<DriveInfo>`.
+
+A state file is never a reason not to start (#102, `inventory::load_state`).
+Without the fsync a warm reset could keep the rename and lose the data, and an
+inventory full of NULs crash-looped the service. Blank = absent; unreadable or
+unparseable = moved to `<file>.unreadable`, kept for a look; each is a
+`state_file` warning event naming the file. Errors that do stop the start (the
+config, the listen address) name what they read.
 
 ## Subsystems
 

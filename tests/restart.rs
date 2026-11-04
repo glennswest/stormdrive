@@ -200,3 +200,69 @@ async fn sigterm_stops_gracefully_and_persists() {
     assert!(dir.join("inventory.json").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #102: the daemon starts on the state files a warm reset leaves behind, says
+/// which ones, keeps what it cannot read, and writes good ones again. forge1
+/// crash-looped on this: `Error: expected value at line 1 column 1`.
+#[tokio::test(flavor = "multi_thread")]
+async fn state_files_a_reset_cut_do_not_stop_the_start() {
+    let cases: [(&str, &[u8], bool); 3] = [
+        ("nuls", &[0u8; 4096], false),
+        ("empty", b"", false),
+        ("garbage", b"\x00\x00{\"drives\": torn", true),
+    ];
+    for (name, bytes, set_aside) in cases {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let dir = std::env::temp_dir().join(format!("stormdrive-state102-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["inventory.json", "events.json", "jobs.json"] {
+            std::fs::write(dir.join(f), bytes).unwrap();
+        }
+        let cfg = dir.join("stormdrive.toml");
+        std::fs::write(&cfg, "node_name = \"harness-node\"\n[discovery]\ninterval_secs = 1\ninclude = [\"stormdrive-harness-no-such-disk\"]\n[stormblock]\nenabled = false\n[api]\nallow_anonymous = true\n").unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_stormdrive"))
+            .args(["--config", cfg.to_str().unwrap(), "--listen", &format!("127.0.0.1:{port}")])
+            .args(["--data-dir", dir.to_str().unwrap()])
+            .env("RUST_LOG", "warn")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("start stormdrive");
+        let base = format!("http://127.0.0.1:{port}");
+        let mut events = None;
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("{name}: stormdrive exited on start: {status}");
+            }
+            if let Ok(r) = reqwest::get(format!("{base}/api/v1/events")).await {
+                events = r.json::<Value>().await.ok();
+                break;
+            }
+        }
+        let events = events.unwrap_or_else(|| panic!("{name}: never served :9092"));
+        for f in ["inventory.json", "events.json", "jobs.json"] {
+            let said = events["events"].as_array().unwrap().iter().any(|e| {
+                e["kind"] == "state_file" && e["severity"] == "warning" && e["message"].as_str().unwrap_or("").contains(f)
+            });
+            assert!(said, "{name}: no state_file event for {f}: {events}");
+            assert_eq!(dir.join(format!("{f}.unreadable")).exists(), set_aside, "{name}: {f}");
+            if set_aside {
+                assert_eq!(std::fs::read(dir.join(format!("{f}.unreadable"))).unwrap(), bytes, "{name}: {f} kept as it was");
+            }
+        }
+        // The next persist writes a good inventory over what was left.
+        let good = || std::fs::read(dir.join("inventory.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).is_some();
+        for _ in 0..100 {
+            if good() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let rewritten = good();
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(rewritten, "{name}: inventory.json was never written again");
+    }
+}

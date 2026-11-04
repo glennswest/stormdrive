@@ -165,9 +165,10 @@ impl SystemDrives {
     }
 }
 
-/// Read the file's drives. None when it is not there.
+/// Read the file's drives. None when it is not there, or blank (#102).
 pub fn read(path: &Path) -> anyhow::Result<Option<Vec<Entry>>> {
     match std::fs::read(path) {
+        Ok(b) if crate::inventory::is_blank(&b) => Ok(None),
         Ok(b) => {
             let f: File = serde_json::from_slice(&b)?;
             Ok(Some(f.drives))
@@ -384,6 +385,12 @@ mod tests {
     fn the_file_round_trips_through_an_atomic_write() {
         let dir = std::env::temp_dir().join(format!("stormdrive-sysdrives-{}", std::process::id()));
         let path = dir.join(FILE);
+        assert!(read(&path).unwrap().is_none());
+        // Blank is absent too; the next write replaces it (#102).
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"").unwrap();
+        assert!(read(&path).unwrap().is_none());
+        std::fs::write(&path, [0u8; 64]).unwrap();
         assert!(read(&path).unwrap().is_none());
         let mut d = drive(Some("naa.1"), "S");
         d.designation = Designation::System;

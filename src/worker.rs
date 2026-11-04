@@ -609,21 +609,20 @@ impl Worker {
     }
 
     /// Load `<data_dir>/jobs.json` (missing = none).
-    pub fn load(data_dir: Option<&str>) -> Self {
+    /// The worker with its kept jobs, and what a jobs.json that could not
+    /// be read came to (#102).
+    pub fn load(data_dir: Option<&str>) -> (Self, Option<String>) {
         let path = data_dir.map(|d| PathBuf::from(d).join("jobs.json"));
-        let jobs: BTreeMap<String, Job> = path
-            .as_ref()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice(&b).map_err(|e| tracing::error!("jobs.json unreadable, starting empty: {e}")).ok())
-            .unwrap_or_default();
-        Worker {
-            jobs: Mutex::new(jobs),
+        let (jobs, note) = path.as_deref().map_or((None, None), crate::inventory::load_state::<BTreeMap<String, Job>>);
+        let worker = Worker {
+            jobs: Mutex::new(jobs.unwrap_or_default()),
             lanes: Default::default(),
             domains: Default::default(),
             path,
             save_lock: Default::default(),
             seq: Default::default(),
-        }
+        };
+        (worker, note)
     }
 
     pub fn list(&self) -> Vec<Value> {

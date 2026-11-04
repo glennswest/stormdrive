@@ -29,16 +29,16 @@ pub struct TrendSample {
 const MAX_TREND_SAMPLES: usize = 512;
 
 impl Inventory {
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(s) => Ok(serde_json::from_str(&s)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
-        }
+    /// The kept inventory, or an empty one when it is absent or cannot be
+    /// read (#102): discovery finds the drives again, so a file a reset cut
+    /// must not stop the service. The note says what happened to the file.
+    pub fn load(path: &Path) -> (Self, Option<String>) {
+        let (inv, note) = load_state(path);
+        (inv.unwrap_or_default(), note)
     }
 
-    /// Atomic write: tmp + rename, so a crash mid-write never leaves a torn
-    /// inventory.
+    /// Atomic write: a crash or a reset mid-write never leaves a torn
+    /// inventory (see [`write_atomic`]).
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         write_atomic(path, &self.to_bytes()?)
     }
@@ -75,15 +75,81 @@ impl Inventory {
     }
 }
 
-/// tmp + rename.
+/// Temp file, fsync, rename, fsync of the directory. Without the first
+/// fsync a reset can keep the rename and lose the data, leaving the file
+/// empty or full of NULs where the old one was (#102).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = PathBuf::from(format!("{}.tmp", path.display()));
-    std::fs::write(&tmp, bytes)?;
+    write_synced(&tmp, bytes)?;
     std::fs::rename(&tmp, path)?;
+    if let Some(dir) = path.parent() {
+        sync_dir(dir);
+    }
     Ok(())
+}
+
+/// Write a file and wait for its data to reach the disk.
+pub fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
+}
+
+/// Make a rename in `dir` durable. Best effort: the data is already safe.
+pub fn sync_dir(dir: &Path) {
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+}
+
+/// Nothing a writer meant to keep: no bytes, or only NULs and whitespace.
+pub fn is_blank(bytes: &[u8]) -> bool {
+    bytes.iter().all(|b| *b == 0 || b.is_ascii_whitespace())
+}
+
+/// Read one of our JSON state files at start. Never fails (#102): a state
+/// file that cannot be read must not stop the service.
+/// - absent: `(None, None)`
+/// - blank: `(None, note)`; the next write replaces it
+/// - unreadable or not what we wrote: `(None, note)`, moved to
+///   `<file>.unreadable` so it can be looked at and the next write does not
+///   destroy it
+///
+/// The note names the file and is also logged; the caller raises it as an
+/// event.
+pub fn load_state<T: serde::de::DeserializeOwned>(path: &Path) -> (Option<T>, Option<String>) {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (None, None),
+        Err(e) => return (None, Some(set_aside(path, &e.to_string()))),
+    };
+    if is_blank(&bytes) {
+        let note = format!("{}: blank ({} bytes), starting without it", path.display(), bytes.len());
+        tracing::warn!("{note}");
+        return (None, Some(note));
+    }
+    match serde_json::from_slice(&bytes) {
+        Ok(v) => (Some(v), None),
+        Err(e) => {
+            let start: Vec<String> = bytes.iter().take(16).map(|b| format!("{b:02x}")).collect();
+            (None, Some(set_aside(path, &format!("{e} ({} bytes, starts {})", bytes.len(), start.join(" ")))))
+        }
+    }
+}
+
+/// Move a state file out of the way of the next write, and say so.
+fn set_aside(path: &Path, why: &str) -> String {
+    let aside = PathBuf::from(format!("{}.unreadable", path.display()));
+    let note = match std::fs::rename(path, &aside) {
+        Ok(()) => format!("{}: {why}; moved to {}, starting without it", path.display(), aside.display()),
+        Err(e) => format!("{}: {why}; could not move it to {} ({e}), starting without it", path.display(), aside.display()),
+    };
+    tracing::error!("{note}");
+    note
 }
 
 #[cfg(test)]
@@ -154,7 +220,8 @@ mod tests {
         );
         inv.save(&path).unwrap();
 
-        let loaded = Inventory::load(&path).unwrap();
+        let (loaded, note) = Inventory::load(&path);
+        assert_eq!(note, None);
         assert_eq!(loaded.drives.len(), 1);
         assert_eq!(loaded.trends[&id].len(), 1);
         assert!(loaded.resolve("sda").is_some());
@@ -184,7 +251,8 @@ mod tests {
 
     #[test]
     fn missing_file_is_empty_inventory() {
-        let inv = Inventory::load(Path::new("/definitely/not/here.json")).unwrap();
+        let (inv, note) = Inventory::load(Path::new("/definitely/not/here.json"));
+        assert_eq!(note, None, "absent is the normal first start");
         assert!(inv.drives.is_empty());
     }
 
@@ -204,5 +272,79 @@ mod tests {
         }
         assert_eq!(inv.trends[&id].len(), MAX_TREND_SAMPLES);
         assert_eq!(inv.trends[&id][0].unix_secs, 600 - MAX_TREND_SAMPLES as u64);
+    }
+
+    /// What forge1 printed (#102): NULs, not an empty file, read that way.
+    #[test]
+    fn the_message_on_forge1_is_a_file_starting_with_a_non_json_byte() {
+        let nuls = serde_json::from_slice::<Inventory>(&[0u8; 64]).unwrap_err().to_string();
+        assert_eq!(nuls, "expected value at line 1 column 1");
+        let empty = serde_json::from_slice::<Inventory>(b"").unwrap_err().to_string();
+        assert_eq!(empty, "EOF while parsing a value at line 1 column 0");
+    }
+
+    fn state_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("stormdrive-state-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_blank_inventory_is_absent_and_said() {
+        let dir = state_dir("blank");
+        let path = dir.join("inventory.json");
+        for blank in [&b""[..], &[0u8; 4096][..], &b" \n\0\n"[..]] {
+            std::fs::write(&path, blank).unwrap();
+            let (inv, note) = Inventory::load(&path);
+            assert!(inv.drives.is_empty());
+            let note = note.expect("said");
+            assert!(note.contains("inventory.json") && note.contains("blank"), "{note}");
+            assert!(!dir.join("inventory.json.unreadable").exists(), "nothing there to keep");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unparseable_inventory_is_kept_aside_and_the_next_save_works() {
+        let dir = state_dir("garbage");
+        let path = dir.join("inventory.json");
+        for bad in [&b"\0\0not json"[..], &b"{\"drives\": {"[..], &b"[1,2]"[..], &[0xff, 0xfe, 0x00][..]] {
+            std::fs::write(&path, bad).unwrap();
+            let (inv, note) = Inventory::load(&path);
+            assert!(inv.drives.is_empty());
+            let note = note.expect("said");
+            assert!(note.contains("inventory.json") && note.contains(".unreadable"), "{note}");
+            assert_eq!(std::fs::read(dir.join("inventory.json.unreadable")).unwrap(), bad, "kept as it was");
+            assert!(!path.exists());
+        }
+        Inventory::default().save(&path).unwrap();
+        assert_eq!(Inventory::load(&path).1, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// EISDIR stands in for any read error (EIO on a bad block, EACCES).
+    #[test]
+    fn a_file_that_cannot_be_read_does_not_stop_the_load() {
+        let dir = state_dir("noread");
+        let path = dir.join("inventory.json");
+        std::fs::create_dir(&path).unwrap();
+        let (inv, note) = Inventory::load(&path);
+        assert!(inv.drives.is_empty());
+        assert!(note.expect("said").contains("inventory.json"));
+        assert!(dir.join("inventory.json.unreadable").is_dir());
+        Inventory::default().save(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_leaves_the_data_and_no_temp_file() {
+        let dir = state_dir("atomic");
+        let path = dir.join("sub/x.json");
+        write_atomic(&path, b"one").unwrap();
+        write_atomic(&path, b"two").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        assert!(!dir.join("sub/x.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

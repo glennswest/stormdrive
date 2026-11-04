@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,11 +46,13 @@ async fn main() -> anyhow::Result<()> {
         .data_dir
         .as_ref()
         .map(|d| PathBuf::from(d).join("inventory.json"));
-    let inventory = match &inventory_path {
-        Some(p) => Inventory::load(p)?,
+    // A state file a reset cut does not stop the service (#102): each load
+    // says what it found, and the notes become events below.
+    let (inventory, inventory_note) = match &inventory_path {
+        Some(p) => Inventory::load(p),
         None => {
             tracing::warn!("no data_dir configured — inventory is in-memory only");
-            Inventory::default()
+            (Inventory::default(), None)
         }
     };
     tracing::info!(
@@ -59,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
 
     // The event log's tail from before the restart (#25).
     let events_path = config.data_dir.as_ref().map(|d| PathBuf::from(d).join("events.json"));
-    let mut events = EventLog::restore(4096, events_path.as_ref().and_then(|p| std::fs::read(p).ok()).as_deref());
+    let (mut events, events_note) = EventLog::load(4096, events_path.as_deref());
     let kept = events.len();
     let continued = events.latest_seq();
     events.push(
@@ -76,6 +79,10 @@ async fn main() -> anyhow::Result<()> {
 
     let node_name = config.node_name();
     let data_dir = config.data_dir.clone();
+    let (worker, jobs_note) = stormdrive::worker::Worker::load(data_dir.as_deref());
+    for note in [inventory_note, events_note, jobs_note].into_iter().flatten() {
+        events.push(None, stormdrive::events::Severity::Warning, "state_file", note);
+    }
     // #46: destructive engine verbs fall back to stormdrive's own Kubernetes
     // credential (storage-admin) when no engine admin token is readable.
     let stormblock = StormBlockClient::new(config.stormblock.clone()).with_kube_token_file(
@@ -116,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
         node_name,
         poller,
         persisted: Default::default(),
-        worker: stormdrive::worker::Worker::load(data_dir.as_deref()),
+        worker,
         gate,
         engine_slabs: RwLock::new(None),
         history: Arc::new(history),
@@ -143,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
     let cas: Vec<PathBuf> = api.client_ca_files.iter().map(PathBuf::from).collect();
     let tls = stormdrive::tls::server_config(cert, &cas)?;
     let app = stormdrive::api::router(state.clone());
-    let tcp = tokio::net::TcpListener::bind(&listen).await?;
+    let tcp = tokio::net::TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
     let listener = stormdrive::tls::Listener::new(tcp, tls)?;
     tracing::info!(
         %listen,

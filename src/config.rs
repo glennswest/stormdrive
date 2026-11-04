@@ -330,12 +330,12 @@ impl Default for KubernetesConfig {
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(s) => Ok(toml::from_str(&s)?),
+            Ok(s) => toml::from_str(&s).map_err(|e| anyhow::anyhow!("config {}: {e}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::info!(?path, "no config file, using defaults");
                 Ok(Self::default())
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(anyhow::anyhow!("config {}: {e}", path.display())),
         }
     }
 

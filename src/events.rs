@@ -64,8 +64,19 @@ impl EventLog {
     /// The log a previous run saved (`events.json`): its events, and the
     /// sequence continuing after them. Unreadable or absent = a new log.
     pub fn restore(cap: usize, saved: Option<&[u8]>) -> Self {
+        Self::from_saved(cap, saved.and_then(|b| serde_json::from_slice::<Saved>(b).ok()))
+    }
+
+    /// [`restore`](Self::restore) from the file, with what a file that could
+    /// not be read came to (#102). No path = a new log.
+    pub fn load(cap: usize, path: Option<&std::path::Path>) -> (Self, Option<String>) {
+        let (saved, note) = path.map_or((None, None), crate::inventory::load_state);
+        (Self::from_saved(cap, saved), note)
+    }
+
+    fn from_saved(cap: usize, saved: Option<Saved>) -> Self {
         let mut log = Self::new(cap);
-        let Some(s) = saved.and_then(|b| serde_json::from_slice::<Saved>(b).ok()) else {
+        let Some(s) = saved else {
             return log;
         };
         let skip = s.events.len().saturating_sub(cap);
