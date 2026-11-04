@@ -3,10 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-04 (#102)
-- **fix:** a state file a reset cut no longer crash-loops the service (forge1, 12.58: `Error: expected value at line 1 column 1` on every start). `inventory.json`, `events.json` and `jobs.json` load through `inventory::load_state`: blank (empty, or only NULs and whitespace) counts as absent; a file that cannot be read or parsed moves to `<file>.unreadable`. Each raises a `state_file` warning event naming the file, its size and first bytes. A blank `system-drives.json` counts as absent too
-- **fix:** state writes (`write_atomic`) and firmware image uploads fsync the file before the rename and the directory after it. Without that, a reset could keep the rename and lose the data, which is how the file got that way
-- **fix:** a config or listen error at start names the file or the address
+## [v0.33.1] — 2026-11-04
+
+### Fixed
+- A state file a reset cut no longer crash-loops the service (forge1, 12.58: `Error: expected value at line 1 column 1` on every start). `inventory.json`, `events.json` and `jobs.json` load through `inventory::load_state`: blank (empty, or only NULs and whitespace) counts as absent; a file that cannot be read or parsed moves to `<file>.unreadable`. Each raises a `state_file` warning event naming the file, its size and first bytes. A blank `system-drives.json` counts as absent too
+- State writes (`write_atomic`) and firmware image uploads fsync the file before the rename and the directory after it. Without that, a reset could keep the rename and lose the data, which is how the file got that way
+- A config or listen error at start names the file or the address
 
 ### 2026-10-29
 - **test:** `test/requires.toml` declares `cluster_read` on drives, enclosures, driveoperations and firmwareimages (storage.storm.io) for short/medium/long, so the run's ServiceAccount passes the read gate (#53, #28)

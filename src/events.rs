@@ -27,7 +27,8 @@ pub struct Event {
     /// location, health, designation, overcommit, fleet, drain, test,
     /// format, firmware, shelf, hba, stormblock, worker, restart (#39: a
     /// drive left busy by a run that did not survive), audit (#45: who
-    /// made which write, and whether it was allowed), operation.
+    /// made which write, and whether it was allowed), operation, state_file
+    /// (#102: a state file blank or unreadable at start).
     pub kind: String,
     pub message: String,
 }

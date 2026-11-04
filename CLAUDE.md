@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.33.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.33.1** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -623,7 +623,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #102: a state file the reset cut must not stop stormdrive (P0, forge1, 2026-11-04) — in progress
+### #102: a state file the reset cut must not stop stormdrive (P0, forge1, 2026-11-04) — DONE (v0.33.1)
 
 forge1 (12.58) crash-loops on start: `Error: expected value at line 1 column
 1`. Only `Inventory::load` is fatal at start (`system::read` is not: sync logs
@@ -641,8 +641,11 @@ decision):
   warning event at start names each one
 - errors that stay fatal name the file (config, listen address)
 Steps:
-- [ ] load_state + write_atomic + callers + tests (unit, real daemon)
-- [ ] docs, changelog, build VM, v0.33.1, golden, close #102
+- [x] load_state + write_atomic + callers + tests (unit, real daemon) (b0296ae)
+- [x] docs, changelog; build VM on b0296ae: clippy -D warnings --locked, 280
+      unit + harnesses (the daemon starts on NUL / empty / torn state files);
+      v0.33.1, golden requested, #102 closed. Live: forge1 by update, its
+      `state_file` event then says what the file held
 
 ### #83: the Shelf resource — status, conditions, Events, identify, fault LED, default format (P1, 2026-10-28) — DONE (v0.33.0)
 
