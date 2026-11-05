@@ -160,6 +160,9 @@ fn local_key(node: &str, pcie: Option<&str>, host: &str, enclosure: Option<u16>)
     k.to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' }).collect()
 }
 
+/// Sends one command (opcode, mailbox) and fills the buffer.
+type Dcmd<'a> = dyn FnMut(u32, Option<u16>, &mut [u8]) -> Result<(), String> + 'a;
+
 struct Controller<'a> {
     node: &'a str,
     host: &'a str,
@@ -197,7 +200,7 @@ impl Controller<'_> {
 
     /// One report per enclosure on the controller. `dcmd` sends one command
     /// and fills the buffer.
-    fn read(&self, dcmd: &mut dyn FnMut(u32, Option<u16>, &mut [u8]) -> Result<(), String>) -> Vec<ShelfReport> {
+    fn read(&self, dcmd: &mut Dcmd<'_>) -> Vec<ShelfReport> {
         let mut list = vec![0u8; PD_LIST_LEN];
         let pds = match dcmd(DCMD_PD_LIST, None, &mut list).and_then(|()| parse_pd_list(&list).ok_or_else(|| "short drive list".to_string())) {
             Ok(p) => p,
@@ -361,7 +364,7 @@ mod linux {
             .filter(|e| std::fs::read_to_string(e.path().join("proc_name")).is_ok_and(|s| s.trim() == DRIVER))
             .map(|e| {
                 let pcie = std::fs::canonicalize(e.path()).ok().and_then(|r| {
-                    r.components().map(|c| c.as_os_str().to_string_lossy().to_string()).filter(|c| crate::topology::is_pci_bdf(c)).last()
+                    r.components().map(|c| c.as_os_str().to_string_lossy().to_string()).rfind(|c| crate::topology::is_pci_bdf(c))
                 });
                 (e.file_name().to_string_lossy().to_string(), pcie)
             })
