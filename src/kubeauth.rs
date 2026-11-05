@@ -475,6 +475,7 @@ mod tests {
         assert_eq!(classify("POST", "/api/v1/worker/jobs/j1/resume"), a("driveoperations", "update", Some("j1")));
         assert_eq!(classify("POST", "/api/v1/drives/sdb/test/cancel"), a("drives", "update", Some("sdb")));
         assert_eq!(classify("POST", "/api/v1/drives/sdb/designation/spare"), a("drives", "update", Some("sdb")));
+        assert_eq!(classify("POST", "/api/v1/drives/sdb/health/acknowledge"), a("drives", "update", Some("sdb")), "#107: a gated write");
         assert_eq!(classify("PUT", "/api/v1/drives/sdb/overcommit"), a("drives", "update", Some("sdb")));
         assert_eq!(classify("DELETE", "/api/v1/drives/sdb/drain"), a("drives", "update", Some("sdb")));
         assert_eq!(classify("DELETE", "/api/v1/drives/sdb"), a("drives", "delete", Some("sdb")));

@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.37.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.38.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -631,7 +631,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #107: a drive's warning shown as failed, with no reason (P0 for the owner's forge1 list, 2026-11-05) — in progress
+### #107: a drive's warning shown as failed, with no reason (owner's forge1 list, 2026-11-05) — DONE (v0.38.0)
 
 Owner: "why is sdc failed?", "33 is failing?", "can we reset it?" `parse_ie` made
 any ASC a failure prediction, so 0Bh/97h read Failing. Design (the issue's;
@@ -650,7 +650,8 @@ one call of mine, said on the issue: corrected errors do not bring a warning bac
   needs `/api/v1/scsi/not-good` on forge1 (down): on #112
 Steps:
 - [x] parse, evaluate, ack route, feed, metrics, tests, docs
-- [ ] build VM; version; golden; console issue
+- [x] build VM on df9863c (clippy -D warnings --locked, 300 unit + harnesses; #114 was my own compile error); v0.38.0; golden requested; console issue filed
+- Open on forge1 (#112): which command fails on every drive, `/api/v1/scsi/not-good`; sdc reads warning with its reason
 
 ### #106: a USB stick is not a drive (P1, owner, 2026-11-05) — DONE (v0.37.0)
 

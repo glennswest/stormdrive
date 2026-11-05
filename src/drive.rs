@@ -1021,6 +1021,23 @@ mod tests {
         assert_eq!(Location::default().bay_key(), None);
     }
 
+    /// #107: only a warning, and one with counters to record, is acknowledged.
+    #[test]
+    fn only_a_warning_can_be_acknowledged() {
+        let with = |st: Option<HealthStatus>, smart: bool| {
+            let mut d = base_drive();
+            d.health.status = st;
+            d.health.smart = smart.then(Default::default);
+            d.ack_blocker()
+        };
+        assert_eq!(with(Some(HealthStatus::Warning), true), None);
+        assert!(with(Some(HealthStatus::Warning), false).is_some(), "an NVMe warning has none");
+        assert!(with(Some(HealthStatus::Failing), true).is_some_and(|w| w.contains("only a warning")));
+        assert!(with(Some(HealthStatus::Failed), true).is_some());
+        assert!(with(Some(HealthStatus::Good), true).is_some());
+        assert!(with(None, true).is_some());
+    }
+
     #[test]
     fn overcommit_is_off_by_default_and_checked_when_on() {
         assert_eq!(base_drive().overcommit, Overcommit { enabled: false, ratio: 1.0 });
