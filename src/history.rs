@@ -585,7 +585,7 @@ impl History {
             status: serde_json::to_value(status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
             temperature_c: s.temperature_c,
             counters: counters(s),
-            predicted_failure: s.smart.as_ref().and_then(|m| m.predicted_failure.clone()),
+            predicted_failure: s.smart.as_ref().and_then(|m| m.predicted_failure.clone().or_else(|| m.ie_warning.clone())),
             ata_attributes: s.ata_attributes.clone(),
             findings: vec![],
         };

@@ -631,6 +631,27 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #107: a drive's warning shown as failed, with no reason (P0 for the owner's forge1 list, 2026-11-05) — in progress
+
+Owner: "why is sdc failed?", "33 is failing?", "can we reset it?" `parse_ie` made
+any ASC a failure prediction, so 0Bh/97h read Failing. Design (the issue's;
+one call of mine, said on the issue: corrected errors do not bring a warning back):
+- ASC 5Dh = Failing; 0Bh and others = Warning, `ie_warning`, named from SPC's
+  table (kernel `sense_codes.h`); 80h up "vendor-specific warning 97h". Not
+  decoded: no authoritative HGST table was found
+- feed: `reason` beside `smart`, in `detail`; counters vs other drives of the
+  kind; `temp` muted. Console rendering: a stormconsole issue
+- Acknowledge: `health_ack {by, at_unix, ie, counters}`, `evaluate_acked`; only at
+  Warning; the same code + counters at or under the record no longer warn; never
+  LOG SELECT
+- io errs: `ioerr_cnt` counts every non-zero result, ours too. `io_errors_not_ours`
+  = its growth since start less our `not_good` count. #105's guess is wrong by
+  the code: health picks ATA or LOG SENSE by vendor, not kind. Which command fails
+  needs `/api/v1/scsi/not-good` on forge1 (down): on #112
+Steps:
+- [x] parse, evaluate, ack route, feed, metrics, tests, docs
+- [ ] build VM; version; golden; console issue
+
 ### #106: a USB stick is not a drive (P1, owner, 2026-11-05) — DONE (v0.37.0)
 
 Owner: "Is counting a USB drive?" forge1 shows 5 drives, the 5th its boot stick.

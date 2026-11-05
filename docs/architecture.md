@@ -285,8 +285,8 @@ path failover is actually needed.
   driver). Then the drive itself (#22), over SG_IO on its sg node (else
   `/dev/<name>`), with a 10 s timeout per command:
   - **not `ATA`:** LOG SENSE (cumulative) of Informational Exceptions
-    (0x2F). Parameter 0's ASC/ASCQ (5Dh = threshold exceeded) is the
-    predicted failure; its temperature byte is used when hwmon has none.
+    (0x2F). Parameter 0's ASC/ASCQ: 5Dh (threshold exceeded) is the predicted
+    failure; 0Bh and others are `ie_warning`, never Failing (#107); its temperature byte is used when hwmon has none.
     Temperature (0x0D) is read only if still none, and Solid State Media
     (0x11) parameter 1, Percentage Used, on an SSD. Then the error counter
     pages (#64) Write (0x02), Read (0x03) and Verify (0x05): parameters

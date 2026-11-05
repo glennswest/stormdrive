@@ -403,6 +403,34 @@ pub enum HealthStatus {
     Failed,
 }
 
+/// Someone looked at a drive's warning and accepted it (#107): who, when, and
+/// what it stood at. Not an erase: nothing on the drive changes, and the
+/// history keeps everything. The warning returns if the drive raises another
+/// code, or if a counter in [`ACK_WATCHED`] grows past these values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HealthAck {
+    pub by: String,
+    pub at_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ie: Option<crate::smart::IeCode>,
+    pub counters: std::collections::BTreeMap<String, u64>,
+}
+
+/// The counters that bring an acknowledged warning back. Corrected errors are
+/// recorded, not watched: they climb on healthy drives in normal running, so
+/// watching them would undo an acknowledgement within the hour.
+pub const ACK_WATCHED: [&str; 9] = [
+    "grown_defects",
+    "reallocated_sectors",
+    "pending_sectors",
+    "offline_uncorrectable",
+    "reported_uncorrectable",
+    "crc_errors",
+    "read_uncorrected",
+    "write_uncorrected",
+    "verify_uncorrected",
+];
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HealthReport {
     pub status: Option<HealthStatus>,
@@ -414,6 +442,10 @@ pub struct HealthReport {
     /// (resets included). SCSI/SATA only; not media errors (#58).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_errors: Option<u64>,
+    /// Of those, the growth since this daemon started that was not its own
+    /// commands failing (#107). What to read as the drive's errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_errors_not_ours: Option<u64>,
     pub available_spare_pct: Option<u8>,
     /// NVMe percentage-used / SSD endurance-used. May exceed 100 per spec.
     pub wear_pct: Option<u8>,
@@ -490,6 +522,9 @@ pub struct Drive {
     /// rotation, current format (#85, `pi.rs`). None until probed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports: Option<crate::pi::Supports>,
+    /// Its warning, acknowledged (#107).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_ack: Option<HealthAck>,
     /// The rate its link negotiated, in Mb/s: SAS, from the drive's port log
     /// page (#105). None where it cannot be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -686,6 +721,17 @@ impl Drive {
     /// Why this drive cannot take designation `to` now (#66). `system` on
     /// a fleet drive is refused: the install would lay the system half over
     /// the data the engine placed there. Leave the fleet first.
+    pub fn ack_blocker(&self) -> Option<String> {
+        match self.health.status() {
+            HealthStatus::Warning if self.health.smart.is_some() => None,
+            HealthStatus::Warning => Some("no drive counters to acknowledge against".into()),
+            HealthStatus::Failing | HealthStatus::Failed => {
+                Some(format!("{:?}: only a warning can be acknowledged", self.health.status()).to_lowercase())
+            }
+            _ => Some("no warning to acknowledge".into()),
+        }
+    }
+
     pub fn designation_blocker(&self, to: Designation) -> Option<String> {
         if to == Designation::System && self.designation != Designation::System && self.membership == Membership::Fleet {
             return Some("in the fleet: its data would be laid over by the install — leave (drain) first".into());
@@ -890,6 +936,7 @@ mod tests {
             vendor: None,
             supports: None,
             link_rate_mbps: None,
+            health_ack: None,
             history: None,
             wwid: None,
             capacity_bytes: 1 << 30,

@@ -53,7 +53,34 @@ fn controller_name(c: &crate::drive::Controller) -> Option<String> {
     c.pcie_addr.clone().or_else(|| c.scsi_host.clone())
 }
 
+/// A drive's counters that are not zero, beside the same kind of drive on this
+/// node (#107): "5 (others 0)", "7035 (others 0–4)". What makes a number read
+/// as odd or as normal.
+fn evidence(d: &Drive, others: &[&Drive]) -> Vec<(String, String)> {
+    let Some(sm) = &d.health.smart else { return Vec::new() };
+    let peers: Vec<std::collections::BTreeMap<String, u64>> = others
+        .iter()
+        .filter(|o| o.id != d.id && o.kind == d.kind && o.activity != Activity::Missing)
+        .filter_map(|o| o.health.smart.as_ref().map(|s| s.counters()))
+        .collect();
+    let mut out = Vec::new();
+    for (k, n) in sm.counters().into_iter().filter(|(_, n)| *n > 0) {
+        let seen: Vec<u64> = peers.iter().filter_map(|p| p.get(&k).copied()).collect();
+        let value = match (seen.iter().min(), seen.iter().max()) {
+            (Some(a), Some(b)) if a == b => format!("{n} (others {a})"),
+            (Some(a), Some(b)) => format!("{n} (others {a}–{b})"),
+            _ => n.to_string(),
+        };
+        out.push((k.replace('_', " "), value));
+    }
+    out
+}
+
 fn drive_component(d: &Drive) -> ComponentSummary {
+    drive_among(d, &[])
+}
+
+fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     let base = format!("/api/v1/drives/{}", d.id);
     let idle = d.activity == Activity::Idle;
     let present = d.activity != Activity::Missing;
@@ -191,7 +218,8 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         metrics.push(Metric::new("wwid", w.clone()).tone("muted"));
     }
     if let Some(t) = d.health.temperature_c {
-        metrics.push(Metric::new("temp", t.to_string()).unit("°C"));
+        // Its own tone: only the health below reads in error colour (#107).
+        metrics.push(Metric::new("temp", t.to_string()).unit("°C").tone("muted"));
     }
     if let Some(w) = d.health.wear_pct {
         let m = Metric::new("wear", w.to_string()).unit("%");
@@ -210,7 +238,8 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     if d.health.media_errors > 0 {
         metrics.push(Metric::new("media errs", d.health.media_errors.to_string()).tone("warn"));
     }
-    if let Some(n) = d.health.io_errors.filter(|n| *n > 0) {
+    // Not the commands stormdrive itself sent and the drive refused (#107).
+    if let Some(n) = d.health.io_errors_not_ours.or(d.health.io_errors).filter(|n| *n > 0) {
         metrics.push(Metric::new("io errs", n.to_string()).tone("muted"));
     }
     // Why join/format/destructive are greyed out on an out-of-fleet drive:
@@ -247,7 +276,19 @@ fn drive_component(d: &Drive) -> ComponentSummary {
         st => {
             let tone = if matches!(st, HealthStatus::Warning) { "warn" } else { "error" };
             metrics.push(Metric::new("smart", format!("{st:?}").to_lowercase()).tone(tone));
+            // Why, beside the word, and the numbers behind it (#107).
+            if !d.health.messages.is_empty() {
+                let why = d.health.messages.join("; ");
+                detail.push(why.clone());
+                metrics.push(Metric::new("reason", why).tone(tone));
+            }
+            for (label, value) in evidence(d, others) {
+                metrics.push(Metric::new(&label, value).tone("muted"));
+            }
         }
+    }
+    if let Some(a) = &d.health_ack {
+        metrics.push(Metric::new("acknowledged", a.by.clone()).tone("muted"));
     }
     // The NVMe critical-warning bitfield, which is the drive telling you in
     // one byte that its spare is exhausted, it is over temperature, the
@@ -260,6 +301,9 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     }
 
     let mut actions = Vec::new();
+    if d.health.status() == HealthStatus::Warning {
+        actions.push(act("acknowledge", "Acknowledge warning", "POST", format!("{base}/health/acknowledge"), d.ack_blocker().is_none(), false));
+    }
     if d.location.bay.is_some() {
         actions.push(act("locate-on", "Locate", "POST", format!("{base}/locate/on"), present, false));
         actions.push(act("locate-off", "LED off", "POST", format!("{base}/locate/off"), present, false));
@@ -658,7 +702,7 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
     }
 
     for d in &drives {
-        out.push(drive_component(d));
+        out.push(drive_among(d, &drives));
     }
     out
 }
@@ -682,6 +726,7 @@ mod tests {
             vendor: None,
             supports: None,
             link_rate_mbps: None,
+            health_ack: None,
             history: None,
             wwid: None,
             capacity_bytes: 1 << 30,
@@ -716,6 +761,40 @@ mod tests {
             usage: None,
             fleet_partition: None,
         }
+    }
+
+    /// #107: forge1's sdc among its siblings. The reason and the counters are
+    /// on the row, the temperature has its own tone, and it can be acknowledged.
+    #[test]
+    fn a_warning_shows_its_reason_and_its_numbers() {
+        let with = |serial: &str, grown, corrected| {
+            let mut d = drive();
+            d.id = crate::drive::DriveId::derive(None, "M", serial);
+            d.health.status = Some(HealthStatus::Good);
+            d.health.temperature_c = Some(33);
+            d.health.smart = Some(crate::smart::SmartCounters {
+                grown_defects: Some(grown),
+                verify_errors: Some(crate::smart::ErrorCounters { corrected: Some(corrected), uncorrected: Some(0), bytes: None }),
+                ..Default::default()
+            });
+            d
+        };
+        let mut sdc = with("C", 5, 7035);
+        sdc.health.status = Some(HealthStatus::Warning);
+        sdc.health.messages = vec!["the drive reports a vendor-specific warning 97h (ASC 0Bh/97h)".into()];
+        let (a, b, e) = (with("A", 0, 0), with("B", 0, 4), with("E", 0, 1));
+        let c = drive_among(&sdc, &[&sdc, &a, &b, &e]);
+        let metric = |l: &str| c.metrics.iter().find(|m| m.label == l).unwrap_or_else(|| panic!("no {l}"));
+        assert_eq!(c.health, Health::Warn);
+        assert!(metric("reason").value.contains("97h"));
+        assert_eq!(metric("grown defects").value, "5 (others 0)");
+        assert_eq!(metric("verify corrected").value, "7035 (others 0–4)");
+        assert_eq!(metric("temp").tone.as_deref(), Some("muted"));
+        assert!(c.actions.iter().any(|x| x.id == "acknowledge" && x.enabled));
+        // A good sibling shows none of it.
+        let g = drive_among(&a, &[&sdc, &a]);
+        assert!(!g.metrics.iter().any(|m| m.label == "reason" || m.label == "grown defects"));
+        assert!(!g.actions.iter().any(|x| x.id == "acknowledge"));
     }
 
     #[test]

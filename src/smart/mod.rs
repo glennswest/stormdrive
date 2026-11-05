@@ -9,6 +9,9 @@ use crate::drive::{Drive, DriveKind};
 /// One raw health observation.
 #[derive(Debug, Clone, Default)]
 pub struct Sample {
+    /// `io_errors` growth since this daemon first looked, less the commands it
+    /// sent itself that failed (#107).
+    pub io_errors_not_ours: Option<u64>,
     pub temperature_c: Option<i32>,
     pub power_on_hours: Option<u64>,
     /// Errors the drive itself counts against its media: NVMe log 0x02,
@@ -49,6 +52,36 @@ pub struct AtaAttribute {
     pub raw: u64,
 }
 
+/// An Informational Exceptions code (SCSI log page 0x2F).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IeCode {
+    pub asc: u8,
+    pub ascq: u8,
+}
+
+impl SmartCounters {
+    /// The drive's counters by name, as an acknowledgement records them (#107).
+    pub fn counters(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut out = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: Option<u64>| {
+            if let Some(v) = v {
+                out.insert(k.to_string(), v);
+            }
+        };
+        put("grown_defects", self.grown_defects);
+        put("reallocated_sectors", self.reallocated_sectors);
+        put("pending_sectors", self.pending_sectors);
+        put("offline_uncorrectable", self.offline_uncorrectable);
+        put("reported_uncorrectable", self.reported_uncorrectable);
+        put("crc_errors", self.crc_errors);
+        for (page, c) in [("read", &self.read_errors), ("write", &self.write_errors), ("verify", &self.verify_errors)] {
+            put(&format!("{page}_corrected"), c.as_ref().and_then(|c| c.corrected));
+            put(&format!("{page}_uncorrected"), c.as_ref().and_then(|c| c.uncorrected));
+        }
+        out
+    }
+}
+
 /// A SAS/SATA drive's own health (#22). The sector counters come from ATA
 /// SMART (None from LOG SENSE, which this does not read them from).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -58,6 +91,12 @@ pub struct SmartCounters {
     /// The drive predicts its own failure: why, in its words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predicted_failure: Option<String>,
+    /// The drive warns of something short of that (#107): why, in its words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ie_warning: Option<String>,
+    /// The Informational Exceptions code behind either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ie: Option<IeCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reallocated_sectors: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

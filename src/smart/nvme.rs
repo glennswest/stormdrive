@@ -28,6 +28,7 @@ pub fn decode_smart_page(page: &[u8; 512]) -> Sample {
         power_on_hours: Some(u128_at(128)),
         media_errors: u128_at(160),
         io_errors: None,
+        io_errors_not_ours: None,
         kernel_ok: true,
         messages: Vec::new(),
         nvme: Some(super::NvmeCounters {

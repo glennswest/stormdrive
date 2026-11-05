@@ -21,6 +21,18 @@ pub fn evaluate(
     s: &Sample,
     prev_media_errors: Option<u64>,
 ) -> (HealthStatus, Vec<String>) {
+    evaluate_acked(cfg, s, prev_media_errors, None)
+}
+
+/// [`evaluate`] with the drive's acknowledged warning (#107): the same code and
+/// the same counters no longer warn. A new code or a watched counter past what
+/// was acknowledged does, and a failure prediction always counts.
+pub fn evaluate_acked(
+    cfg: &MonitorConfig,
+    s: &Sample,
+    prev_media_errors: Option<u64>,
+    ack: Option<&crate::drive::HealthAck>,
+) -> (HealthStatus, Vec<String>) {
     fn worsen(st: &mut HealthStatus, why: &mut Vec<String>, to: HealthStatus, msg: String) {
         if to > *st {
             *st = to;
@@ -47,11 +59,27 @@ pub fn evaluate(
         if let Some(why_failing) = &sm.predicted_failure {
             worsen(&mut status, &mut why, HealthStatus::Failing, why_failing.clone());
         }
-        if let Some(n) = sm.pending_sectors.filter(|n| *n > 0) {
+        if let Some(w) = sm.ie_warning.as_ref().filter(|_| ack.map_or(true, |a| a.ie != sm.ie)) {
+            worsen(&mut status, &mut why, HealthStatus::Warning, w.clone());
+        }
+        // Accepted at this count: the growth is what is reported below.
+        let accepted = |k: &str, n: u64| ack.and_then(|a| a.counters.get(k)).is_some_and(|at| n <= *at);
+        if let Some(n) = sm.pending_sectors.filter(|n| *n > 0 && !accepted("pending_sectors", *n)) {
             worsen(&mut status, &mut why, HealthStatus::Warning, format!("{n} sector(s) pending reallocation"));
         }
-        if let Some(n) = sm.offline_uncorrectable.filter(|n| *n > 0) {
+        if let Some(n) = sm.offline_uncorrectable.filter(|n| *n > 0 && !accepted("offline_uncorrectable", *n)) {
             worsen(&mut status, &mut why, HealthStatus::Warning, format!("{n} offline-uncorrectable sector(s)"));
+        }
+        if let Some(a) = ack {
+            let now = sm.counters();
+            for k in crate::drive::ACK_WATCHED {
+                if let (Some(at), Some(n)) = (a.counters.get(k), now.get(k)) {
+                    if n > at {
+                        let msg = format!("{} {at} → {n} since {} acknowledged", k.replace('_', " "), a.by);
+                        worsen(&mut status, &mut why, HealthStatus::Warning, msg);
+                    }
+                }
+            }
         }
     }
     if s.critical_warning & crit::READ_ONLY != 0 {
@@ -435,10 +463,10 @@ async fn apply_outcome(
     // Baseline for growth detection: only a real prior sample counts —
     // a fresh drive's default 0 would turn its first reading into a
     // false "growing" warning.
-    let (prev, current, engine) = {
+    let (prev, current, engine, ack) = {
         let inv = state.inventory.read().await;
         let Some(d) = inv.drives.get(&id) else { return };
-        (d.health.collected_at.is_some().then_some(d.health.media_errors), d.health.status(), d.engine_finding.clone())
+        (d.health.collected_at.is_some().then_some(d.health.media_errors), d.health.status(), d.engine_finding.clone(), d.health_ack.clone())
     };
     // The first sample in this run (a restart, a reinstall) grows from the
     // drive's last kept record (#64), not from nothing.
@@ -450,7 +478,7 @@ async fn apply_outcome(
         }
         None => None,
     };
-    let (candidate, mut why) = evaluate(&state.config.monitor, &sample, prev);
+    let (candidate, mut why) = evaluate_acked(&state.config.monitor, &sample, prev, ack.as_ref());
     let mut effective = damper.apply(&state.config.monitor, id, current, candidate);
     // The engine leaving the drive's slabs unused (#58) is not damped: it
     // comes from the engine's settled report, not one noisy read.
@@ -469,6 +497,7 @@ async fn apply_outcome(
             power_on_hours: sample.power_on_hours,
             media_errors: sample.media_errors,
             io_errors: sample.io_errors,
+            io_errors_not_ours: sample.io_errors_not_ours,
             available_spare_pct: sample.available_spare_pct,
             wear_pct: sample.wear_pct,
             critical_warning: sample.critical_warning,
@@ -866,6 +895,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         vendor: primary.vendor.clone(),
                         supports: primary.supports.clone(),
                         link_rate_mbps: primary.link_rate_mbps,
+                        health_ack: None,
                         history: None,
                         wwid: primary.wwid.clone(),
                         capacity_bytes: primary.capacity_bytes,
@@ -1087,6 +1117,67 @@ pub fn fallback_issue(name: &str, s: Option<&crate::pi::Supports>) -> Option<Str
 
 #[cfg(test)]
 mod tests {
+    /// #107: sdc's 0Bh/97h, its 5 grown defects, and what an acknowledgement
+    /// does and does not take back.
+    #[test]
+    fn an_acknowledged_warning_comes_back_only_when_something_changes() {
+        use crate::smart::{IeCode, SmartCounters};
+        let code = IeCode { asc: 0x0B, ascq: 0x97 };
+        let counters = SmartCounters {
+            source: "log_sense".into(),
+            ie: Some(code),
+            ie_warning: Some(crate::smart::scsi::describe_ie(code).1),
+            grown_defects: Some(5),
+            verify_errors: Some(crate::smart::ErrorCounters { corrected: Some(7035), uncorrected: Some(0), bytes: None }),
+            ..Default::default()
+        };
+        let sample = |c: &SmartCounters| Sample { smart: Some(c.clone()), kernel_ok: true, ..Default::default() };
+        let cfg = crate::config::MonitorConfig::default();
+
+        // Warning, not Failing, and it says what the drive said.
+        let (st, why) = evaluate(&cfg, &sample(&counters), None);
+        assert_eq!(st, HealthStatus::Warning);
+        assert!(why.iter().any(|w| w.contains("vendor-specific warning 97h")), "{why:?}");
+
+        let ack = crate::drive::HealthAck { by: "kubernetes:alice".into(), at_unix: 1, ie: Some(code), counters: counters.counters() };
+        assert_eq!(ack.counters["verify_corrected"], 7035, "recorded");
+        let run = |c: &SmartCounters| evaluate_acked(&cfg, &sample(c), None, Some(&ack));
+        assert_eq!(run(&counters), (HealthStatus::Good, vec![]), "acknowledged: back to good");
+
+        // Corrected errors climbing is normal running.
+        let mut c = counters.clone();
+        c.verify_errors = Some(crate::smart::ErrorCounters { corrected: Some(9000), uncorrected: Some(0), bytes: None });
+        assert_eq!(run(&c).0, HealthStatus::Good);
+
+        // A watched counter grows.
+        let mut c = counters.clone();
+        c.grown_defects = Some(6);
+        let (st, why) = run(&c);
+        assert_eq!(st, HealthStatus::Warning);
+        assert!(why.iter().any(|w| w == "grown defects 5 → 6 since kubernetes:alice acknowledged"), "{why:?}");
+        let mut c = counters.clone();
+        c.verify_errors = Some(crate::smart::ErrorCounters { corrected: Some(7035), uncorrected: Some(1), bytes: None });
+        assert_eq!(run(&c).0, HealthStatus::Warning);
+
+        // A different code.
+        let mut c = counters.clone();
+        c.ie = Some(IeCode { asc: 0x0B, ascq: 0x98 });
+        c.ie_warning = Some("the drive reports a vendor-specific warning 98h".into());
+        assert_eq!(run(&c).0, HealthStatus::Warning);
+
+        // A real prediction is never acknowledged away.
+        let mut c = counters.clone();
+        c.ie = Some(IeCode { asc: 0x5D, ascq: 0x10 });
+        c.ie_warning = None;
+        c.predicted_failure = Some("the drive predicts its own failure".into());
+        assert_eq!(run(&c).0, HealthStatus::Failing);
+
+        // Nor does it hide what it did not cover.
+        let mut s = sample(&counters);
+        s.temperature_c = Some(cfg.temp_warn_c);
+        assert_eq!(evaluate_acked(&cfg, &s, None, Some(&ack)).0, HealthStatus::Warning);
+    }
+
     /// #106: a stick already in inventory.json goes, by identity when it is
     /// plugged in and by its USB controller when it is not.
     #[test]
@@ -1273,6 +1364,7 @@ mod tests {
             vendor: None,
             supports: None,
             link_rate_mbps: None,
+            health_ack: None,
             wwid: Some(wwid.into()),
             capacity_bytes: 420 << 30,
             block_size: 512,

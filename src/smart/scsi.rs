@@ -24,7 +24,7 @@
 //! A page or command the drive does not support is simply not reported.
 //! Parsers are portable and unit-tested; issuing the commands is Linux-only.
 
-use super::{AtaAttribute, ErrorCounters, Sample, SmartCounters};
+use super::{AtaAttribute, ErrorCounters, IeCode, Sample, SmartCounters};
 
 /// Parse an ioerr_cnt sysfs value ("0x12" or plain decimal).
 pub fn parse_ioerr(s: &str) -> u64 {
@@ -60,21 +60,78 @@ pub fn log_params(raw: &[u8], page: u8) -> Vec<(u16, &[u8])> {
     out
 }
 
-/// Informational Exceptions (0x2F), parameter 0: the drive's failure
-/// prediction (ASC/ASCQ, 0/0 = none) and its most recent temperature.
-pub fn parse_ie(raw: &[u8]) -> Option<(Option<String>, Option<i32>)> {
+/// What the Informational Exceptions page says (#107).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ie {
+    /// None: no exception (ASC 0).
+    pub code: Option<IeCode>,
+    pub temperature_c: Option<i32>,
+}
+
+/// SPC's ASCQ names for ASC 0Bh (the kernel's `sense_codes.h`). 80h and up are
+/// the vendor's: no public table names them, so they are not guessed at.
+fn warning_name(ascq: u8) -> Option<&'static str> {
+    Some(match ascq {
+        0x00 => "warning",
+        0x01 => "specified temperature exceeded",
+        0x02 => "enclosure degraded",
+        0x03 => "background self-test failed",
+        0x04 => "background pre-scan detected medium error",
+        0x05 => "background medium scan detected medium error",
+        0x06 => "non-volatile cache now volatile",
+        0x07 => "degraded power to non-volatile cache",
+        0x08 => "power loss expected",
+        0x09 => "device statistics notification active",
+        0x0A => "high critical temperature limit exceeded",
+        0x0B => "low critical temperature limit exceeded",
+        0x0C => "high operating temperature limit exceeded",
+        0x0D => "low operating temperature limit exceeded",
+        0x0E => "high critical humidity limit exceeded",
+        0x0F => "low critical humidity limit exceeded",
+        0x10 => "high operating humidity limit exceeded",
+        0x11 => "low operating humidity limit exceeded",
+        0x12 => "microcode security at risk",
+        0x13 => "microcode digital signature validation failure",
+        0x14 => "physical element status change",
+        _ => return None,
+    })
+}
+
+/// The drive's words, and whether they are a failure prediction. Only ASC 5Dh
+/// is: a real SMART trip. 5Dh/FFh is the same code raised as a test ("false"),
+/// and 0Bh and anything else is a warning, not a verdict on the drive.
+pub fn describe_ie(code: IeCode) -> (bool, String) {
+    let IeCode { asc, ascq } = code;
+    let at = format!("ASC {asc:02X}h/{ascq:02X}h");
+    match (asc, ascq) {
+        (0x5D, 0xFF) => (false, format!("the drive reports a test failure prediction, not a real one ({at})")),
+        (0x5D, _) => (true, format!("the drive predicts its own failure (SMART threshold exceeded, {at})")),
+        (0x0B, q) => match warning_name(q) {
+            Some(n) => (false, format!("the drive warns: {n} ({at})")),
+            None if q >= 0x80 => (false, format!("the drive reports a vendor-specific warning {q:02X}h ({at})")),
+            None => (false, format!("the drive reports a warning ({at})")),
+        },
+        _ => (false, format!("the drive reports an informational exception ({at})")),
+    }
+}
+
+/// Informational Exceptions (0x2F), parameter 0: the ASC/ASCQ (0/0 = none) and
+/// the most recent temperature.
+pub fn parse_ie(raw: &[u8]) -> Option<Ie> {
     let (_, d) = log_params(raw, 0x2F).into_iter().find(|(c, _)| *c == 0)?;
     if d.len() < 2 {
         return None;
     }
-    let (asc, ascq) = (d[0], d[1]);
-    let predicted = (asc != 0).then(|| match asc {
-        0x5D => format!("the drive predicts its own failure (SMART threshold exceeded, ASC 5Dh/{ascq:02X}h)"),
-        0x0B => format!("the drive reports a warning (ASC 0Bh/{ascq:02X}h)"),
-        _ => format!("the drive reports an informational exception (ASC {asc:02X}h/{ascq:02X}h)"),
-    });
-    let temp = d.get(2).filter(|t| **t != 0xFF && **t != 0).map(|t| i32::from(*t));
-    Some((predicted, temp))
+    let code = (d[0] != 0).then_some(IeCode { asc: d[0], ascq: d[1] });
+    let temperature_c = d.get(2).filter(|t| **t != 0xFF && **t != 0).map(|t| i32::from(*t));
+    Some(Ie { code, temperature_c })
+}
+
+/// A device's failed commands since this daemon's first look at it, less the
+/// ones it sent itself (#107): `(ioerr_cnt, ours)` then and now. The kernel's
+/// count is since boot and ours since start, so only the difference compares.
+pub fn io_errors_not_ours(first: (u64, u64), now: (u64, u64)) -> u64 {
+    now.0.saturating_sub(first.0).saturating_sub(now.1.saturating_sub(first.1))
 }
 
 /// Temperature (0x0D), parameter 0: degrees C (0xFF = not available).
@@ -307,10 +364,16 @@ mod linux {
         }
         let mut c = SmartCounters { source: "log_sense".into(), ..Default::default() };
         let mut any = false;
-        if let Some((predicted, temp)) = log_sense(&dev, 0x2F).and_then(|r| parse_ie(&r)) {
+        if let Some(ie) = log_sense(&dev, 0x2F).and_then(|r| parse_ie(&r)) {
             any = true;
-            c.predicted_failure = predicted;
-            s.temperature_c = s.temperature_c.or(temp);
+            c.ie = ie.code;
+            if let Some(code) = ie.code {
+                match describe_ie(code) {
+                    (true, why) => c.predicted_failure = Some(why),
+                    (false, why) => c.ie_warning = Some(why),
+                }
+            }
+            s.temperature_c = s.temperature_c.or(ie.temperature_c);
         }
         if s.temperature_c.is_none() {
             s.temperature_c = log_sense(&dev, 0x0D).and_then(|r| parse_temperature(&r));
@@ -345,7 +408,6 @@ mod linux {
             None | Some("running") => true,
             Some(_) => false,
         };
-        let io_errors = read_trim(&dev.join("ioerr_cnt")).map(|s| parse_ioerr(&s));
         let mut messages = Vec::new();
         if let Some(s) = &state {
             if s != "running" {
@@ -354,13 +416,27 @@ mod linux {
         }
         let mut s = Sample {
             temperature_c: find_hwmon_temp(&dev),
-            io_errors,
             kernel_ok,
             messages,
             ..Default::default()
         };
         if kernel_ok {
             from_drive(name, &dev, ssd, &mut s);
+        }
+        // Read after this sample's own commands, so they are on both sides.
+        s.io_errors = read_trim(&dev.join("ioerr_cnt")).map(|c| parse_ioerr(&c));
+        if let Some(n) = s.io_errors {
+            let sg = crate::scsi::sg_path_in(&dev.join("scsi_generic").to_string_lossy());
+            let paths = [sg, Some(format!("/dev/{name}"))];
+            let ours = crate::scsi::not_good_count(paths.iter().flatten().map(String::as_str));
+            static FIRST: std::sync::Mutex<Option<std::collections::HashMap<String, (u64, u64)>>> = std::sync::Mutex::new(None);
+            let mut first = FIRST.lock().unwrap_or_else(|e| e.into_inner());
+            let at = first.get_or_insert_with(Default::default).entry(name.to_string()).or_insert((n, ours));
+            // A smaller count is another device under this name: start again.
+            if n < at.0 {
+                *at = (n, ours);
+            }
+            s.io_errors_not_ours = Some(io_errors_not_ours(*at, (n, ours)));
         }
         s
     }
@@ -426,12 +502,11 @@ mod tests {
         assert_eq!(log_sense_cdb(0x2F, 1024), [0x4D, 0, 0x6F, 0, 0, 0, 0, 0x04, 0x00, 0]);
         // IE: no exception, 38 °C.
         let ok = page(0x2F, &[(0, &[0, 0, 38, 60])]);
-        assert_eq!(parse_ie(&ok), Some((None, Some(38))));
+        assert_eq!(parse_ie(&ok), Some(Ie { code: None, temperature_c: Some(38) }));
         // IE: failure predicted (5Dh/10h).
-        let bad = page(0x2F, &[(0, &[0x5D, 0x10, 41])]);
-        let (p, t) = parse_ie(&bad).unwrap();
-        assert!(p.unwrap().contains("predicts its own failure"));
-        assert_eq!(t, Some(41));
+        let bad = parse_ie(&page(0x2F, &[(0, &[0x5D, 0x10, 41])])).unwrap();
+        assert_eq!(bad.code, Some(IeCode { asc: 0x5D, ascq: 0x10 }));
+        assert_eq!(bad.temperature_c, Some(41));
         assert_eq!(parse_ie(&page(0x0D, &[(0, &[0, 0, 38])])), None, "not page 0x2F");
         // Temperature: parameter 0 byte 1; 0xFF unknown.
         assert_eq!(parse_temperature(&page(0x0D, &[(0, &[0, 35]), (1, &[0, 65])])), Some(35));
@@ -443,6 +518,34 @@ mod tests {
         let mut short = page(0x2F, &[(0, &[0x5D, 0x10, 41])]);
         short.truncate(6);
         assert_eq!(parse_ie(&short), None);
+    }
+
+    /// forge1's sdc: 0Bh/97h is a warning, named as what it is; only 5Dh is a
+    /// failure prediction.
+    #[test]
+    fn a_warning_is_not_a_failure_prediction() {
+        let d = |asc, ascq| describe_ie(IeCode { asc, ascq });
+        let (failing, why) = d(0x0B, 0x97);
+        assert!(!failing);
+        assert!(why.contains("vendor-specific warning 97h") && why.contains("0Bh/97h"), "{why}");
+        let (failing, why) = d(0x0B, 0x01);
+        assert!(!failing);
+        assert!(why.contains("specified temperature exceeded"), "{why}");
+        assert!(d(0x5D, 0x10).0);
+        assert!(d(0x5D, 0x90).0, "the vendor's prediction codes too");
+        assert!(!d(0x5D, 0xFF).0, "the code raised as a test");
+        assert!(!d(0x0B, 0x7E).0 && d(0x0B, 0x7E).1.contains("a warning"));
+        assert!(!d(0x44, 0x00).0, "anything else is reported, not a verdict");
+    }
+
+    #[test]
+    fn our_own_failed_commands_are_not_the_drives_errors() {
+        // 150 since boot at first look, ours 1; 40 more since, all ours.
+        assert_eq!(io_errors_not_ours((150, 1), (190, 41)), 0);
+        // 40 more, 30 ours: 10 somebody else's.
+        assert_eq!(io_errors_not_ours((150, 1), (190, 31)), 10);
+        // Ours counted ahead of the kernel's: never below zero.
+        assert_eq!(io_errors_not_ours((150, 1), (151, 9)), 0);
     }
 
     #[test]

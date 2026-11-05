@@ -97,7 +97,27 @@ are listed under [Not yet](#not-yet).
 
     A predicted failure makes the drive `failing`; pending or
     offline-uncorrectable sectors make it `warning`. They are in
-    `health.smart`.
+    `health.smart`. On SAS only ASC 5Dh in page 0x2F is a predicted failure.
+    ASC 0Bh and any other code is `warning` (`ie_warning`, `ie`), named as the
+    drive said it: SPC's words for 0Bh/00h–14h, else "vendor-specific warning
+    97h". Vendor codes are not decoded: no public table names them. 5Dh/FFh,
+    the code raised as a test, is `warning` too (#107).
+  - **Acknowledge** (#107): `POST /api/v1/drives/{id}/health/acknowledge`, or
+    the feed's action, accepts a `warning`. It records who, when, the IE code
+    and the counters on `health_ack` and in the drive's history, and nothing on
+    the drive changes (no LOG SELECT). From the next sample that code, and
+    pending and offline-uncorrectable sectors at or under the record, no longer
+    warn, so the drive reads `good` unless something else is wrong (a
+    temperature). It warns again on a different code, or when grown defects,
+    reallocated, pending or offline-uncorrectable sectors, reported
+    uncorrectable, CRC errors or an uncorrected count grow. Corrected errors are
+    recorded, not watched: they climb on healthy drives. A failure prediction
+    cannot be acknowledged and always counts.
+  - **`io_errors`** is the kernel's `ioerr_cnt`: every command with a non-zero
+    result since boot, whoever sent it, including stormdrive's own probes.
+    `io_errors_not_ours`, which the feed shows, is its growth since the daemon
+    started less the commands stormdrive sent that did not end GOOD
+    (`GET /api/v1/scsi/not-good` lists those). Neither makes a verdict.
   - **Verdict:** `good`, `warning`, `failing` or `failed`, from the
     thresholds in `[monitor]`. A worse verdict must repeat
     `monitor.hysteresis` samples in a row before it sticks. A better one
@@ -827,6 +847,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `POST /api/v1/drives/{id}/locate` | `{"on": bool}` |
 | `POST /api/v1/drives/{id}/fleet` | `{"action":"join","format_slab"?,"tier"?}` or `{"action":"leave","drain"?,"force"?}` |
 | `GET·POST·DELETE /api/v1/drives/{id}/drain` | status · start (`?leave=true` retires when empty) · cancel |
+| `POST /api/v1/drives/{id}/health/acknowledge` | accept a warning (#107): records who, when, the IE code and the counters; 409 unless the drive is at Warning (see Health) |
 | `POST /api/v1/drives/{id}/designation` | `{"designation":"none\|reserved\|spare\|failed\|system"}`; `system` on a fleet drive 409 (#66) |
 | `GET /api/v1/system-drives` | the drives designated `system`, and `system_data`: the install's file (`stormdrive/system-drives.json`), what it holds, the last error (#66) |
 | `GET·PUT·POST /api/v1/drives/{id}/overcommit` | `{"enabled":bool,"ratio"?}`; GET adds promisable/committed/headroom |

@@ -171,6 +171,7 @@ mod tests {
             vendor: None,
             supports: None,
             link_rate_mbps: None,
+            health_ack: None,
             history: None,
             wwid: None,
             capacity_bytes: 1 << 30,

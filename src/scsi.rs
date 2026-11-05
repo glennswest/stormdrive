@@ -37,6 +37,12 @@ pub fn not_good() -> NotGood {
     NOT_GOOD.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// How many commands stormdrive sent to these device paths did not end GOOD.
+pub fn not_good_count<'a>(paths: impl Iterator<Item = &'a str>) -> u64 {
+    let m = NOT_GOOD.lock().unwrap_or_else(|e| e.into_inner());
+    paths.filter_map(|p| m.get(p)).flat_map(|o| o.values()).sum()
+}
+
 /// Decoded sense data (fixed or descriptor format).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sense {

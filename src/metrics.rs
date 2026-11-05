@@ -219,6 +219,7 @@ fn drive(o: &mut Out, d: &Drive) {
     }
     if let Some(sm) = &h.smart {
         o.gauge("stormdrive_drive_predicted_failure", "1 when the drive predicts its own failure (SCSI IE / ATA SMART threshold).", &l, sm.predicted_failure.is_some() as u8 as f64);
+        o.gauge("stormdrive_drive_ie_warning", "1 when the drive raises a warning short of a failure prediction (SCSI IE, ASC 0Bh and others).", &l, sm.ie_warning.is_some() as u8 as f64);
         if let Some(n) = sm.reallocated_sectors {
             o.gauge("stormdrive_drive_reallocated_sectors", "ATA SMART 5: reallocated sectors.", &l, n as f64);
         }

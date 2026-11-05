@@ -208,6 +208,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/drives/{id}/fleet", post(fleet_action))
         .route("/api/v1/drives/{id}/drain", get(get_drain).post(start_drain).delete(cancel_drain))
         .route("/api/v1/drives/{id}/fleet/{action}", post(fleet_by_path))
+        .route("/api/v1/drives/{id}/health/acknowledge", post(acknowledge_health))
         .route("/api/v1/drives/{id}/designation", post(set_designation))
         .route("/api/v1/drives/{id}/designation/{value}", post(designation_by_path))
         .route("/api/v1/drives/{id}/overcommit", get(get_overcommit).put(set_overcommit).post(set_overcommit))
@@ -991,6 +992,34 @@ async fn cancel_drain(
 #[derive(Deserialize)]
 struct DesignationBody {
     designation: Designation,
+}
+
+/// `POST /api/v1/drives/{id}/health/acknowledge` (#107): accept a warning. The
+/// next sample reads the drive against what is recorded here; nothing on the
+/// drive changes, and the record goes in its history as an event.
+async fn acknowledge_health(
+    State(s): State<Arc<AppState>>,
+    who: Option<axum::Extension<crate::kubeauth::Requester>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    let by = who.map_or_else(|| "anonymous".to_string(), |w| w.0.who);
+    let (ack, msg) = {
+        let mut inv = s.inventory.write().await;
+        let d = inv.drives.get_mut(&did).expect("resolved id present");
+        if let Some(why) = d.ack_blocker() {
+            return Err(ApiError::conflict(format!("{}: {why}", d.name)));
+        }
+        let sm = d.health.smart.clone().unwrap_or_default();
+        let at_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let ack = crate::drive::HealthAck { by: by.clone(), at_unix, ie: sm.ie, counters: sm.counters() };
+        let msg = format!("{}: warning acknowledged by {by}: {:?}; counters {:?}; was: {}", d.name, ack.ie, ack.counters, d.health.messages.join("; "));
+        d.health_ack = Some(ack.clone());
+        (ack, msg)
+    };
+    s.events.write().await.push(Some(did), Severity::Info, "health", msg);
+    s.persist().await;
+    Ok(Json(json!({ "acknowledged": ack, "takes_effect": "the next health sample" })))
 }
 
 async fn set_designation(

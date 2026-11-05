@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-05
+- **fix:** only ASC 5Dh in the Informational Exceptions page is Failing. ASC 0Bh and any other code is Warning, named as the drive said it: SPC's words for 0Bh/00h–14h, "vendor-specific warning 97h" above 80h, which is not decoded because no public table names it. 5Dh/FFh, the code raised as a test, is Warning too (#107)
+- **feat:** the feed's drive row shows the reason beside the health (`reason`, and in `detail`) and its non-zero counters against the same kind of drive on the node, as `5 (others 0)`; the temperature has its own muted tone (#107)
+- **feat:** `POST /api/v1/drives/{id}/health/acknowledge` and a feed action accept a warning: who, when, the code and the counters are recorded on `health_ack` and in the drive's history. The warning returns on a different code or a watched counter growing. Corrected errors are recorded, not watched. Nothing on the drive is cleared (#107)
+- **fix:** `health.io_errors_not_ours` and the feed's `io errs` leave out the commands stormdrive itself sent that failed; `health.io_errors` stays the kernel's count (#107)
+
 ## [v0.37.0] — 2026-11-05
 
 ### Added
