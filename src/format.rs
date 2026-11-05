@@ -870,7 +870,9 @@ mod tests {
     const PI: (u32, Protection) = (4096, Protection::Type1);
     const CHAIN: [(u32, Protection); 2] = [(4096, Protection::None), (512, Protection::Type1)];
 
-    fn run_fake(u: &FakeUnit) -> (Result<(u32, Protection, bool), String>, Vec<String>) {
+    type Taken = Result<(u32, Protection, bool), String>;
+
+    fn run_fake(u: &FakeUnit) -> (Taken, Vec<String>) {
         let mut refused = vec![];
         let r = start_first_taken(u, "sdz", 512, PI, &CHAIN, |l| refused.push(l));
         (r, refused)
