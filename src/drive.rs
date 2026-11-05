@@ -97,6 +97,38 @@ pub struct Shelf {
     /// `enclosure_identifier` on the drive's sas_device.
     #[serde(default)]
     pub logical_id: Option<String>,
+    /// Where the shelf is on the machine (#65), told by the engine's rules
+    /// ([`crate::topology::position_in_enclosure`]). On a drive's location
+    /// it is that drive's: a rear bay of an enclosure reads `rear`.
+    #[serde(default)]
+    pub position: Option<Position>,
+}
+
+/// Where a shelf is, in stormblock#347's words: the install chooses and
+/// reports the system drive by these, so the two never use different ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Position {
+    /// Inside the chassis: a mid-plane, an M.2 carrier, a backplane only a
+    /// RAID controller sees, a drive in no enclosure at all.
+    Internal,
+    /// The outward-facing hot-plug bays.
+    Front,
+    /// The back bays some models have.
+    Rear,
+    /// A JBOD or disk shelf on its own IOMs.
+    External,
+}
+
+impl Position {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Position::Internal => "internal",
+            Position::Front => "front",
+            Position::Rear => "rear",
+            Position::External => "external",
+        }
+    }
 }
 
 impl Shelf {
@@ -144,6 +176,10 @@ pub struct Location {
     /// NVMe drives: the namespace's controller BDF / physical slot.
     pub pcie_addr: Option<String>,
     pub pcie_slot: Option<String>,
+    /// The shelf's position, or for a drive in no shelf what the engine
+    /// calls it: `internal`, or `external` behind an expander (#65).
+    #[serde(default)]
+    pub position: Option<Position>,
 }
 
 impl Location {
@@ -209,6 +245,7 @@ impl Location {
                 serial: n.serial.or_else(|| o.serial.clone()),
                 sas_address: n.sas_address.or_else(|| o.sas_address.clone()),
                 logical_id: n.logical_id.or_else(|| o.logical_id.clone()),
+                position: n.position.or(o.position),
             }),
             (_, n) => n,
         };
@@ -221,6 +258,7 @@ impl Location {
             expander: fresh.expander.or_else(|| self.expander.clone()),
             pcie_addr: fresh.pcie_addr.or_else(|| self.pcie_addr.clone()),
             pcie_slot: fresh.pcie_slot.or_else(|| self.pcie_slot.clone()),
+            position: fresh.position.or(self.position),
         }
     }
 

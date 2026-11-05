@@ -28,6 +28,7 @@ fn shelf_json(key: &str, sh: &Shelf) -> Value {
         "model": sh.model,
         "serial": sh.serial,
         "sas_address": sh.sas_address,
+        "position": sh.position,
     })
 }
 
@@ -46,6 +47,7 @@ pub fn drive_record(d: &Drive) -> Value {
         "paths": d.paths,
         "shelf": loc.shelf.as_ref().and_then(|sh| sh.key().map(|k| shelf_json(&k, sh))),
         "bay": loc.bay,
+        "position": loc.position,
         "sas_address": loc.sas_address,
         "sas_phy": loc.sas_phy,
         "expander": loc.expander,
@@ -121,7 +123,8 @@ mod tests {
         }))
         .unwrap();
         d.location = Location {
-            shelf: Some(Shelf { logical_id: Some("5000a098".into()), model: Some("DS224C".into()), ..Default::default() }),
+            shelf: Some(Shelf { logical_id: Some("5000a098".into()), model: Some("DS224C".into()), position: Some(crate::drive::Position::External), ..Default::default() }),
+            position: Some(crate::drive::Position::External),
             bay: Some(bay),
             sas_address: Some("0x5000c500a1b2c3d1".into()),
             sas_phy: Some(bay),
@@ -143,6 +146,8 @@ mod tests {
         assert_eq!(r["sas_phy"], 4);
         assert_eq!(r["expander"], "0x500a09800abc0001");
         assert_eq!(r["labels"]["shelf"], "5000a098");
+        assert_eq!(r["position"], "external");
+        assert_eq!(r["shelf"]["position"], "external");
         assert_eq!(r["membership"], "out");
         // A shelf known only from its drives still appears, with its bays.
         assert_eq!(v["shelves"][0]["key"], "5000a098");

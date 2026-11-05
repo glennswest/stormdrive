@@ -390,7 +390,10 @@ async fn shelves(api: &Api) -> Outcome {
         let one = api.get(&format!("api/v1/shelves/{key}")).await?.json("GET shelf")?;
         ensure(s(&one, "key") == key, format!("shelf {key} answered {}", s(&one, "key")))?;
         ensure(one["power_supplies"]["total"].is_u64() && one["fans"]["total"].is_u64(), format!("shelf {key}: no PSU/fan counts"))?;
-        for d in one["drives"].as_array().into_iter().flatten() {
+        // A shelf SES answers for names every bay; one only its controller or
+        // its drives name may not know them all (#65).
+        let ses = one["esps"].as_array().is_some_and(|e| !e.is_empty());
+        for d in one["drives"].as_array().into_iter().flatten().filter(|_| ses) {
             ensure(d["bay"].is_u64(), format!("shelf {key}: {} has no bay", s(d, "name")))?;
         }
     }

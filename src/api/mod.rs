@@ -1379,6 +1379,8 @@ fn shelf_json(r: &crate::ses::ShelfReport, drives: &[serde_json::Value], hba_sas
     json!({
         "key": r.key,
         "shelf": r.shelf,
+        "position": r.shelf.position,
+        "through": r.through,
         "display": r.shelf.display(),
         "esps": r.esps,
         "paths": r.esps.len(),
@@ -1412,7 +1414,7 @@ async fn shelf_drives(s: &AppState, key: &str) -> Vec<serde_json::Value> {
     ds.iter()
         .map(|d| {
             json!({
-                "id": d.id, "name": d.name, "bay": d.location.bay, "vendor": d.vendor, "model": d.model,
+                "id": d.id, "name": d.name, "bay": d.location.bay, "position": d.location.position, "vendor": d.vendor, "model": d.model,
                 "serial": d.serial, "firmware": d.firmware, "kind": d.kind, "wwid": d.wwid,
                 "block_size": d.block_size, "physical_block_size": d.physical_block_size,
                 "usable": d.usable, "needs_reformat": d.needs_reformat(), "contents": d.contents,
@@ -1431,7 +1433,46 @@ async fn list_shelves(State(s): State<Arc<AppState>>) -> Json<serde_json::Value>
         let drives = shelf_drives(&s, key).await;
         out.push(shelf_json(r, &drives, &hba_sas));
     }
+    for sh in named_only_by_drives(&s, &shelves).await {
+        let key = sh.key().unwrap_or_default();
+        let drives = shelf_drives(&s, &key).await;
+        out.push(unscanned_shelf_json(&key, &sh, &drives));
+    }
     Json(json!({ "shelves": out }))
+}
+
+/// Shelves a present drive names that no scan reports (#65): the SAS
+/// transport's enclosure id on a drive no SES device answers for.
+async fn named_only_by_drives(s: &AppState, scanned: &crate::topology::Shelves) -> Vec<crate::drive::Shelf> {
+    let inv = s.inventory.read().await;
+    let mut out: BTreeMap<String, crate::drive::Shelf> = BTreeMap::new();
+    for d in inv.drives.values().filter(|d| d.activity != crate::drive::Activity::Missing) {
+        let Some(sh) = &d.location.shelf else { continue };
+        let Some(key) = sh.key() else { continue };
+        if !scanned.contains_key(&key) {
+            out.entry(key).or_insert_with(|| sh.clone());
+        }
+    }
+    out.into_values().collect()
+}
+
+/// [`shelf_json`] for a shelf no scan reports: the same shape, and `status`
+/// says nothing was read from it.
+fn unscanned_shelf_json(key: &str, sh: &crate::drive::Shelf, drives: &[serde_json::Value]) -> serde_json::Value {
+    json!({
+        "key": key,
+        "shelf": sh,
+        "position": sh.position,
+        "through": null,
+        "display": sh.display(),
+        "esps": [],
+        "paths": 0,
+        "status": crate::ses::ElementStatus::Unknown,
+        "power_supplies": { "ok": 0, "total": 0 },
+        "fans": { "ok": 0, "total": 0 },
+        "slots": { "ok": 0, "total": 0 },
+        "drives": drives,
+    })
 }
 
 /// Resolve a shelf handle: logical id, serial, sysfs id, or ESP SCSI id.
@@ -1455,7 +1496,16 @@ async fn get_shelf(
     State(s): State<Arc<AppState>>,
     Path(key): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let r = resolve_shelf(&s, &key).await?;
+    let r = match resolve_shelf(&s, &key).await {
+        Ok(r) => r,
+        Err(e) => {
+            let scanned = s.shelves.read().await.clone();
+            let found = named_only_by_drives(&s, &scanned).await.into_iter().find(|sh| sh.key().as_deref() == Some(key.as_str()));
+            let Some(sh) = found else { return Err(e) };
+            let drives = shelf_drives(&s, &key).await;
+            return Ok(Json(unscanned_shelf_json(&key, &sh, &drives)));
+        }
+    };
     let drives = shelf_drives(&s, &r.key).await;
     Ok(Json(shelf_json(&r, &drives, &hba_sas_names(&s).await)))
 }
@@ -1591,6 +1641,9 @@ async fn shelf_firmware(
     Json(body): Json<ShelfFirmwareBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let r = resolve_shelf(&s, &key).await?;
+    if r.through.is_some() {
+        return Err(ApiError::conflict(format!("shelf {}: read through its RAID controller, no IOM to update from here", r.key)));
+    }
     if !crate::firmware::valid_image_name(&body.image) {
         return Err(ApiError::bad_request(format!("image name {:?}", body.image)));
     }

@@ -477,6 +477,7 @@ mod tests {
             ],
             slots: BTreeMap::new(),
             help_text: None,
+            through: None,
             collected_at: UNIX_EPOCH,
             status_raw: vec![],
         };

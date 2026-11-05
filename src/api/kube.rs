@@ -177,6 +177,7 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "wearProjection": d.wear_projection,
             "enclosure": d.location.shelf.as_ref().and_then(|s| s.key()),
             "bay": d.location.bay,
+            "position": d.location.position,
             "sasAddress": d.location.sas_address,
             "location": d.location,
             "membership": d.membership,
@@ -357,7 +358,7 @@ async fn all_enclosures(s: &AppState) -> Vec<Value> {
         let sh = &r.shelf;
         shelves.entry(key.clone()).or_insert_with(|| {
             (
-                json!({ "id": sh.id, "vendor": sh.vendor, "model": sh.model, "serial": sh.serial, "sasAddress": sh.sas_address, "logicalId": sh.logical_id, "display": sh.display() }),
+                json!({ "id": sh.id, "vendor": sh.vendor, "model": sh.model, "serial": sh.serial, "sasAddress": sh.sas_address, "logicalId": sh.logical_id, "position": sh.position, "display": sh.display() }),
                 Vec::new(),
                 Vec::new(),
             )
@@ -370,7 +371,7 @@ async fn all_enclosures(s: &AppState) -> Vec<Value> {
         let Some(key) = sh.key() else { continue };
         let entry = shelves.entry(key).or_insert_with(|| {
             (
-                json!({ "id": sh.id, "vendor": sh.vendor, "model": sh.model, "serial": sh.serial, "sasAddress": sh.sas_address, "logicalId": sh.logical_id, "display": sh.display() }),
+                json!({ "id": sh.id, "vendor": sh.vendor, "model": sh.model, "serial": sh.serial, "sasAddress": sh.sas_address, "logicalId": sh.logical_id, "position": sh.position, "display": sh.display() }),
                 Vec::new(),
                 Vec::new(),
             )

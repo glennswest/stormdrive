@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-05
+- **feat:** every shelf and drive has a `position`: `internal`, `front`, `rear` or `external`, in stormblock#347's words and by its rules. On `/api/v1/drives`, `/api/v1/shelves`, `/api/v1/placement`, `/api/v1/topology`, the kube Drive, Enclosure and Shelf status, the feed and the per-boot asset record; a change is a warning event (#65)
+- **feat:** drives behind `megaraid_sas` (a PERC) are on a shelf: each enclosure the controller reports is an `internal` shelf with its identity and bays, read with read-only MFI commands. forge1's 4 drives are in one shelf with their slots; a controller that cannot be read is still an internal shelf, with no bays, and says why (#65)
+- **fix:** a shelf's logical id comes from the enclosure class's `id` too, so a drive's shelf key no longer depends on the SES scan reaching that ESP; the chassis serial wins over the ESP's. `/api/v1/shelves` and the asset record also list a shelf only a drive names (#65)
+- **fix:** a shelf scan that never returns no longer holds up discovery: 60 s limit, one at a time, the last table kept (#65)
+
 ## [v0.34.0] — 2026-11-04
 
 ### Added

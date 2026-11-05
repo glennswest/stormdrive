@@ -114,15 +114,23 @@ pub fn conditions(rep: &ShelfReport, sm: &Summary) -> Vec<Condition> {
             format!("{name} {}", e.temperature_c.map(|t| format!("{t} °C")).unwrap_or_else(|| format!("{:?}", e.status)))
         })
         .collect();
-    let single = sm.multipath.paths <= 1 || (sm.multipath.ioms_installed >= 2 && sm.multipath.ioms_with_path < sm.multipath.ioms_installed && sm.multipath.ioms_with_path > 0);
+    let single = (rep.through.is_none() && sm.multipath.paths <= 1) || (sm.multipath.ioms_installed >= 2 && sm.multipath.ioms_with_path < sm.multipath.ioms_installed && sm.multipath.ioms_with_path > 0);
 
     let worst = rep.worst();
     let healthy = !bad(worst) && psu_bad.is_empty() && fans_bad.is_empty() && hot.is_empty();
     out.push(Condition {
         kind: "Healthy",
         status: healthy,
-        reason: if healthy { "AllOk".into() } else { format!("{worst:?}") },
-        message: if healthy {
+        reason: if rep.through.is_some() {
+            "ThroughController".into()
+        } else if healthy {
+            "AllOk".into()
+        } else {
+            format!("{worst:?}")
+        },
+        message: if rep.through.is_some() {
+            "read through its RAID controller: the enclosure's elements are not visible".into()
+        } else if healthy {
             "every element reports OK".into()
         } else if sm.problems.is_empty() {
             format!("enclosure reports {worst:?}")
@@ -133,7 +141,13 @@ pub fn conditions(rep: &ShelfReport, sm: &Summary) -> Vec<Condition> {
     out.push(Condition {
         kind: "SinglePath",
         status: single,
-        reason: if single { "OnePath".into() } else { "Multipath".into() },
+        reason: if rep.through.is_some() {
+            "ThroughController".into()
+        } else if single {
+            "OnePath".into()
+        } else {
+            "Multipath".into()
+        },
         message: sm.multipath.note.clone(),
     });
     out.push(Condition {
@@ -272,6 +286,8 @@ pub fn shelf_object(rep: &ShelfReport, sm: &Summary, drives: &[BayDrive], node: 
             "serial": sm.serial.clone().or_else(|| rep.shelf.serial.clone()),
             "partNumber": sm.part_number,
             "logicalId": rep.shelf.logical_id,
+            "position": rep.shelf.position,
+            "through": rep.through,
             "state": rep.worst(),
             "paths": rep.esps.iter().map(|p| json!({ "scsiId": p.scsi_id, "sasAddress": p.sas_address, "firmware": p.revision })).collect::<Vec<_>>(),
             "ioms": sm.ioms,
@@ -361,7 +377,7 @@ mod tests {
             key: "500a09800e359135".into(),
             shelf: crate::drive::Shelf { logical_id: Some("500a09800e359135".into()), vendor: Some("NETAPP".into()), model: Some("DS22412IOM12A".into()), ..Default::default() },
             esps: (0..esps)
-                .map(|i| EspPath { scsi_id: format!("0:0:{i}:0"), sg_path: None, sas_address: Some(format!("500a09800853bf4{}", 12 + i)), serial: None, revision: Some("0401".into()) })
+                .map(|i| EspPath { scsi_id: format!("0:0:{i}:0"), sg_path: None, sas_address: Some(format!("500a09800853bf4{}", 12 + i)), serial: None, revision: Some("0401".into()), behind_expander: true })
                 .collect(),
             generation: 7,
             critical: false,
@@ -376,6 +392,7 @@ mod tests {
             ],
             slots: BTreeMap::new(),
             help_text: None,
+            through: None,
             collected_at: std::time::SystemTime::UNIX_EPOCH,
             status_raw: vec![],
         }

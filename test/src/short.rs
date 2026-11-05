@@ -248,6 +248,16 @@ async fn placement(api: &Api) -> Outcome {
         let g = v["generation"].as_u64().ok_or_else(|| Why::Fail("no generation".into()))?;
         let listed = v["drives"].as_array().map(Vec::len).unwrap_or(0);
         ensure(listed == n, format!("placement lists {listed} drives, /drives {n}"))?;
+        // Every shelf has a position, in the engine's words (#65).
+        if api.at_least((0, 35, 0)) {
+            const WORDS: [&str; 4] = ["internal", "front", "rear", "external"];
+            let shelves = v["shelves"].as_array().into_iter().flatten();
+            let ds = v["drives"].as_array().into_iter().flatten();
+            for (what, p) in shelves.map(|sh| (&sh["key"], &sh["position"])).chain(ds.map(|d| (&d["path"], &d["position"]))) {
+                let p = p.as_str().unwrap_or_default();
+                ensure(WORDS.contains(&p), format!("{what} has position {p:?}"))?;
+            }
+        }
         ensure(etag == format!("\"{g}\""), format!("ETag {etag:?} for generation {g}"))?;
         let again = api.get_if_none_match("api/v1/placement", &etag).await?;
         if again.status == 304 {

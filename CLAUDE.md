@@ -82,7 +82,10 @@ src/
   monitor.rs      loop: discovery, SES/HBA scans, threshold engine, trends,
                   usage + reconcile, events
   events.rs       event ring (4096; newest 512 in events.json, #25)
-  topology.rs     location: SAS/SES/mpt3sas bays, NVMe PCIe slots, locate LEDs
+  topology.rs     location: SAS/SES/mpt3sas bays, NVMe PCIe slots, locate LEDs,
+                  shelf position by the engine's rules (#65)
+  megaraid.rs     a RAID controller's enclosures as internal shelves: MFI reads
+                  through the driver's char device (#65)
   hba.rs          PCIe SCSI HBA inventory (firmware, BIOS, NVDATA versions)
   scsi.rs         raw SCSI over SG_IO: INQUIRY/VPD, READ CAPACITY(16), MODE SENSE/
                   SELECT, FORMAT UNIT, TUR progress, RECEIVE/SEND DIAGNOSTIC,
@@ -649,8 +652,8 @@ console says "no enclosure". Design (the issue's, no open decision):
   smartctl). Unreadable = still the internal shelf, without bays, and it says why
 - not here: locate LED through the controller, #105 (transport), #106 (USB)
 Steps:
-- [ ] position + identity + outputs + tests
-- [ ] megaraid.rs + monitor + tests (megaraid-shaped sysfs tree)
+- [x] position + identity + outputs + tests
+- [x] megaraid.rs + monitor + tests (megaraid-shaped sysfs tree)
 - [ ] docs, changelog; build VM; version; golden. Live: forge1 once released
 
 ### #101: engine client over https with the node CA (stormcos#374, 2026-11-04) — DONE (v0.34.0)

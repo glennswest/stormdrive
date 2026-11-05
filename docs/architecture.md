@@ -396,6 +396,31 @@ it is ~4,000 series per node, ~40,000 per rack; SAS/SATA drives carry about
 half that.
 
 ### Location (`topology.rs`)
+- **Position** (#65): `Shelf.position` and `Location.position`, `internal |
+  front | rear | external`. One pure rule, `position_in_enclosure` /
+  `position_no_enclosure`, the same as stormblock's `shelf_of` (#347) with its
+  cases as the test, because the owner's install rules make shelves how the
+  system drive is chosen and the two must not disagree. A drive's copy is by
+  its bay's component name; the shelf's (`ses::report_position`) by its slots'
+  names when they all agree, else its enclosure name and identity. Known
+  difference: with no `ses` module bound, a SES device read over SG gets the
+  in-enclosure rule here, while the engine's `/init` sees no enclosure (it
+  reads `/sys/class/enclosure` only): the two differ for an unbound backplane
+  not behind an expander (`front` here, `internal` there) or a `DP BP…` behind
+  one.
+- **Behind `megaraid_sas`** (#65, `megaraid.rs`): no SES device, no
+  `sas_address`, no enclosure class. MFI DCMDs over `MEGASAS_IOC_FIRMWARE`,
+  reads only: `0x02010000` (every physical device: device id, enclosure device
+  id, slot, SCSI type, SAS address), `0x02020000` (an enclosure's INQUIRY).
+  Each enclosure is a `ShelfReport` with `through` set and no ESPs, keyed by
+  its SAS address, else `internal-<node>-<bdf>[-e<id>]`. A drive's SCSI address
+  gives the device id (channel × 128 + target), and that the slot. A RAID
+  volume (channel 2, 3) is on the controller's only shelf, with no bay.
+  `internal`: the engine sees no enclosure there, and the owner's rule says so
+  (a server's PERC). An external shelf on a PERC would read `internal` as well;
+  nothing the controller reports tells them apart, and the engine does the same.
+  The driver's ioctl has no timeout, so the shelf scan runs under a limit
+  (60 s, one at a time) and a stuck one keeps the last table.
 - SAS bays: `/sys/class/enclosure/*/` — each enclosure device exposes
   `slot*/` dirs with `device` symlinks to the SCSI device; map block dev →
   (enclosure id, bay). Locate/fault LEDs are writable `locate`/`fault`

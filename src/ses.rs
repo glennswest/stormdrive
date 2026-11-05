@@ -22,7 +22,7 @@
 //! Parsers are portable and tested on synthetic pages; enumeration and
 //! I/O are Linux-only.
 
-use crate::drive::Shelf;
+use crate::drive::{Position, Shelf};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::SystemTime;
@@ -798,6 +798,10 @@ pub struct EspPath {
     /// version (#35).
     #[serde(default)]
     pub revision: Option<String>,
+    /// A SAS expander is on this ESP's sysfs path: how a shelf's position
+    /// is told (#65).
+    #[serde(default)]
+    pub behind_expander: bool,
 }
 
 /// Everything we know about one shelf, refreshed each monitor tick.
@@ -819,6 +823,10 @@ pub struct ShelfReport {
     /// Page 0x03, when the enclosure says anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub help_text: Option<String>,
+    /// Set when no SES device answers for this shelf and its controller
+    /// does (#65): no ESP paths, no elements, its bays from the controller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through: Option<crate::megaraid::Through>,
     pub collected_at: SystemTime,
     /// The raw status page, kept so a control page can be built from the
     /// exact generation the enclosure reported.
@@ -828,6 +836,9 @@ pub struct ShelfReport {
 
 impl ShelfReport {
     pub fn worst(&self) -> ElementStatus {
+        if self.through.is_some() {
+            return ElementStatus::Unknown; // nothing here reports status
+        }
         if self.unrecoverable {
             return ElementStatus::Unrecoverable;
         }
@@ -895,6 +906,25 @@ pub struct RawPages<'a> {
     pub additional: Option<&'a [u8]>,
     pub help: Option<&'a [u8]>,
     pub thresholds: Option<&'a [u8]>,
+}
+
+/// The shelf's position (#65), by the rule a drive in it gets, on what the
+/// whole shelf says: its slots' names when they all agree (an enclosure of
+/// rear bays), else the enclosure element's name and its identity.
+fn report_position(behind: bool, elements: &[Element], identity: &str) -> Position {
+    use crate::topology::position_in_enclosure as rule;
+    let individual = |t: u8| elements.iter().filter(move |e| e.element_type == t && !e.overall);
+    let mut named = individual(ET_ARRAY_DEVICE_SLOT)
+        .chain(individual(ET_DEVICE_SLOT))
+        .filter_map(|e| e.name.as_deref())
+        .map(|n| rule(behind, n, identity));
+    if let Some(first) = named.next() {
+        if named.all(|p| p == first) {
+            return first;
+        }
+    }
+    let name = individual(ET_ENCLOSURE).find_map(|e| e.name.as_deref()).unwrap_or("");
+    rule(behind, name, identity)
 }
 
 /// Assemble a report from raw pages (portable, so it can be tested).
@@ -990,7 +1020,10 @@ pub fn assemble(esps: Vec<EspPath>, sysfs_id: Option<String>, pages: RawPages<'_
         .iter()
         .find(|e| e.element_type == ET_ENCLOSURE && !e.overall)
         .and_then(|e| e.attributes.get("SN").cloned());
+    let identity = [cfg.vendor.trim(), cfg.product.trim()].iter().filter(|p| !p.is_empty()).copied().collect::<Vec<_>>().join(" ");
+    let position = report_position(esps.iter().any(|e| e.behind_expander), &status.elements, &identity);
     let shelf = Shelf {
+        position: Some(position),
         id: sysfs_id.or_else(|| first.map(|e| e.scsi_id.clone())),
         vendor: (!cfg.vendor.is_empty()).then_some(cfg.vendor.clone()),
         model: (!cfg.product.is_empty()).then_some(cfg.product.clone()),
@@ -1010,6 +1043,7 @@ pub fn assemble(esps: Vec<EspPath>, sysfs_id: Option<String>, pages: RawPages<'_
         elements: status.elements,
         slots,
         help_text: pages.help.and_then(parse_help_text),
+        through: None,
         collected_at: SystemTime::now(),
         status_raw: status_raw.to_vec(),
     })
@@ -1056,6 +1090,7 @@ mod linux {
                 .ok()
                 .and_then(|raw| crate::topology::parse_vpd80(&raw)),
             revision: read_trim(&dir.join("rev")),
+            behind_expander: std::fs::canonicalize(dir).is_ok_and(|r| crate::topology::behind_expander(&r)),
         }
     }
 
@@ -1460,6 +1495,7 @@ mod tests {
             sas_address: Some("500a09800853bf4c".into()),
             serial: Some("IOMSERIAL".into()),
             revision: Some("0300".into()),
+            behind_expander: false,
         };
         let (cfg, st, add) = (config_page(), status_page(), additional_page());
         let rep = assemble(
@@ -1478,6 +1514,34 @@ mod tests {
         assert_eq!(rep.worst(), ElementStatus::Noncritical);
         assert_eq!(rep.max_temperature_c(), Some(31));
         assert_eq!(rep.count(ET_ARRAY_DEVICE_SLOT), (1, 1), "not-installed slot not counted");
+        assert_eq!(rep.shelf.position, Some(Position::Front), "not behind an expander, and no name says otherwise");
+    }
+
+    #[test]
+    fn a_shelf_has_the_position_its_drives_would_have() {
+        let (cfg, st, add) = (config_page(), status_page(), additional_page());
+        let with = |behind_expander: bool, descriptors: Option<&[u8]>| {
+            let esp = EspPath { scsi_id: "0:0:17:0".into(), sg_path: None, sas_address: None, serial: None, revision: None, behind_expander };
+            assemble(vec![esp], None, RawPages { config: &cfg, status: &st, additional: Some(&add), descriptors, ..Default::default() })
+                .unwrap()
+                .shelf
+                .position
+        };
+        assert_eq!(with(true, None), Some(Position::External), "the NetApp behind its expander");
+        let names = |slots: [&str; 2]| {
+            let mut d = vec![PAGE_DESCRIPTORS, 0, 0, 0, 0, 0, 0, 7];
+            for name in ["", slots[0], slots[1], "", "Ambient", "", "Shelf"] {
+                d.extend_from_slice(&[0, 0]);
+                d.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                d.extend_from_slice(name.as_bytes());
+            }
+            let l = (d.len() - 4) as u16;
+            d[2..4].copy_from_slice(&l.to_be_bytes());
+            d
+        };
+        assert_eq!(with(false, Some(&names(["Rear 0", "Rear 1"]))), Some(Position::Rear));
+        assert_eq!(with(false, Some(&names(["Rear 0", "Slot 1"]))), Some(Position::Front), "mixed: each drive says its own");
+        assert_eq!(with(true, Some(&names(["Rear 0", "Rear 1"]))), Some(Position::External));
     }
 
     #[test]

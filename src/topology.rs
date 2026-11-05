@@ -7,11 +7,59 @@
 //! two enclosure devices with two sysfs ids but one serial — `Shelf::key`
 //! prefers the serial for exactly that reason.
 
-use crate::drive::{Controller, Location, Shelf};
+use crate::drive::{Controller, Location, Position, Shelf};
 use crate::ses::ShelfReport;
 use std::collections::BTreeMap;
 
 pub type Shelves = BTreeMap<String, ShelfReport>;
+
+/// A drive in no enclosure (#65), as stormblock's `shelf_of`: behind an
+/// expander it is external, else internal.
+pub fn position_no_enclosure(behind_expander: bool) -> Position {
+    if behind_expander {
+        Position::External
+    } else {
+        Position::Internal
+    }
+}
+
+/// A SES identity that is a server's own backplane even behind an expander:
+/// the large front shelf of a Dell with many bays.
+pub fn known_backplane(identity: &str) -> bool {
+    identity.starts_with("DP BP") || identity.starts_with("DELL BP")
+}
+
+/// A drive in an enclosure (#65), the same rules and the same words as
+/// stormblock's `shelf_of` (stormblock#347), so stormdrive and the engine
+/// never disagree on a drive: behind an expander it is external unless the
+/// identity is a known server backplane ("when in doubt, external"); the
+/// machine's own shelf is rear or internal when the bay's component name or
+/// the identity says so, otherwise front. `identity` is "vendor model".
+pub fn position_in_enclosure(behind_expander: bool, bay_name: &str, identity: &str) -> Position {
+    if behind_expander && !known_backplane(identity) {
+        return Position::External;
+    }
+    let says = format!("{bay_name} {identity}");
+    let any = |words: &[&str]| words.iter().any(|w| says.contains(w));
+    if any(&["rear", "Rear", "REAR"]) {
+        Position::Rear
+    } else if any(&["internal", "Internal", "INTERNAL", "M.2", "BOSS"]) {
+        Position::Internal
+    } else {
+        Position::Front
+    }
+}
+
+/// "vendor model", as the engine's identity of an enclosure.
+pub fn identity_of(shelf: &Shelf) -> String {
+    let parts = [shelf.vendor.as_deref(), shelf.model.as_deref()];
+    parts.into_iter().flatten().map(str::trim).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// Is an expander on this sysfs path? (The engine's `*/expander-*`.)
+pub fn behind_expander(real: &std::path::Path) -> bool {
+    real.components().any(|c| c.as_os_str().to_string_lossy().starts_with("expander-"))
+}
 
 /// Does this path component look like a PCI BDF ("0000:03:00.0")? The
 /// domain is 4 hex digits, or more behind Intel VMD ("10000:01:00.0"),
@@ -211,17 +259,22 @@ mod linux {
         let serial = std::fs::read(dev.join("vpd_pg80"))
             .ok()
             .and_then(|raw| parse_vpd80(&raw));
-        let logical_id = shelves
-            .values()
-            .find(|r| r.esps.iter().any(|e| e.scsi_id == enc_id))
-            .and_then(|r| r.shelf.logical_id.clone());
+        let scanned = shelves.values().find(|r| r.esps.iter().any(|e| e.scsi_id == enc_id)).map(|r| &r.shelf);
+        // The enclosure class's own `id` is the logical id (the engine's
+        // shelf id), with or without a SES scan that reached this ESP.
+        let logical_id = scanned
+            .and_then(|s| s.logical_id.clone())
+            .or_else(|| read_trim(&sys.join("class/enclosure").join(enc_id).join("id")).map(|s| crate::ses::normalize_sas(&s)))
+            .filter(|s| s.chars().any(|c| c != '0'));
         Shelf {
             id: Some(enc_id.to_string()),
             vendor: read_trim(&dev.join("vendor")),
             model: read_trim(&dev.join("model")),
-            serial,
+            // The chassis' serial when SES names it: the ESP's is its IOM's.
+            serial: scanned.and_then(|s| s.serial.clone()).or(serial),
             sas_address: read_trim(&dev.join("sas_address")),
             logical_id,
+            position: None,
         }
     }
 
@@ -283,15 +336,22 @@ mod linux {
             (loc.sas_phy, loc.expander) = sas_attachment(r);
         }
         loc.sas_address = read_trim(&base.join("device/sas_address"));
+        let behind = real.as_deref().is_some_and(super::behind_expander);
         if let Some((enc, slot_dir)) = find_enclosure_slot(sys, name) {
             loc.bay = read_trim(&slot_dir.join("slot")).and_then(|s| s.parse().ok());
-            loc.shelf = Some(shelf_identity(sys, &enc, shelves));
+            let mut sh = shelf_identity(sys, &enc, shelves);
+            let component = slot_dir.file_name().map(|c| c.to_string_lossy().to_string()).unwrap_or_default();
+            sh.position = Some(super::position_in_enclosure(behind, &component, &super::identity_of(&sh)));
+            loc.shelf = Some(sh);
         } else if let Some((enc_id, bay)) = real.as_deref().and_then(|r| sas_device_enclosure(sys, r)) {
             let rep = shelves.get(&enc_id);
             loc.shelf = Some(match rep {
                 Some(r) => r.shelf.clone(),
+                // The transport names an enclosure no SES device answers
+                // for: to the engine that is a drive in no enclosure.
                 None => Shelf {
                     logical_id: Some(enc_id.clone()),
+                    position: Some(super::position_no_enclosure(behind)),
                     ..Default::default()
                 },
             });
@@ -299,6 +359,12 @@ mod linux {
                 rep.zip(loc.sas_address.as_deref())
                     .and_then(|(r, sas)| r.bay_of(sas))
             });
+        } else if let Some((sh, bay)) = real.as_deref().zip(loc.controller.as_ref()).and_then(|(r, c)| {
+            crate::megaraid::place(shelves, c.scsi_host.as_deref()?, crate::megaraid::scsi_address(r)?)
+        }) {
+            // Behind a RAID controller: no SES device, the controller knows.
+            loc.shelf = Some(sh);
+            loc.bay = bay;
         }
         if name.starts_with("nvme") {
             if let Some(dev) = super::nvme::device_path(sys, name) {
@@ -313,6 +379,7 @@ mod linux {
             }
             loc.pcie_addr = loc.controller.as_ref().and_then(|c| c.pcie_addr.clone());
         }
+        loc.position = Some(loc.shelf.as_ref().and_then(|s| s.position).unwrap_or_else(|| super::position_no_enclosure(behind)));
         loc
     }
 
@@ -337,6 +404,10 @@ mod linux {
         let key = loc.shelf.as_ref().and_then(|s| s.key());
         let rep = key.as_ref().and_then(|k| shelves.get(k));
         match (rep, loc.bay) {
+            (Some(r), _) if r.through.is_some() => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("{name}: shelf {} is read through its RAID controller: no locate LED from here yet", r.key),
+            )),
             (Some(r), Some(b)) => crate::ses::set_ident(r, Some(b), on),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -453,6 +524,35 @@ mod tests {
         );
         assert_eq!(nvme::bay_of_slot("NVMe-A3"), None);
         let _ = std::fs::remove_dir_all(&sys);
+    }
+
+    /// The engine's own cases (stormblock tests/initramfs-boot-hook.sh, #347).
+    #[test]
+    fn position_uses_the_engines_rules_and_words() {
+        use Position::*;
+        // The machine's own: not behind an expander.
+        assert_eq!(position_in_enclosure(false, "Slot 04", "DP BP13G+"), Front, "the Dell's single front bay");
+        assert_eq!(position_in_enclosure(false, "Rear Slot 0", "DP BP13G+"), Rear);
+        assert_eq!(position_in_enclosure(false, "Slot 0", "DELL BOSS-S1"), Internal);
+        assert_eq!(position_in_enclosure(false, "Internal 1", "ACME Plane"), Internal);
+        assert_eq!(position_in_enclosure(false, "M.2 A", "ACME Carrier"), Internal);
+        // Behind an expander: external unless a known server backplane.
+        assert_eq!(position_in_enclosure(true, "Slot 00", "DP BP14G+EXP"), Front, "a large front shelf");
+        assert_eq!(position_in_enclosure(true, "Rear 0", "DELL BP12G"), Rear);
+        assert_eq!(position_in_enclosure(true, "SLOT 3", "NETAPP DS224-12"), External);
+        assert_eq!(position_in_enclosure(true, "Rear 0", "NETAPP DS224-12"), External, "external outranks a name");
+        assert_eq!(position_in_enclosure(true, "0", ""), External, "when in doubt, external");
+        // In no enclosure.
+        assert_eq!(position_no_enclosure(false), Internal, "the Dell's sda");
+        assert_eq!(position_no_enclosure(true), External);
+        // The words on the wire are the engine's.
+        for (p, w) in [(Internal, "internal"), (Front, "front"), (Rear, "rear"), (External, "external")] {
+            assert_eq!(serde_json::to_value(p).unwrap(), w);
+            assert_eq!(p.as_str(), w);
+        }
+        let on = std::path::Path::new("/sys/devices/pci0000:00/host0/port-0:0/expander-0:0/port-0:0:5/end_device-0:0:5");
+        assert!(behind_expander(on));
+        assert!(!behind_expander(std::path::Path::new("/sys/devices/pci0000:00/host0/target0:0:4/0:0:4:0")));
     }
 
     #[test]

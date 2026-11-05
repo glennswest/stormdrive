@@ -314,6 +314,8 @@ spec:
                 model: { type: string, nullable: true }
                 shelfId: { type: string, nullable: true }
                 serial: { type: string, nullable: true }
+                position: { type: string, enum: [internal, front, rear, external], description: "Where the shelf is on the machine, in the engine's words (stormblock#347)." }
+                through: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "Set when no SES device answers for the shelf and its RAID controller does." }
                 state: { type: string }
                 identify: { type: boolean, nullable: true }
                 faultLed: { type: boolean, nullable: true, description: "Fault requested by a client (spec.faultLed or anyone else)." }

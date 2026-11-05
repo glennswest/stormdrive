@@ -98,6 +98,9 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     if let Some(b) = d.location.bay {
         metrics.push(Metric::new("bay", b.to_string()));
     }
+    if let Some(p) = d.location.position {
+        metrics.push(Metric::new("position", p.as_str()).tone("muted"));
+    }
     if let Some(h) = d.location.controller.as_ref().and_then(controller_name) {
         metrics.push(Metric::new("hba", h).tone("muted"));
     }
@@ -547,11 +550,20 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
         let needs = members.iter().filter(|d| d.needs_reformat()).count();
         let mut detail = vec![format!("{} drives", members.len())];
         let mut metrics = vec![Metric::new("drives", members.len().to_string())];
+        let position = rep.and_then(|r| r.shelf.position).or_else(|| members.iter().find_map(|d| d.location.shelf.as_ref()?.position));
+        if let Some(p) = position {
+            detail.push(p.as_str().to_string());
+            metrics.push(Metric::new("position", p.as_str()).tone("muted"));
+        }
         for hba in shelf_hbas(members, rep, &by_host) {
             metrics.push(Metric::new("hba", hba).tone("muted"));
         }
         let mut actions = Vec::new();
-        if let Some(r) = rep {
+        if let Some(t) = rep.and_then(|r| r.through.as_ref()) {
+            detail.push(format!("through {}", t.driver));
+        }
+        // A shelf read through its controller has no SES path to act on.
+        if let Some(r) = rep.filter(|r| r.through.is_none()) {
             use crate::ses::{ET_COOLING, ET_POWER_SUPPLY};
             let (psu_ok, psu_n) = r.count(ET_POWER_SUPPLY);
             let (fan_ok, fan_n) = r.count(ET_COOLING);
@@ -976,6 +988,7 @@ mod tests {
             sas_address: None,
             serial: None,
             revision: None,
+            behind_expander: false,
         }
     }
 
@@ -1007,6 +1020,7 @@ mod tests {
             elements: Vec::new(),
             slots: BTreeMap::new(),
             help_text: None,
+            through: None,
             collected_at: SystemTime::now(),
             status_raw: Vec::new(),
         };

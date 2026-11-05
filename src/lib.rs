@@ -29,6 +29,7 @@ pub mod inventory;
 pub mod iomfw;
 pub mod kubeapi;
 pub mod kubeauth;
+pub mod megaraid;
 pub mod metrics;
 pub mod monitor;
 pub mod placement;

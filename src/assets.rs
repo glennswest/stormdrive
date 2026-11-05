@@ -333,8 +333,20 @@ pub fn scanned_items(drives: &[crate::drive::Drive], hbas: &crate::hba::Hbas, sh
         let ioms: Vec<Value> = s.esps.iter().map(|e| json!({ "serial": e.serial, "sas_address": e.sas_address, "revision": e.revision })).collect();
         items.insert(
             format!("shelf/{key}"),
-            json!({ "vendor": s.shelf.vendor, "model": s.shelf.model, "serial": s.shelf.serial, "logical_id": s.shelf.logical_id, "ioms": ioms, "bays": s.slots.len() }),
+            json!({ "vendor": s.shelf.vendor, "model": s.shelf.model, "serial": s.shelf.serial, "logical_id": s.shelf.logical_id, "position": s.shelf.position, "ioms": ioms, "bays": s.slots.len() }),
         );
+    }
+    // A shelf only its drives name (no SES device answers for it): its
+    // position's history is kept all the same (#65).
+    for d in drives.iter().filter(|d| d.activity != crate::drive::Activity::Missing) {
+        let Some(sh) = &d.location.shelf else { continue };
+        let Some(key) = sh.key() else { continue };
+        if shelves.contains_key(&key) {
+            continue;
+        }
+        items.entry(format!("shelf/{key}")).or_insert_with(|| {
+            json!({ "vendor": sh.vendor, "model": sh.model, "serial": sh.serial, "logical_id": sh.logical_id, "position": sh.position })
+        });
     }
     for d in drives.iter().filter(|d| d.activity != crate::drive::Activity::Missing) {
         let item = match d.location.bay_key() {
@@ -457,6 +469,30 @@ pub fn record(h: &History, boot: &Boot, items: BTreeMap<String, Value>, mem: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Dell's sda: a shelf only the drive names, no SES report. Its
+    /// position is on the asset record all the same, so its history is kept.
+    #[test]
+    fn a_shelf_only_a_drive_names_is_an_asset_with_its_position() {
+        use crate::drive::{Drive, DriveId, Location, Position, Shelf};
+        let mut d: Drive = serde_json::from_value(json!({
+            "id": DriveId::derive(Some("w"), "M", "S"),
+            "path": "/dev/sda", "name": "sda", "kind": "sata_hdd", "model": "M",
+            "serial": "S", "firmware": "F", "wwid": "w", "capacity_bytes": 1u64 << 40,
+            "block_size": 512,
+            "first_seen": std::time::SystemTime::UNIX_EPOCH, "last_seen": std::time::SystemTime::UNIX_EPOCH,
+        }))
+        .unwrap();
+        d.location = Location {
+            shelf: Some(Shelf { logical_id: Some("5a".into()), position: Some(Position::Internal), ..Default::default() }),
+            bay: Some(4),
+            position: Some(Position::Internal),
+            ..Default::default()
+        };
+        let mut items = BTreeMap::new();
+        scanned_items(&[d], &Default::default(), &Default::default(), &mut items);
+        assert_eq!(items["shelf/5a"]["position"], "internal");
+    }
 
     /// An SMBIOS structure: formatted bytes after the 4-byte header, then
     /// strings.

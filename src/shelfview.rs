@@ -198,6 +198,7 @@ pub fn summarize(rep: &ShelfReport, hba_sas: &BTreeMap<String, String>) -> Summa
     let cabled_connectors = connectors.iter().filter(|c| c.attached_sas_address.is_some()).count();
     let paths = rep.esps.len();
     let note = match (ioms_installed, paths) {
+        _ if rep.through.is_some() => "read through its RAID controller: no SES path".to_string(),
         (0, _) => "no IOM reported".to_string(),
         (1, _) => "one IOM installed: single path by hardware".to_string(),
         (n, p) if p >= 2 => format!("{n} IOMs installed, {p} paths seen: multipath"),
@@ -344,6 +345,7 @@ mod tests {
             sas_address: Some("500a09800853bf4c".into()),
             serial: None,
             revision: Some("0401".into()),
+            behind_expander: false,
         };
         let pages = RawPages { config: &cfg, status: &st, descriptors: Some(&desc), help: Some(&help), ..Default::default() };
         assemble(vec![esp], None, pages).unwrap()

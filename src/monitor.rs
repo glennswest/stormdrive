@@ -204,8 +204,7 @@ async fn tick(
     if discover {
         // Shelves first: drive location resolution names the shelf from
         // this scan when only a logical id is visible.
-        let shelves = tokio::task::spawn_blocking(ses::scan).await?;
-        merge_shelves(state, shelves).await;
+        scan_shelves(state).await?;
         let hbas = tokio::task::spawn_blocking(crate::hba::scan).await?;
         merge_hbas(state, hbas).await;
         let started = std::time::Instant::now();
@@ -242,6 +241,44 @@ async fn tick(
     }
 
     state.persist().await;
+    Ok(())
+}
+
+/// How long one shelf scan may take before discovery goes on without it.
+const SHELF_SCAN_LIMIT: Duration = Duration::from_secs(60);
+/// One at a time: a controller that never answers holds its one thread, not
+/// another every pass.
+static SHELF_SCAN_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The SES enclosures and what RAID controllers read for theirs (#65). Both
+/// ask the hardware and neither can bound the wait (the driver's ioctl has no
+/// timeout), so a stuck scan keeps the last table and discovery goes on.
+async fn scan_shelves(state: &Arc<AppState>) -> anyhow::Result<()> {
+    use std::sync::atomic::Ordering;
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            SHELF_SCAN_BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+    if SHELF_SCAN_BUSY.swap(true, Ordering::SeqCst) {
+        tracing::warn!("shelf scan: the last one has not come back; keeping the last table");
+        return Ok(());
+    }
+    let node = state.node_name.clone();
+    let scan = tokio::task::spawn_blocking(move || {
+        let _done = Done;
+        let mut shelves = ses::scan();
+        shelves.extend(crate::megaraid::scan(&node));
+        shelves
+    });
+    match tokio::time::timeout(SHELF_SCAN_LIMIT, scan).await {
+        Ok(shelves) => merge_shelves(state, shelves?).await,
+        Err(_) => {
+            let msg = format!("shelf scan: no answer in {} s; keeping the last table", SHELF_SCAN_LIMIT.as_secs());
+            state.events.write().await.push(None, Severity::Warning, "shelf", msg);
+        }
+    }
     Ok(())
 }
 
@@ -543,17 +580,32 @@ async fn merge_shelves(state: &Arc<AppState>, fresh: topology::Shelves) {
         let old = state.shelves.read().await;
         for (key, rep) in &fresh {
             match old.get(key) {
+                None if rep.through.is_some() => events.push((
+                    Severity::Info,
+                    format!(
+                        "shelf {}: discovered ({}, through {}, {} bays occupied)",
+                        rep.shelf.display(),
+                        rep.shelf.position.map_or("no position", |p| p.as_str()),
+                        rep.through.as_ref().map_or("", |t| t.driver.as_str()),
+                        rep.slots.len()
+                    ),
+                )),
                 None => events.push((
                     Severity::Info,
                     format!(
-                        "shelf {}: discovered ({} ESP path{}, {} slots)",
+                        "shelf {}: discovered ({}, {} ESP path{}, {} slots)",
                         rep.shelf.display(),
+                        rep.shelf.position.map_or("no position", |p| p.as_str()),
                         rep.esps.len(),
                         if rep.esps.len() == 1 { "" } else { "s" },
                         rep.slots.len().max(rep.count(ses::ET_ARRAY_DEVICE_SLOT).1)
                     ),
                 )),
                 Some(prev) => {
+                    if prev.shelf.position != rep.shelf.position {
+                        let word = |p: Option<crate::drive::Position>| p.map_or("none", |p| p.as_str());
+                        events.push((Severity::Warning, format!("shelf {}: position {} → {}", rep.shelf.display(), word(prev.shelf.position), word(rep.shelf.position))));
+                    }
                     let (was, now) = (prev.worst(), rep.worst());
                     if was != now {
                         let sev = if now.is_bad() { Severity::Warning } else { Severity::Info };
@@ -584,6 +636,17 @@ async fn merge_shelves(state: &Arc<AppState>, fresh: topology::Shelves) {
         for (key, rep) in old.iter() {
             if !fresh.contains_key(key) {
                 events.push((Severity::Warning, format!("shelf {}: no longer reachable", rep.shelf.display())));
+            }
+        }
+    }
+    {
+        // A controller we could not read: said once, and again when it changes.
+        let old = state.shelves.read().await;
+        for (key, rep) in &fresh {
+            let why = rep.through.as_ref().and_then(|t| t.error.as_ref());
+            let before = old.get(key).and_then(|p| p.through.as_ref()).and_then(|t| t.error.as_ref());
+            if let (Some(why), true) = (why, why != before) {
+                events.push((Severity::Warning, format!("shelf {}: no bays: {why}", rep.shelf.display())));
             }
         }
     }

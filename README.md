@@ -186,6 +186,27 @@ are listed under [Not yet](#not-yet).
     0x07, 0x0A over SG_IO) and uses mpt3sas's
     `enclosure_identifier`/`bay_identifier`. The two IOMs of a dual-path
     shelf are one shelf, keyed by its logical id.
+  - **Position** (#65): every shelf and every drive has one: `internal`,
+    `front`, `rear` or `external`, in the engine's words and by its rules
+    (stormblock#347, `shelf_of`), since the install chooses and reports the
+    system drive by them. A drive in no enclosure is `internal`, or `external`
+    behind an expander. In an enclosure: behind an expander it is `external`,
+    unless the identity is a server backplane (`DP BP…`, `DELL BP…`); else
+    `rear` or `internal` when the bay's name or the identity says so (`rear`;
+    `internal`, `M.2`, `BOSS`), else `front`. A change is a warning event, and
+    the per-boot asset record keeps its history.
+  - **Behind a RAID controller** (#65, `src/megaraid.rs`): `megaraid_sas` (a
+    PERC, a MegaRAID) shows Linux no SES device, so the shelf is read from the
+    controller: the physical drive list (enclosure and slot per device) and the
+    enclosure's identity, with read-only MFI commands. Each enclosure is one
+    shelf, `internal`, with `through` set in place of ESP paths: `status`
+    `unknown`, no elements, no LEDs or IOM firmware from here. The char device
+    has no devtmpfs entry, so stormdrive makes `/dev/megaraid_sas_ioctl_node`
+    from `/proc/devices`, as smartctl does; that needs the host's `/dev` (the
+    golden binds it) and CAP_MKNOD + CAP_SYS_ADMIN. A controller it cannot read
+    is still an internal shelf, with no bays, and a warning event says why.
+    Not read that way: other RAID families (smartpqi, hpsa); their drives are
+    placed by what sysfs shows
   - **NVMe:** the PCIe slot on the drive's PCIe chain. A numeric slot name
     is also the bay. Intel VMD domains and native multipath heads are
     followed.
@@ -804,7 +825,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` |
 | `GET·POST /api/v1/firmware` | all runs · `{"image","drives"?,"model"?,"force"?}` |
 | `GET /api/v1/firmware/images`, `GET·PUT·DELETE …/images/{name}` | image store; PUT takes the raw image |
-| `GET /api/v1/shelves`, `GET …/shelves/{key}` | SES identity, status, elements (with descriptor `attributes`, thresholds), slots, drives (vendor, model, firmware, sector size); `summary`: shelf ID, chassis serial, IOMs, PSUs, connectors, multipath, `problems`; `help_text` (#81, docs/netapp-shelf.md) |
+| `GET /api/v1/shelves`, `GET …/shelves/{key}` | every shelf, also one only a controller (`through`) or a drive names (`status` `unknown`, no elements): `position` (#65), SES identity, status, elements (with descriptor `attributes`, thresholds), slots, drives (vendor, model, firmware, sector size); `summary`: shelf ID, chassis serial, IOMs, PSUs, connectors, multipath, `problems`; `help_text` (#81, docs/netapp-shelf.md) |
 | `GET /api/v1/shelves/{key}/diagnostics` | the diagnostic pages each ESP answers (page 0x00) |
 | `GET /api/v1/shelves/{key}/diagnostics/{page}?esp=` | one page raw as hex (`0a`, `0x80`): RECEIVE DIAGNOSTIC RESULTS only — `sg_ses -p N -r` |
 | `POST /api/v1/shelves/{key}/locate` | `{"on":bool,"bay"?}` |
