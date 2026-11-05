@@ -38,6 +38,8 @@ pub struct Observed {
     pub slabs: Vec<crate::contents::SlabPart>,
     /// SCSI: block lengths and PI the drive offers (#85).
     pub supports: Option<crate::pi::Supports>,
+    /// The rate its link negotiated, in Mb/s (#105).
+    pub link_rate_mbps: Option<u32>,
 }
 
 /// Is a sector size one the kernel will drive?
@@ -152,6 +154,7 @@ pub struct Probed {
     pub contents: Option<String>,
     pub slabs: Vec<crate::contents::SlabPart>,
     pub supports: Option<crate::pi::Supports>,
+    pub link: crate::transport::Link,
     pub at: std::time::Instant,
 }
 
@@ -209,15 +212,19 @@ mod linux {
             .filter(|s| !s.is_empty())
     }
 
-    fn classify(base: &Path, name: &str) -> DriveKind {
+    fn classify(base: &Path, name: &str, probed: crate::transport::Link) -> DriveKind {
         if name.starts_with("nvme") {
             return DriveKind::NvmeSsd;
         }
         let rotational = read_trim(&base.join("queue/rotational")).as_deref() == Some("1");
-        // A SATA drive behind a SAS HBA has a sas_address too (the HBA's
-        // end-device address for it); the SAT layer reports vendor "ATA".
-        let is_ata = read_trim(&base.join("device/vendor")).as_deref() == Some("ATA");
-        let is_sas = !is_ata && base.join("device/sas_address").exists();
+        // The drive says what it is (#105): a RAID controller's host has no
+        // SAS transport in sysfs, so no sas_address, on a SAS drive.
+        let is_sas = crate::transport::is_sas(
+            read_trim(&base.join("device/vendor")).as_deref(),
+            std::fs::read(base.join("device/vpd_pg83")).ok().as_deref(),
+            base.join("device/sas_address").exists(),
+            probed,
+        );
         match (is_sas, rotational) {
             (true, false) => DriveKind::SasSsd,
             (true, true) => DriveKind::SasHdd,
@@ -297,7 +304,8 @@ mod linux {
             if let Some(p) = cache.get(&key, now) {
                 out.push(Observed {
                     path: format!("/dev/{name}"),
-                    kind: crate::pi::kind_by_rotation(classify(&base, &name), p.supports.as_ref()),
+                    kind: crate::pi::kind_by_rotation(classify(&base, &name, p.link), p.supports.as_ref()),
+                    link_rate_mbps: p.link.rate_mbps,
                     vendor,
                     model,
                     serial,
@@ -352,6 +360,14 @@ mod linux {
             } else {
                 None
             };
+            // SAT is SATA whatever else it says, and has no SAS port to ask.
+            let link = if answered && name.starts_with("sd") && vendor.as_deref() != Some("ATA") {
+                let sg = crate::scsi::sg_path_in(&sys.join("block").join(&name).join("device/scsi_generic").to_string_lossy())
+                    .unwrap_or_else(|| node(&name));
+                crate::scsi::Device::open(&sg).map(|d| crate::transport::probe(&d)).unwrap_or_default()
+            } else {
+                crate::transport::Link::default()
+            };
             let (in_use_by, slabs) = if sectors > 0 {
                 crate::contents::probe_slabs(&node(&name))
             } else {
@@ -379,13 +395,15 @@ mod linux {
                         contents: contents.clone(),
                         slabs: slabs.clone(),
                         supports: supports.clone(),
+                        link,
                         at: now,
                     },
                 );
             }
             out.push(Observed {
                 path: format!("/dev/{name}"),
-                kind: crate::pi::kind_by_rotation(classify(&base, &name), supports.as_ref()),
+                kind: crate::pi::kind_by_rotation(classify(&base, &name, link), supports.as_ref()),
+                link_rate_mbps: link.rate_mbps,
                 vendor,
                 model,
                 serial,
@@ -479,7 +497,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         let key = ProbeKey { name: "sdc".into(), dev: "8:32".into(), sectors: 1000, wwid: Some("naa.1".into()) };
         let mut c = ProbeCache::default();
-        c.put(key.clone(), Probed { block_size: 4096, physical_block_size: 4096, capacity_bytes: 1, in_use_by: None, contents: None, slabs: vec![], supports: None, at: t0 });
+        c.put(key.clone(), Probed { block_size: 4096, physical_block_size: 4096, capacity_bytes: 1, in_use_by: None, contents: None, slabs: vec![], supports: None, link: Default::default(), at: t0 });
         assert!(c.get(&key, t0 + std::time::Duration::from_secs(30)).is_some());
         assert!(c.get(&key, t0 + PROBE_REFRESH).is_none(), "refreshed every ten minutes");
         let swapped = ProbeKey { wwid: Some("naa.2".into()), ..key.clone() };
@@ -507,5 +525,50 @@ mod tests {
         assert!(mount_source_is_disk("/dev/nvme0n1p2", "nvme0n1"));
         assert!(!mount_source_is_disk("/dev/nvme0n10", "nvme0n1"));
         assert!(!mount_source_is_disk("tmpfs", "sda"));
+    }
+
+    /// A megaraid_sas-shaped tree (#105): the disk on the controller's own host,
+    /// no sas_address, no device node to open: only what sysfs says.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sas_drive_behind_megaraid_is_sas_with_no_sas_address() {
+        let root = std::env::temp_dir().join(format!("stormdrive-transport-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sas_page = [
+            0x00, 0x83, 0x00, 0x0c, // header
+            0x61, 0x93, 0x00, 0x08, 0x50, 0x00, 0x0c, 0xca, 1, 2, 3, 5, // the target port: protocol 6
+        ];
+        let disk = |name: &str, vendor: &str, vpd: Option<&[u8]>, sas_address: bool| {
+            let real = root.join("sys/devices/pci0000:00/0000:03:00.0/host0/target0:0:6").join(format!("0:0:{name}:0"));
+            let block = real.join("block").join(name);
+            std::fs::create_dir_all(block.join("queue")).unwrap();
+            std::fs::write(block.join("queue/rotational"), "1\n").unwrap();
+            std::fs::write(block.join("size"), "19532873728\n").unwrap();
+            std::fs::write(block.join("dev"), "8:32\n").unwrap();
+            std::fs::write(real.join("type"), "0\n").unwrap();
+            std::fs::write(real.join("vendor"), format!("{vendor:<8}\n")).unwrap();
+            std::fs::write(real.join("model"), "H7210A521SUN010T\n").unwrap();
+            if let Some(v) = vpd {
+                std::fs::write(real.join("vpd_pg83"), v).unwrap();
+            }
+            if sas_address {
+                std::fs::write(real.join("sas_address"), "0x5000cca000000006\n").unwrap();
+            }
+            std::os::unix::fs::symlink(&real, block.join("device")).unwrap();
+            std::fs::create_dir_all(root.join("sys/block")).unwrap();
+            std::os::unix::fs::symlink(&block, root.join("sys/block").join(name)).unwrap();
+        };
+        disk("sdc", "HGST", Some(&sas_page), false); // forge1
+        disk("sdd", "ATA", Some(&sas_page), true); // SATA on a SAS HBA
+        disk("sde", "QEMU", None, false); // nothing says SAS
+        disk("sdf", "SEAGATE", None, true); // sas_address alone still counts
+        std::fs::create_dir_all(root.join("dev")).unwrap();
+        let kinds: std::collections::BTreeMap<String, DriveKind> =
+            scan_in(&root.join("sys"), &root.join("dev"), "", &cfg()).into_iter().map(|o| (o.name, o.kind)).collect();
+        assert_eq!(kinds["sdc"], DriveKind::SasHdd, "forge1's SAS-12 drive");
+        assert_eq!(kinds["sdd"], DriveKind::SataHdd);
+        assert_eq!(kinds["sde"], DriveKind::SataHdd);
+        assert_eq!(kinds["sdf"], DriveKind::SasHdd);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

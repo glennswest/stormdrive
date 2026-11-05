@@ -82,6 +82,8 @@ src/
   monitor.rs      loop: discovery, SES/HBA scans, threshold engine, trends,
                   usage + reconcile, events
   events.rs       event ring (4096; newest 512 in events.json, #25)
+  transport.rs    SAS or SATA from the drive itself: VPD 0x83, log page 0x18,
+                  negotiated link rate (#105)
   topology.rs     location: SAS/SES/mpt3sas bays, NVMe PCIe slots, locate LEDs,
                   shelf position by the engine's rules (#65)
   megaraid.rs     a RAID controller's enclosures as internal shelves: MFI reads
@@ -627,6 +629,22 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
   short, then medium; close #53 once the drive reads pass
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
+
+### #105: SAS drives behind megaraid_sas read as SATA (P1, owner, 2026-11-05) — in progress
+
+Owner: "why are they shown as sata, those are sas12 drives". `classify()` called
+a drive SAS only with `device/sas_address`, which megaraid_sas's host doesn't
+have. Design (the issue's, no open decision):
+- `src/transport.rs`: vendor `ATA` = SATA; else VPD 0x83 protocol 6 on a port
+  (sysfs `vpd_pg83`, each pass, no I/O; SG in the cached probe), or log page
+  0x18, or `sas_address` (a hint, no longer the only test)
+- `link_rate_mbps` on the drive from log page 0x18 (only when listed in page
+  0x00, never for SAT); /drives, kube status `linkRateMbps`, feed metric `link`
+- not here: SATA link rate (#69), a change of kind's effect on the tier: both
+  are `cool`/`warm` alike, so a drive's tier does not move
+Steps:
+- [x] transport.rs + discovery + outputs + tests (megaraid-shaped tree)
+- [ ] build VM; version; golden. Live: forge1 with #112
 
 ### #65: every shelf has an identity and a position; a PERC's bays are an internal shelf (P0, owner, 2026-11-05) — DONE (v0.35.0)
 

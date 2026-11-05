@@ -101,6 +101,9 @@ fn drive_component(d: &Drive) -> ComponentSummary {
     if let Some(p) = d.location.position {
         metrics.push(Metric::new("position", p.as_str()).tone("muted"));
     }
+    if let Some(r) = d.link_rate_mbps {
+        metrics.push(Metric::new("link", crate::transport::rate_label(r)).tone("muted"));
+    }
     if let Some(h) = d.location.controller.as_ref().and_then(controller_name) {
         metrics.push(Metric::new("hba", h).tone("muted"));
     }
@@ -653,6 +656,7 @@ mod tests {
             firmware: "1".into(),
             vendor: None,
             supports: None,
+            link_rate_mbps: None,
             history: None,
             wwid: None,
             capacity_bytes: 1 << 30,

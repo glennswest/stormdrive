@@ -720,6 +720,10 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                     events.push((Some(id), Severity::Info, "discovered", format!("{}: kind now {:?} (was {:?})", d.name, primary.kind, d.kind).to_lowercase()));
                     d.kind = primary.kind;
                 }
+                // A pass that could not ask (mid-format) keeps the last answer.
+                if primary.link_rate_mbps.is_some() {
+                    d.link_rate_mbps = primary.link_rate_mbps;
+                }
                 if primary.supports.is_some() && primary.supports != d.supports {
                     if let Some(msg) = fallback_issue(&primary.name, primary.supports.as_ref()) {
                         events.push((Some(id), Severity::Warning, "format", msg));
@@ -812,6 +816,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         firmware: primary.firmware.clone(),
                         vendor: primary.vendor.clone(),
                         supports: primary.supports.clone(),
+                        link_rate_mbps: primary.link_rate_mbps,
                         history: None,
                         wwid: primary.wwid.clone(),
                         capacity_bytes: primary.capacity_bytes,
@@ -1191,6 +1196,7 @@ mod tests {
             firmware: "NA02".into(),
             vendor: None,
             supports: None,
+            link_rate_mbps: None,
             wwid: Some(wwid.into()),
             capacity_bytes: 420 << 30,
             block_size: 512,

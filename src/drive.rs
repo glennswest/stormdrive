@@ -490,6 +490,10 @@ pub struct Drive {
     /// rotation, current format (#85, `pi.rs`). None until probed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports: Option<crate::pi::Supports>,
+    /// The rate its link negotiated, in Mb/s: SAS, from the drive's port log
+    /// page (#105). None where it cannot be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_rate_mbps: Option<u32>,
     /// The drive's kept history at a glance (#68): entries, actions, the
     /// last format; the full log is `GET /api/v1/drives/{id}/history`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -885,6 +889,7 @@ mod tests {
             firmware: "1".into(),
             vendor: None,
             supports: None,
+            link_rate_mbps: None,
             history: None,
             wwid: None,
             capacity_bytes: 1 << 30,

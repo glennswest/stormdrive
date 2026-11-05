@@ -34,8 +34,11 @@ are listed under [Not yet](#not-yet).
 - **Discovery** (`src/discovery/`). Walks `/sys/block` on start, every
   `discovery.interval_secs`, and 2 s after a kernel disk uevent
   (`src/hotplug.rs`). It classifies each disk as `nvme_ssd`, `sas_ssd`,
-  `sas_hdd`, `sata_ssd`, `sata_hdd` or `unknown`. A SATA drive behind a SAS
-  HBA is SATA, because its SCSI vendor is `ATA`.
+  `sas_hdd`, `sata_ssd`, `sata_hdd` or `unknown`. The transport comes from the
+  drive (#105): SCSI vendor `ATA` is SATA, even behind a SAS HBA. Otherwise a
+  SAS target port in VPD 0x83, the SAS port log page (0x18) or a `sas_address`
+  means SAS, so a SAS drive behind `megaraid_sas`, which has no `sas_address`,
+  reads as SAS. A disk with none of these still reads as SATA.
   - **Stable id:** a UUIDv5 of the WWID, or of model + serial when there is
     no WWID. It is the same across reboots, path changes and re-bays.
   - **Multipath:** a dual-IOM shelf shows one drive on two `/dev` nodes. That
@@ -186,6 +189,9 @@ are listed under [Not yet](#not-yet).
     0x07, 0x0A over SG_IO) and uses mpt3sas's
     `enclosure_identifier`/`bay_identifier`. The two IOMs of a dual-path
     shelf are one shelf, keyed by its logical id.
+  - **Link rate** (#105): `link_rate_mbps` on a SAS drive (12000 = 12 Gb/s),
+    the fastest phy in its port log page 0x18, refreshed with the cached probe.
+    Absent where it cannot be read, and for SATA.
   - **Position** (#65): every shelf and every drive has one: `internal`,
     `front`, `rear` or `external`, in the engine's words and by its rules
     (stormblock#347, `shelf_of`), since the install chooses and reports the

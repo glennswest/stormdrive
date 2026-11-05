@@ -170,6 +170,7 @@ mod tests {
             firmware: "1.0".into(),
             vendor: None,
             supports: None,
+            link_rate_mbps: None,
             history: None,
             wwid: None,
             capacity_bytes: 1 << 30,
