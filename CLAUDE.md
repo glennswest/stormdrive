@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.36.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.37.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -631,7 +631,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #106: a USB stick is not a drive (P1, owner, 2026-11-05) — in progress
+### #106: a USB stick is not a drive (P1, owner, 2026-11-05) — DONE (v0.37.0)
 
 Owner: "Is counting a USB drive?" forge1 shows 5 drives, the 5th its boot stick.
 Design (the issue's, no open decision):
@@ -644,7 +644,8 @@ Design (the issue's, no open decision):
   (stormconsole issue)
 Steps:
 - [x] discovery, monitor, API, feed, test suite, docs
-- [ ] build VM; version; golden; console issue
+- [x] build VM on 854e162 (clippy -D warnings --locked, 296 unit + harnesses; #113 was my test's missing type); v0.37.0; golden requested; console issue filed
+- Live: forge1 with #112 (4 drives, the stick under media)
 
 ### #105: SAS drives behind megaraid_sas read as SATA (P1, owner, 2026-11-05) — DONE (v0.36.0)
 

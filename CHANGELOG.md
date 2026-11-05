@@ -3,9 +3,13 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-05
-- **fix:** a disk on a USB host is not a drive of the node: it is out of the drive list, counts, capacity, shelves, placement, metrics, the worker and fleet decisions. An inventory entry from an older release is removed with a `media` event (#106)
-- **feat:** `GET /api/v1/media` and a `removable-media` feed component report USB disks apart, with `boot_stick`; the system card says "boot stick present" (#106)
+## [v0.37.0] — 2026-11-05
+
+### Added
+- `GET /api/v1/media` and a `removable-media` feed component report USB disks apart, with `boot_stick`; the system card says "boot stick present" (#106)
+
+### Fixed
+- A disk on a USB host is not a drive of the node: it is out of the drive list, counts, capacity, shelves, placement, metrics, the worker and fleet decisions. An inventory entry from an older release is removed with a `media` event (#106)
 
 ## [v0.36.0] — 2026-11-05
 
