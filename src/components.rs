@@ -76,6 +76,7 @@ fn evidence(d: &Drive, others: &[&Drive]) -> Vec<(String, String)> {
     out
 }
 
+#[cfg(test)]
 fn drive_component(d: &Drive) -> ComponentSummary {
     drive_among(d, &[])
 }

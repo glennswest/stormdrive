@@ -1364,7 +1364,6 @@ mod tests {
             vendor: None,
             supports: None,
             link_rate_mbps: None,
-            health_ack: None,
             wwid: Some(wwid.into()),
             capacity_bytes: 420 << 30,
             block_size: 512,
