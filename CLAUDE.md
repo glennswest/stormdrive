@@ -625,6 +625,34 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #65: every shelf has an identity and a position; a PERC's bays are an internal shelf (P0, owner, 2026-11-05) — in progress
+
+Owner: "enclosure = shelf"; "off a perc by definition it should go to a shelf.
+just in this case shelf is internal." forge1 (R6415, H730 Mini, `megaraid_sas`,
+4 pass-through drives) has no SES device in Linux, so no shelf and no bay; the
+console says "no enclosure". Design (the issue's, no open decision):
+- `position`: internal | front | rear | external, stormblock#347's words and
+  `shelf_of` rules, one pure function with the engine's vectors as tests: no
+  enclosure → expander in the path = external, else internal; in an enclosure →
+  behind an expander and not `DP BP*`/`DELL BP*` = external; else rear/internal
+  by the bay + identity names; else front
+- on `Shelf` (drive's copy per bay, as the engine's), `Location.position` (also
+  for a drive in no shelf), the SES report; on /drives, /shelves, /placement,
+  /topology, kube Drive/Enclosure, Shelf status, feed, assets (position history)
+- shelf identity: logical id from `/sys/class/enclosure/*/id` too; /shelves and
+  assets also list a shelf only its drives name (the Dell's sda)
+- `src/megaraid.rs`: MFI DCMDs over MEGASAS_IOC_FIRMWARE (read-only: PD list
+  0x02010000, PD info 0x02020000; layouts from the kernel's megaraid_sas.h):
+  enclosure + slot per device id, device id = channel*128 + target. Each
+  enclosure on the controller = one internal ShelfReport with `controller` set,
+  no ESPs. The char node has no devtmpfs entry: mknod from /proc/devices (as
+  smartctl). Unreadable = still the internal shelf, without bays, and it says why
+- not here: locate LED through the controller, #105 (transport), #106 (USB)
+Steps:
+- [ ] position + identity + outputs + tests
+- [ ] megaraid.rs + monitor + tests (megaraid-shaped sysfs tree)
+- [ ] docs, changelog; build VM; version; golden. Live: forge1 once released
+
 ### #101: engine client over https with the node CA (stormcos#374, 2026-11-04) — DONE (v0.34.0)
 
 The engine's :9090 moves to TLS from the node CA (stormblock#203), plain and
