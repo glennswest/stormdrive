@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.34.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.35.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -628,7 +628,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #65: every shelf has an identity and a position; a PERC's bays are an internal shelf (P0, owner, 2026-11-05) — in progress
+### #65: every shelf has an identity and a position; a PERC's bays are an internal shelf (P0, owner, 2026-11-05) — DONE (v0.35.0)
 
 Owner: "enclosure = shelf"; "off a perc by definition it should go to a shelf.
 just in this case shelf is internal." forge1 (R6415, H730 Mini, `megaraid_sas`,
@@ -654,7 +654,8 @@ console says "no enclosure". Design (the issue's, no open decision):
 Steps:
 - [x] position + identity + outputs + tests
 - [x] megaraid.rs + monitor + tests (megaraid-shaped sysfs tree)
-- [ ] docs, changelog; build VM; version; golden. Live: forge1 once released
+- [x] docs, changelog; build VM (clippy -D warnings --locked, 288 unit + harnesses; #109-#111 were my own compile and lint errors, closed by the pass); v0.35.0; golden requested
+- Not on metal yet: the MFI ioctl has only met a fake firmware. Live check on forge1 is a follow-up issue, back in line when a release carries this
 
 ### #101: engine client over https with the node CA (stormcos#374, 2026-11-04) — DONE (v0.34.0)
 
