@@ -6,6 +6,9 @@
 //! (labels, health, drains, overcommit). See README.md and
 //! docs/architecture.md.
 
+// The kube Drive status is one big json! (#65 outgrew the default 128).
+#![recursion_limit = "256"]
+
 pub mod api;
 pub mod assets;
 pub mod components;
