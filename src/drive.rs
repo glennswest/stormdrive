@@ -630,6 +630,31 @@ pub struct FormatRecord {
     pub finished: Option<SystemTime>,
     #[serde(default)]
     pub error: Option<String>,
+    /// `prepare`, `format`, `formatting`, `rescan`, `verify`, `done`,
+    /// `failed` (#108).
+    #[serde(default)]
+    pub phase: String,
+    /// The drive's own progress indication, floored; the last one it gave.
+    #[serde(default)]
+    pub progress_pct: Option<u8>,
+    /// When it last gave one.
+    #[serde(default)]
+    pub progress_at: Option<SystemTime>,
+    /// Estimated seconds left at that moment, from `started` and the progress.
+    #[serde(default)]
+    pub eta_secs: Option<u64>,
+    /// Formats the drive refused on the way to this one, with why.
+    #[serde(default)]
+    pub refused: Vec<String>,
+    /// READ CAPACITY(16) after the format: what was actually set.
+    #[serde(default)]
+    pub block_size_after: Option<u32>,
+    /// 0 = no PI.
+    #[serde(default)]
+    pub prot_type_after: Option<u8>,
+    /// The boot it started in: another one means names may have moved.
+    #[serde(default)]
+    pub boot_id: String,
 }
 
 /// The last firmware update we ran on a drive.

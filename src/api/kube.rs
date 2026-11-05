@@ -126,6 +126,31 @@ pub fn format_status(d: &Drive, want: Option<(u32, crate::pi::Protection)>) -> (
     (current, planned)
 }
 
+/// `status.format` (#108): the drive's last format, as stormconsole follows
+/// it. It outlives a restart: it is the drive's persisted record.
+pub fn format_run_status(d: &Drive) -> Value {
+    let unix = |t: Option<std::time::SystemTime>| t.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|x| x.as_secs());
+    match &d.format {
+        None => Value::Null,
+        Some(f) => json!({
+            "state": f.state,
+            "phase": f.phase,
+            "fromBlockSize": f.from_block_size,
+            "toBlockSize": f.to_block_size,
+            "protection": f.protection,
+            "progressPct": f.progress_pct,
+            "etaSeconds": f.eta_secs,
+            "startedUnix": unix(f.started),
+            "progressAtUnix": unix(f.progress_at),
+            "finishedUnix": unix(f.finished),
+            "refused": f.refused,
+            "blockSizeAfter": f.block_size_after,
+            "protTypeAfter": f.prot_type_after,
+            "error": f.error,
+        }),
+    }
+}
+
 pub fn drive_object(d: &Drive, node: &str) -> Value {
     drive_object_with(d, node, None)
 }
@@ -192,6 +217,7 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "history": d.history,
             "currentFormat": current_format,
             "plannedFormat": planned_format,
+            "format": format_run_status(d),
             "overcommit": d.overcommit,
             "pushedLabels": d.pushed_labels,
             "firstSeen": d.first_seen.duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0),
@@ -560,6 +586,65 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(&format!("{gv}/drives/{{name}}"), get(get_drive).patch(patch_drive))
         .route(&format!("{gv}/enclosures"), get(list_enclosures))
         .route(&format!("{gv}/enclosures/{{name}}"), get(get_enclosure))
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+    use crate::pi::{Protection, Supports};
+
+    fn hgst() -> Drive {
+        serde_json::from_value(json!({
+            "id": crate::drive::DriveId::derive(Some("naa.5000cca2"), "H7210A521SUN010T", "2TJ98VMD"), "path": "/dev/sdd", "name": "sdd", "paths": ["/dev/sdd"],
+            "kind": "sas_hdd", "model": "H7210A521SUN010T", "serial": "2TJ98VMD", "firmware": "A", "wwid": "naa.5000cca2",
+            "capacity_bytes": 10_000_000_000_000u64, "block_size": 512, "first_seen": {"secs_since_epoch": 0, "nanos_since_epoch": 0},
+            "last_seen": {"secs_since_epoch": 0, "nanos_since_epoch": 0},
+        }))
+        .unwrap()
+    }
+
+    /// What the console reads for forge1's drives: 4096 + PI1, and that a
+    /// refusal is not the end of it (#108).
+    #[test]
+    fn the_drive_object_plans_4096_pi1_and_shows_the_run() {
+        let mut d = hgst();
+        d.supports = Some(Supports { protect: true, pi_types: vec![1, 2], current_block_size: 512, current_prot_type: 1, physical_block_size: 4096, ..Default::default() });
+        let o = drive_object(&d, "forge1");
+        assert_eq!(o["status"]["plannedFormat"]["blockSize"], 4096);
+        assert_eq!(o["status"]["plannedFormat"]["protection"], "type1");
+        assert_eq!(o["status"]["plannedFormat"]["basis"], "try");
+        assert_eq!(o["status"]["plannedFormat"]["fallback"], false);
+        assert_eq!(o["status"]["plannedFormat"]["fallbacks"], json!([{"blockSize": 4096, "protection": "none"}, {"blockSize": 512, "protection": "type1"}]));
+        assert!(o["status"]["format"].is_null());
+        assert!(crate::worker::pi_refusal(&d, 4096, Protection::Type1).is_none());
+
+        d.format = Some(crate::drive::FormatRecord {
+            from_block_size: 512,
+            to_block_size: 4096,
+            protection: Protection::None,
+            state: "running".into(),
+            phase: "formatting".into(),
+            started: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1000)),
+            progress_pct: Some(25),
+            eta_secs: Some(21600),
+            refused: vec!["4096 with PI type 1: format unit with PI type 1: refused".into()],
+            ..Default::default()
+        });
+        let f = drive_object(&d, "forge1")["status"]["format"].clone();
+        assert_eq!((f["progressPct"].as_u64(), f["etaSeconds"].as_u64(), f["startedUnix"].as_u64()), (Some(25), Some(21600), Some(1000)));
+        assert_eq!(f["toBlockSize"], 4096);
+        assert_eq!(f["protection"], "none");
+        assert_eq!(f["refused"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pi_is_refused_where_the_drive_does_not_offer_it() {
+        let mut d = hgst();
+        assert!(crate::worker::pi_refusal(&d, 4096, Protection::Type1).unwrap().contains("not probed"));
+        assert!(crate::worker::pi_refusal(&d, 4096, Protection::None).is_none());
+        d.supports = Some(Supports { current_block_size: 520, physical_block_size: 520, ..Default::default() });
+        assert!(crate::worker::pi_refusal(&d, 4096, Protection::Type1).is_some());
+    }
 }
 
 #[cfg(test)]

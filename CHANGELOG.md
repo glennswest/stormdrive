@@ -3,6 +3,20 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### Added
+- A running format's progress is kept: `progress_pct`, `started`, `eta_secs`, `progress_at`, `phase` on the drive's persisted `format` record, `status.format` on the Drive object (with `refused`, `blockSizeAfter`, `protTypeAfter`), `eta_secs` in `prep`, `progress` and `left` in the feed. It outlives a restart of stormdrive or the node (#108)
+- `plannedFormat.fallbacks`: what the run formats if the drive refuses a `try` plan; `plannedFormat.basis` can read `try` (#108)
+- `protection` on the REST format bodies (`/api/v1/drives/{id}/format`, `/api/v1/format`, `/api/v1/shelves/{key}/format`), refused where the drive does not offer it (#108)
+
+### Changed
+- The plan's preference is 4096+PI1, 4096, 512+PI1, 512 (owner: at least 4K; #82 had 512+PI1 before 4096) (#108)
+- Format progress comes from REQUEST SENSE, which answers GOOD, so a long format adds nothing to the drive's `io errs`; TEST UNIT READY decides when it ended (#108)
+
+### Fixed
+- A drive with no VPD 0xB4 and a 4K physical block (forge1's H7210A521SUN010T) planned 512, the size it had. It now plans 4096+PI1 and tries it; if the drive refuses, 4096, then 512+PI1, each refusal on the record and a warning event. A 512-native drive is still never planned at 4096 (#108)
+- A worker format re-attached after a restart verified nothing and left the drive's record `running`. It now goes through the record like any other (read back, target, progress) (#108)
+- After a node restart a re-attached format finds its drive by WWID: the inventory's `sdX` may be another drive by then (#108)
+
 ## [v0.38.0] — 2026-11-05
 
 ### Added

@@ -215,6 +215,15 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
             _ => m.tone("muted"),
         });
     }
+    // A running format: the drive's own progress and the time left (#108).
+    if phase == "formatting" {
+        if let Some(pct) = prep["pct"].as_u64() {
+            metrics.push(Metric::new("progress", format!("{pct}%")).tone("accent"));
+        }
+        if let Some(secs) = prep["eta_secs"].as_u64() {
+            metrics.push(Metric::new("left", format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)).tone("muted"));
+        }
+    }
     if let Some(w) = &d.wwid {
         metrics.push(Metric::new("wwid", w.clone()).tone("muted"));
     }

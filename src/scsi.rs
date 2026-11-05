@@ -355,6 +355,12 @@ pub mod cdb {
     }
     /// READ(16) of `blocks` logical blocks from `lba` (#81: a 520-byte
     /// drive's first blocks, which sd will not read).
+    /// REQUEST SENSE, fixed format. GOOD even while the drive formats, with
+    /// NOT READY 04/04 and the progress indication in the data (SPC).
+    pub fn request_sense(alloc: u8) -> [u8; 6] {
+        [0x03, 0, 0, 0, alloc, 0]
+    }
+
     pub fn read16(lba: u64, blocks: u32) -> [u8; 16] {
         let l = lba.to_be_bytes();
         let n = blocks.to_be_bytes();
@@ -587,6 +593,14 @@ impl Device {
     pub fn test_unit_ready(&self) -> Result<()> {
         self.io(&cdb::test_unit_ready(), Dir::None, &mut [], T_SHORT)
             .map(|_| ())
+    }
+
+    /// The drive's current sense data (`cdb::request_sense`).
+    pub fn request_sense(&self) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; 252];
+        let n = self.io(&cdb::request_sense(252), Dir::FromDevice, &mut buf, T_SHORT)?;
+        buf.truncate(n);
+        Ok(buf)
     }
 
     pub fn inquiry(&self) -> Result<Inquiry> {

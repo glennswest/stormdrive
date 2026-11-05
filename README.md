@@ -326,9 +326,23 @@ are listed under [Not yet](#not-yet).
   - `destructive_sample`: write, then verify through O_DIRECT. Only on an
     out-of-fleet, unmounted drive that holds no slab.
 - **Sector reformat** (`src/format.rs`, `src/scsi.rs`). This turns 520/528
-  byte drives into 512 or 4096. It sends MODE SELECT with the new block
-  length, then FORMAT UNIT (IMMED), and polls TEST UNIT READY for progress.
-  Then it rescans the sd device and checks the new geometry.
+  byte drives into 512 or 4096, with T10 PI type 1 where the drive offers it.
+  It sends MODE SELECT with the new block length, then FORMAT UNIT (IMMED,
+  FMTPINFO). It polls REQUEST SENSE for the drive's progress (percent; TEST
+  UNIT READY says when it ended). Then it rescans the sd device and reads back
+  the block length and P_TYPE with READ CAPACITY(16).
+  - **The plan** (#108): the first the drive offers of 4096+PI1, 4096, 512+PI1,
+    512. A drive with no VPD 0xB4 and a 4K physical block gets 4096+PI1 as a
+    `try` (`plannedFormat.basis`). If it refuses, the run takes 4096, then
+    512+PI1 (`plannedFormat.fallbacks`), with a warning event per refusal. A
+    format asked for that is not the plan stays exact. A drive that refuses all
+    keeps its old block length. A format that reads back other than asked fails,
+    saying what the drive reads; no second format starts by itself.
+  - **The record** (`format` on the drive, `status.format` on the Drive object,
+    `GET /api/v1/drives/{id}/format` `last`): state, phase, `progress_pct`,
+    `started`, `eta_secs`, `progress_at`, `refused`, `block_size_after`,
+    `prot_type_after`. It is persisted while the format runs, so it outlives a
+    restart of stormdrive or the node. The feed shows `progress` and `left`.
   - Targets: one drive, a list, or every drive on a shelf that needs it.
   - A batch is checked all-or-nothing before any drive starts.
   - Only out-of-fleet, idle, unmounted, not reserved, no slab, not NVMe.
@@ -385,7 +399,9 @@ are listed under [Not yet](#not-yet).
     `prep` phase (`unusable`, `formatting`/`sanitizing` n%, `ready`,
     `enrolled`) on `/api/v1/drives`, the kube Drive status and the feed.
   - **After a restart:** a SCSI format or sanitize, or an NVMe sanitize,
-    still running on the drive is watched to the end. Anything else in
+    still running on the drive is watched to the end. A SCSI format is then
+    read back like any other; after a node restart its drive is found by WWID.
+    Anything else in
     flight becomes `interrupted` until `POST …/resume`; it is never re-run
     blind. `POST …/cancel` stops the steps that have not started.
   - The same pass covers what was not a worker job (#39): a format from
@@ -842,7 +858,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/history` | the system-data directory, whether history is written, records and findings this run, this boot's assets file (#64) |
 | `GET /api/v1/assets` | this boot's hardware record and what changed since the previous boot (#64); 404 before it is taken |
 | `GET /api/v1/drives/{id}/slabs` | slabs on the disk, the engine's slabs on it, the engine's slab report and the finding (#58) |
-| `GET /api/v1/drives/{id}/supports[?want=4096+type1]` | probe now (INQUIRY PROTECT, VPD 0x00/0x86/0xB1/0xB4, MODE SENSE, READ CAPACITY(16); reads only): block lengths and PI types the drive offers, its current format, and `plannedFormat` (`fallback: true` when it is not 4096+PI1) (#85, #82) |
+| `GET /api/v1/drives/{id}/supports[?want=4096+type1]` | probe now (INQUIRY PROTECT, VPD 0x00/0x86/0xB1/0xB4, MODE SENSE, READ CAPACITY(16); reads only): block lengths and PI types the drive offers, its current format, and `plannedFormat` (`fallback: true` when it is not 4096+PI1; `fallbacks` when the drive's refusal has a next step) (#85, #82, #108) |
 | `GET /api/v1/scsi/not-good` | every SCSI command stormdrive sent that did not end GOOD, per device and opcode/page, since start — to hold against `health.io_errors` (the kernel's `ioerr_cnt`, every sender) (#82) |
 | `POST /api/v1/drives/{id}/locate` | `{"on": bool}` |
 | `POST /api/v1/drives/{id}/fleet` | `{"action":"join","format_slab"?,"tier"?}` or `{"action":"leave","drain"?,"force"?}` |
@@ -853,8 +869,8 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET·PUT·POST /api/v1/drives/{id}/overcommit` | `{"enabled":bool,"ratio"?}`; GET adds promisable/committed/headroom |
 | `GET·POST /api/v1/drives/{id}/test`, `POST …/test/cancel` | `{"kind":"smoke\|read_scan\|destructive_sample"}` |
 | `POST /api/v1/drives/{id}/enroll[?tier=]` | an offered (`enrolable`) drive → partition + enroll as a data slab (worker job; 409 otherwise) (#42) |
-| `GET·POST /api/v1/drives/{id}/format` | `{"block_size":512\|4096}` (default 4096) |
-| `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size"}` |
+| `GET·POST /api/v1/drives/{id}/format` | `{"block_size":512\|4096,"protection":"none"\|"type1"}` (default 4096, none) · `run` + the kept `last` record with progress (#108) |
+| `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size","protection"}` |
 | `GET·POST /api/v1/worker/jobs` | drive worker jobs · `{"select":{…},"steps":[…],"destroy"?,"dry_run"?}` |
 | `GET /api/v1/worker/jobs/{id}`, `POST …/{id}/cancel`, `POST …/{id}/resume` | one job; stop what hasn't started; continue interrupted drives |
 | `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` |
@@ -866,7 +882,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `POST /api/v1/shelves/{key}/locate` | `{"on":bool,"bay"?}` |
 | `POST /api/v1/shelves/{key}/bays/{bay}/power` | `{"on":bool}` — SES DEVICE OFF; a drive operation; refused while the bay's drive is in the fleet, holds data or is busy (#81) |
 | `GET·POST /api/v1/shelves/{key}/firmware` | `{"image","allow_path_loss"?}` — the shelf's IOMs, one at a time (#35); GET: each IOM's revision + the run |
-| `POST /api/v1/shelves/{key}/format` | `{"block_size","all"?}` — out-of-fleet drives that need it |
+| `POST /api/v1/shelves/{key}/format` | `{"block_size","protection"?,"all"?}` — out-of-fleet drives that need it |
 | `GET /api/v1/topology` | controller → shelf → drive tree, with HBA firmware |
 | `GET /api/v1/hbas` | every PCIe SCSI HBA |
 | `GET /api/v1/placement`, `GET …/placement/{id}` | where each drive is; `generation`, ETag, `?since=` / `If-None-Match` → 304 |

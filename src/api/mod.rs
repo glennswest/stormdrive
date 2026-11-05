@@ -1759,6 +1759,9 @@ struct FormatBody {
     /// 512 or 4096.
     #[serde(default = "default_block_size")]
     block_size: u32,
+    /// `none` (default) or `type1`, where the drive offers it (#108).
+    #[serde(default)]
+    protection: crate::pi::Protection,
 }
 
 fn default_block_size() -> u32 {
@@ -1771,12 +1774,16 @@ struct FormatManyBody {
     drives: Vec<String>,
     #[serde(default = "default_block_size")]
     block_size: u32,
+    #[serde(default)]
+    protection: crate::pi::Protection,
 }
 
 #[derive(Deserialize)]
 struct FormatShelfBody {
     #[serde(default = "default_block_size")]
     block_size: u32,
+    #[serde(default)]
+    protection: crate::pi::Protection,
     /// Every out-of-fleet drive in the shelf, not only those the kernel
     /// cannot use.
     #[serde(default)]
@@ -1789,6 +1796,7 @@ async fn start_formats(
     s: &Arc<AppState>,
     ids: Vec<DriveId>,
     block_size: u32,
+    protection: crate::pi::Protection,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if !crate::format::valid_target(block_size) {
         return Err(ApiError::bad_request(format!("block_size {block_size}: use 512 or 4096")));
@@ -1805,7 +1813,7 @@ async fn start_formats(
                 blocked.push(json!({ "id": id, "reason": "unknown drive" }));
                 continue;
             };
-            if let Some(why) = d.format_blocker() {
+            if let Some(why) = d.format_blocker().or_else(|| crate::worker::pi_refusal(d, block_size, protection)) {
                 blocked.push(json!({ "id": id, "name": d.name, "reason": why }));
                 continue;
             }
@@ -1840,11 +1848,11 @@ async fn start_formats(
     }
     let mut started = Vec::new();
     for d in drives {
-        let h = crate::format::start(s.clone(), d, block_size, crate::pi::Protection::None).await;
+        let h = crate::format::start(s.clone(), d, block_size, protection).await;
         let run = h.run.lock().unwrap().clone();
         started.push(serde_json::to_value(run).unwrap_or_default());
     }
-    Ok(Json(json!({ "block_size": block_size, "started": started })))
+    Ok(Json(json!({ "block_size": block_size, "protection": protection, "started": started })))
 }
 
 async fn format_drive(
@@ -1853,14 +1861,14 @@ async fn format_drive(
     Json(body): Json<FormatBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let did = resolve_id(&s, &id).await?;
-    start_formats(&s, vec![did], body.block_size).await
+    start_formats(&s, vec![did], body.block_size, body.protection).await
 }
 
 async fn format_drive_by_path(
     State(s): State<Arc<AppState>>,
     Path((id, bs)): Path<(String, u32)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    format_drive(State(s), Path(id), Json(FormatBody { block_size: bs })).await
+    format_drive(State(s), Path(id), Json(FormatBody { block_size: bs, protection: Default::default() })).await
 }
 
 async fn format_many(
@@ -1874,7 +1882,7 @@ async fn format_many(
             ids.push(id);
         }
     }
-    start_formats(&s, ids, body.block_size).await
+    start_formats(&s, ids, body.block_size, body.protection).await
 }
 
 async fn format_shelf(
@@ -1899,14 +1907,14 @@ async fn format_shelf(
             r.shelf.display()
         )));
     }
-    start_formats(&s, ids, body.block_size).await
+    start_formats(&s, ids, body.block_size, body.protection).await
 }
 
 async fn format_shelf_by_path(
     State(s): State<Arc<AppState>>,
     Path((key, bs)): Path<(String, u32)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    format_shelf(State(s), Path(key), Json(FormatShelfBody { block_size: bs, all: false })).await
+    format_shelf(State(s), Path(key), Json(FormatShelfBody { block_size: bs, protection: Default::default(), all: false })).await
 }
 
 async fn get_format(

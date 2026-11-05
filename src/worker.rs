@@ -327,15 +327,9 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
             Step::SecurityErase { .. } if !matches!(d.kind, DriveKind::SataHdd | DriveKind::SataSsd) => {
                 return Err("ATA security erase is for SATA drives; use sanitize".into());
             }
-            Step::Format { block_size, protection } if *protection != crate::pi::Protection::None => {
-                if d.kind == DriveKind::NvmeSsd {
-                    return Err("PI formats are SCSI only here; NVMe end-to-end protection is not built".into());
-                }
-                let Some(sup) = &d.supports else {
-                    return Err("not probed yet: what the drive offers (PI types, block lengths) is unknown".into());
-                };
-                if sup.offers(*block_size, *protection).is_none() {
-                    return Err(crate::pi::plan(sup, Some((*block_size, *protection))).err().unwrap_or_default());
+            Step::Format { block_size, protection } => {
+                if let Some(why) = pi_refusal(d, *block_size, *protection) {
+                    return Err(why);
                 }
             }
             Step::Sanitize { .. } if d.kind == DriveKind::NvmeSsd && cx.nvme_siblings > 0 => {
@@ -474,6 +468,20 @@ impl Job {
     }
 }
 
+/// Why a drive cannot be asked for this PI format; None without PI.
+pub fn pi_refusal(d: &Drive, block_size: u32, protection: crate::pi::Protection) -> Option<String> {
+    if protection == crate::pi::Protection::None {
+        return None;
+    }
+    if d.kind == DriveKind::NvmeSsd {
+        return Some("PI formats are SCSI only here; NVMe end-to-end protection is not built".into());
+    }
+    let Some(sup) = &d.supports else {
+        return Some("not probed yet: what the drive offers (PI types, block lengths) is unknown".into());
+    };
+    crate::pi::plan(sup, Some((block_size, protection))).err()
+}
+
 /// What a restart does with a drive job that was in flight.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recover {
@@ -585,7 +593,14 @@ pub fn prep(d: &Drive, pct: Option<u8>) -> Value {
         "ready"
     };
     let pct = if matches!(phase, "formatting" | "sanitizing") { pct } else { None };
-    json!({ "phase": phase, "pct": pct })
+    let mut v = json!({ "phase": phase, "pct": pct });
+    // A format's own record: the last progress the drive gave, even before
+    // anything has asked it since a restart, and the time left (#108).
+    if let Some(f) = d.format.as_ref().filter(|f| phase == "formatting" && f.state == "running") {
+        v["pct"] = json!(pct.or(f.progress_pct));
+        v["eta_secs"] = json!(f.eta_secs);
+    }
+    v
 }
 
 // ---------------------------------------------------------------- runtime
@@ -1104,6 +1119,24 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
     }
 }
 
+/// Follow a SCSI format's run into the job, to the end. The line says what
+/// was set, which a refusal may have changed from what was asked (#108).
+async fn wait_format(state: &Arc<AppState>, job: &str, idx: usize, handle: &crate::format::FormatHandle) -> Result<String, String> {
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let run = handle.run.lock().unwrap().clone();
+        state.worker.progress(job, idx, run.progress_pct, &format!("format: {}", run.phase));
+        match run.state {
+            crate::format::FormatState::Running => continue,
+            crate::format::FormatState::Done => {
+                let refused = if run.refused.is_empty() { String::new() } else { format!(" (refused: {})", run.refused.join("; ")) };
+                return Ok(format!("FORMAT UNIT to {}-byte sectors, {}{refused}", run.to_block_size, run.protection.word()));
+            }
+            crate::format::FormatState::Failed => return Err(run.error.unwrap_or_else(|| "format failed".into())),
+        }
+    }
+}
+
 /// A drive's geometry and firmware, for a history action's before/after.
 pub fn geometry(d: &Drive) -> Value {
     json!({
@@ -1158,16 +1191,7 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
             // The SCSI path is the existing format job (records, events,
             // rescan and verify included); the worker waits on it.
             let handle = crate::format::start(state.clone(), d.clone(), *block_size, *protection).await;
-            loop {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                let run = handle.run.lock().unwrap().clone();
-                state.worker.progress(job, idx, run.progress_pct, &format!("format: {}", run.phase));
-                match run.state {
-                    crate::format::FormatState::Running => continue,
-                    crate::format::FormatState::Done => return Ok(format!("FORMAT UNIT to {block_size}-byte sectors, {}", protection.word())),
-                    crate::format::FormatState::Failed => return Err(run.error.unwrap_or_else(|| "format failed".into())),
-                }
-            }
+            wait_format(state, job, idx, &handle).await
         }
         Step::Sanitize { method } => {
             set_activity(state, d.id, Activity::Sanitizing).await;
@@ -1492,18 +1516,28 @@ async fn watch(state: Arc<AppState>, job: String, idx: usize, id: DriveId, step:
     let progress = move |pct: Option<u8>, phase: &str| st.worker.progress(&j, i, pct, phase);
     let (name, path, nvme) = (d.name.clone(), d.path.clone(), d.kind == DriveKind::NvmeSsd);
     let is_sanitize = matches!(step, Step::Sanitize { .. });
-    let r = tokio::task::spawn_blocking(move || {
-        if nvme {
-            crate::erase::nvme_sanitize_wait(&path, &progress)
-        } else {
-            let sg = crate::scsi::sg_path_for_block(&name).unwrap_or(path);
-            crate::erase::scsi_wait(&sg, is_sanitize, &progress)
-        }
-    })
-    .await
-    .unwrap_or_else(|e| Err(format!("task: {e}")));
+    // A SCSI format it started has its record (#108): the target a refusal
+    // may have moved, the progress, a read-back at the end, the drive found
+    // by WWID when the whole node restarted. No record running: it never got
+    // as far as the drive's format, and only the bare wait below is left.
+    let by_record = !is_sanitize && !nvme && d.format.as_ref().is_some_and(|f| f.state == "running");
+    let r = if by_record {
+        let handle = crate::format::reattach(state.clone(), d.clone()).await;
+        wait_format(&state, &job, idx, &handle).await.map(|_| ())
+    } else {
+        tokio::task::spawn_blocking(move || {
+            if nvme {
+                crate::erase::nvme_sanitize_wait(&path, &progress)
+            } else {
+                let sg = crate::scsi::sg_path_for_block(&name).unwrap_or(path);
+                crate::erase::scsi_wait(&sg, is_sanitize, &progress)
+            }
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("task: {e}")))
+    };
     set_activity(&state, id, Activity::Idle).await;
-    if !is_sanitize {
+    if !is_sanitize && !by_record {
         crate::format::rescan(&d.name);
     }
     match r {
@@ -1925,6 +1959,10 @@ mod tests {
         let f = drive(|d| d.activity = Activity::Formatting);
         assert_eq!(prep(&f, Some(40)), json!({"phase": "formatting", "pct": 40}));
         assert_eq!(prep(&drive(|_| {}), Some(40)), json!({"phase": "ready", "pct": null}));
+        // After a restart, before the drive was asked again: from the record.
+        let mut fr = drive(|d| d.activity = Activity::Formatting);
+        fr.format = Some(crate::drive::FormatRecord { state: "running".into(), progress_pct: Some(25), eta_secs: Some(21600), ..Default::default() });
+        assert_eq!(prep(&fr, None), json!({"phase": "formatting", "pct": 25, "eta_secs": 21600}));
         assert_eq!(prep(&drive(|d| d.membership = Membership::Fleet), None)["phase"], "enrolled");
         assert_eq!(prep(&drive(|d| d.activity = Activity::Sanitizing), Some(7))["pct"], 7);
     }

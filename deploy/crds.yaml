@@ -73,6 +73,11 @@ spec:
                 capacityBytes: { type: integer }
                 blockSize: { type: integer, description: "Logical sector size: 512, 4096, or 520/528 on a drive that needs a reformat." }
                 needsReformat: { type: boolean }
+                format:
+                  type: object
+                  nullable: true
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: "The drive's last format, persisted across restarts (#108): state, phase, toBlockSize, protection, progressPct, etaSeconds, startedUnix, progressAtUnix, finishedUnix, refused (formats the drive refused, with why), blockSizeAfter + protTypeAfter (READ CAPACITY after it), error."
                 owner: { type: string, enum: [free, stormblock, stormraid] }
                 enclosure: { type: string, nullable: true }
                 bay: { type: integer, nullable: true }

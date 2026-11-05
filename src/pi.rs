@@ -13,11 +13,13 @@
 //! - READ CAPACITY(16): the current block length, PROT_EN and P_TYPE.
 //!
 //! The plan (pure): the format asked for when the drive offers it, else
-//! 4096+PI type 1 → 512+PI type 1 → 4096 → 512, the first it offers (#82's
-//! rule). Without VPD 0xB4 the only lengths taken as offered are 512 (any
-//! SCSI disk; a 520-byte drive is 512 + 8) and, with PI type 1 in SPT,
-//! 512+PI1 — 4096 is never assumed, so a plan never asks for what the
-//! drive did not say it can do.
+//! 4096+PI type 1 → 4096 → 512+PI type 1 → 512, the first it offers (owner,
+//! #108: "at least 4K, 4K + PI if possible"). Without VPD 0xB4, 512 is taken
+//! as offered (any SCSI disk; a 520-byte drive is 512 + 8) and, with PI type
+//! 1 in SPT, 512+PI1. 4096 is a *try* there, only when READ CAPACITY says the
+//! physical block is 4K: the format itself finds out, and if the drive
+//! refuses, `fallbacks` says what comes next. A 512-native drive is never
+//! asked for 4096 by a plan.
 
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +86,18 @@ pub struct Supports {
     pub current_prot_type: u8,
     /// The block length MODE SENSE's block descriptor holds.
     pub mode_block_length: Option<u32>,
+    /// READ CAPACITY(16): logical block length << LBPPBE (#108). 0 = from a
+    /// probe before this field existed.
+    #[serde(default)]
+    pub physical_block_size: u32,
+}
+
+/// One format, as `plannedFormat.fallbacks` lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Choice {
+    pub block_size: u32,
+    pub protection: Protection,
 }
 
 /// The format a drive should get (`status.plannedFormat`).
@@ -92,7 +106,8 @@ pub struct Supports {
 pub struct Planned {
     pub block_size: u32,
     pub protection: Protection,
-    /// `vpd_b4` (the drive listed it) or `inferred` (no VPD 0xB4).
+    /// `vpd_b4` (the drive listed it), `inferred` (no VPD 0xB4, 512), or
+    /// `try` (no VPD 0xB4, 4K physical block: the format finds out, #108).
     pub basis: String,
     pub reason: String,
     /// Not the first choice (4096+PI1) and not asked for: the drive does
@@ -100,6 +115,10 @@ pub struct Planned {
     /// (owner, #82).
     #[serde(default)]
     pub fallback: bool,
+    /// What the run formats instead if the drive refuses this one, in order
+    /// (#108). Only on a `try` plan; empty = a refusal ends it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<Choice>,
 }
 
 /// SPT (VPD 0x86 byte 4 bits 5:3) → PI types.
@@ -181,8 +200,14 @@ pub fn descriptor_block_length(bd: &[u8], long_lba: bool) -> Option<u32> {
 }
 
 impl Supports {
+    /// The physical block is 4K (a 520-byte or PI-carrying logical block
+    /// on it reads 4160, 4224).
+    pub fn physical_4k(&self) -> bool {
+        self.physical_block_size >= 4096
+    }
+
     /// Does the drive offer `length` with `prot`? (Some(basis) when it
-    /// does: `vpd_b4` or `inferred`.)
+    /// does: `vpd_b4`, `inferred` or `try`.)
     pub fn offers(&self, length: u32, prot: Protection) -> Option<&'static str> {
         if !self.block_lengths.is_empty() {
             let e = self.block_lengths.iter().find(|b| b.length == length)?;
@@ -197,6 +222,8 @@ impl Supports {
         match (length, prot) {
             (512, Protection::None) => Some("inferred"),
             (512, Protection::Type1) if self.protect && self.pi_types.contains(&1) => Some("inferred"),
+            (4096, Protection::None) if self.physical_4k() => Some("try"),
+            (4096, Protection::Type1) if self.physical_4k() && self.protect && self.pi_types.contains(&1) => Some("try"),
             _ => None,
         }
     }
@@ -210,28 +237,50 @@ impl Supports {
     }
 }
 
-/// The order a drive is offered formats in when nothing is asked (#82).
+/// The order a drive is offered formats in when nothing is asked: at least
+/// 4K, with PI where it can (owner, #108; #82 had 512+PI1 before plain 4096).
 pub const PREFERENCE: [(u32, Protection); 4] =
-    [(4096, Protection::Type1), (512, Protection::Type1), (4096, Protection::None), (512, Protection::None)];
+    [(4096, Protection::Type1), (4096, Protection::None), (512, Protection::Type1), (512, Protection::None)];
+
+/// After a refused `try`, in the owner's order (#108). Plain 512 is not in
+/// it: that is a format to ask for, not one to end up at.
+const AFTER_REFUSAL: [(u32, Protection); 2] = [(4096, Protection::None), (512, Protection::Type1)];
+
+/// What to format if the drive refuses `(length, prot)`. Only when that is
+/// the drive's own `try` plan: a format asked for that is not the plan is
+/// exact, and one the drive listed in VPD 0xB4 has no business being refused.
+pub fn fallbacks(s: &Supports, length: u32, prot: Protection) -> Vec<Choice> {
+    let is_the_plan = PREFERENCE.into_iter().find(|(l, p)| s.offers(*l, *p).is_some()) == Some((length, prot));
+    if !is_the_plan || s.offers(length, prot) != Some("try") {
+        return vec![];
+    }
+    AFTER_REFUSAL
+        .into_iter()
+        .filter(|c| *c != (length, prot) && s.offers(c.0, c.1).is_some())
+        .map(|(block_size, protection)| Choice { block_size, protection })
+        .collect()
+}
 
 /// The format for a drive: `want` when it offers it, else the preference.
 pub fn plan(s: &Supports, want: Option<(u32, Protection)>) -> Result<Planned, String> {
     if let Some((len, prot)) = want {
         return match s.offers(len, prot) {
-            Some(basis) => Ok(Planned { block_size: len, protection: prot, basis: basis.into(), reason: "asked for (spec.format)".into(), fallback: false }),
+            Some(basis) => Ok(Planned { block_size: len, protection: prot, basis: basis.into(), reason: "asked for (spec.format)".into(), fallback: false, fallbacks: fallbacks(s, len, prot) }),
             None => Err(format!("the drive does not offer {len} with {}{}", prot.word(), unknown_hint(s))),
         };
     }
     for (i, (len, prot)) in PREFERENCE.into_iter().enumerate() {
         if let Some(basis) = s.offers(len, prot) {
-            let mut reason = "first the drive offers in 4096+PI1, 512+PI1, 4096, 512".to_string();
-            if basis == "inferred" {
-                reason.push_str(" (no VPD 0xB4: 4096 not assumed)");
+            let mut reason = "first the drive offers in 4096+PI1, 4096, 512+PI1, 512".to_string();
+            match basis {
+                "inferred" => reason.push_str(" (no VPD 0xB4, physical block not 4K: 4096 not assumed)"),
+                "try" => reason.push_str(" (no VPD 0xB4, physical block 4K: the format tries it)"),
+                _ => {}
             }
             if i > 0 {
                 reason = format!("4096 with PI type 1 not offered{}; {reason}", unknown_hint(s));
             }
-            return Ok(Planned { block_size: len, protection: prot, basis: basis.into(), reason, fallback: i > 0 });
+            return Ok(Planned { block_size: len, protection: prot, basis: basis.into(), reason, fallback: i > 0, fallbacks: fallbacks(s, len, prot) });
         }
     }
     Err(format!("the drive offers none of 4096/512 with or without PI{}", unknown_hint(s)))
@@ -239,7 +288,7 @@ pub fn plan(s: &Supports, want: Option<(u32, Protection)>) -> Result<Planned, St
 
 fn unknown_hint(s: &Supports) -> &'static str {
     if s.block_lengths.is_empty() {
-        " (it lists no block lengths, VPD 0xB4; only 512 is assumed)"
+        " (it lists no block lengths, VPD 0xB4; 4096 only with a 4K physical block)"
     } else {
         ""
     }
@@ -299,6 +348,7 @@ mod linux {
             current_block_size: cap.block_len,
             current_prot_type: cap.prot_type,
             mode_block_length,
+            physical_block_size: cap.physical_block_len(),
         })
     }
 }
@@ -389,6 +439,67 @@ mod tests {
         let e = plan(&no_pi, Some((4096, Protection::Type1))).unwrap_err();
         assert!(e.contains("VPD 0xB4"), "{e}");
         assert!(plan(&no_pi, Some((512, Protection::Type1))).is_err(), "no PROTECT → no PI");
+    }
+
+    /// forge1's HGST H7210A521SUN010T: no VPD 0xB4, physical 4096, PI 1 + 2,
+    /// today 512 + PI1. It planned 512, the size it already has (#108).
+    #[test]
+    fn a_4k_physical_block_without_vpd_b4_plans_4096_pi1_and_what_follows_a_refusal() {
+        let hgst = Supports { protect: true, pi_types: vec![1, 2], current_block_size: 512, current_prot_type: 1, physical_block_size: 4096, ..Default::default() };
+        let p = plan(&hgst, None).unwrap();
+        assert_eq!((p.block_size, p.protection, p.basis.as_str(), p.fallback), (4096, Protection::Type1, "try", false));
+        assert_eq!(
+            p.fallbacks,
+            vec![Choice { block_size: 4096, protection: Protection::None }, Choice { block_size: 512, protection: Protection::Type1 }],
+            "the owner's order"
+        );
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["blockSize"], 4096);
+        assert_eq!(v["fallbacks"][1]["blockSize"], 512);
+
+        // Asked for exactly the plan: same fallbacks. Asked for anything
+        // else: exact, never another format than the one asked for.
+        assert_eq!(plan(&hgst, Some((4096, Protection::Type1))).unwrap().fallbacks.len(), 2);
+        assert!(plan(&hgst, Some((4096, Protection::None))).unwrap().fallbacks.is_empty());
+        assert!(fallbacks(&hgst, 512, Protection::Type1).is_empty());
+
+        // No PI at all, 4K physical: 4096, and a refusal ends it.
+        let no_pi = Supports { physical_block_size: 4096, ..Default::default() };
+        let p = plan(&no_pi, None).unwrap();
+        assert_eq!((p.block_size, p.protection, p.basis.as_str()), (4096, Protection::None, "try"));
+        assert!(p.fallback, "not 4096+PI1: flagged");
+        assert!(p.fallbacks.is_empty());
+
+        // A 520-byte logical block on a 4K physical one is still 4K.
+        assert!(Supports { physical_block_size: 4160, ..Default::default() }.physical_4k());
+    }
+
+    #[test]
+    fn a_512_native_drive_is_not_asked_for_4096_and_a_listed_page_stays_the_truth() {
+        // The ST1200MM0098 at 520: physical 520, no VPD 0xB4.
+        let st = Supports { physical_block_size: 520, ..st1200(vec![]) };
+        let p = plan(&st, None).unwrap();
+        assert_eq!((p.block_size, p.protection, p.basis.as_str()), (512, Protection::Type1, "inferred"));
+        assert!(p.fallbacks.is_empty());
+        assert!(st.offers(4096, Protection::None).is_none());
+
+        // A probe stored before the field existed reads physical 0.
+        let old: Supports = serde_json::from_value(serde_json::json!({
+            "protect": true, "pi_types": [1], "block_lengths": [], "rotation_rpm": null, "non_rotating": null,
+            "vpd_pages": [], "current_block_size": 512, "current_prot_type": 1, "mode_block_length": null,
+        }))
+        .unwrap();
+        assert_eq!(old.physical_block_size, 0);
+        assert_eq!(plan(&old, None).unwrap().block_size, 512);
+
+        // VPD 0xB4 says no 4096: the 4K physical block changes nothing.
+        let listed = Supports { physical_block_size: 4096, ..st1200(vec![BlockLength { length: 512, pi_types: vec![0, 1] }]) };
+        assert_eq!(plan(&listed, None).unwrap().block_size, 512);
+        // Listed 4096 without PI and 512 with: at least 4K comes first.
+        let both = st1200(vec![BlockLength { length: 512, pi_types: vec![0, 1] }, BlockLength { length: 4096, pi_types: vec![0] }]);
+        let p = plan(&both, None).unwrap();
+        assert_eq!((p.block_size, p.protection, p.basis.as_str()), (4096, Protection::None, "vpd_b4"));
+        assert!(p.fallbacks.is_empty(), "listed: not a try");
     }
 
     #[test]
