@@ -116,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
         fleet_firmware_lock: tokio::sync::Mutex::new(()),
         shelf_firmware: RwLock::new(std::collections::HashMap::new()),
         shelves: RwLock::new(std::collections::BTreeMap::new()),
+        media: RwLock::new(Vec::new()),
         hbas: RwLock::new(std::collections::BTreeMap::new()),
         inventory_path,
         events_path,

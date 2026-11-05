@@ -71,7 +71,8 @@ src/
   drive.rs        Drive model: stable identity, kind, location, lifecycle, health,
                   overcommit, join/format/test/firmware guards
   inventory.rs    persistent registry (<data_dir>/inventory.json) + trends
-  discovery/      sysfs enumeration, classification, probe cache [Linux]
+  discovery/      sysfs enumeration, classification, probe cache [Linux]; USB
+                  disks apart as removable media (#106)
   hotplug.rs      NETLINK_KOBJECT_UEVENT listener → debounced discovery pass
   contents.rs     slab probe (STRMSLAB at LBA 0 / GPT partition starts) → in_use_by
   engine.rs       the engine's own slab report (health `slabs`) vs the slab
@@ -629,6 +630,21 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
   short, then medium; close #53 once the drive reads pass
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
+
+### #106: a USB stick is not a drive (P1, owner, 2026-11-05) — in progress
+
+Owner: "Is counting a USB drive?" forge1 shows 5 drives, the 5th its boot stick.
+Design (the issue's, no open decision):
+- `usb<N>` on the disk's canonical sysfs path → out of `scan_in`, into
+  `Media` (`media_in`): `GET /api/v1/media`, feed kind `removable-media`, system
+  card "boot stick present". Everything else reads the inventory, so it follows
+- an entry already in inventory.json is removed (by identity, or a USB host as
+  its controller), before `merge_observed` would mark it missing
+- not here: STORMBOOTX on another bus (#100); the console showing it
+  (stormconsole issue)
+Steps:
+- [x] discovery, monitor, API, feed, test suite, docs
+- [ ] build VM; version; golden; console issue
 
 ### #105: SAS drives behind megaraid_sas read as SATA (P1, owner, 2026-11-05) — DONE (v0.36.0)
 

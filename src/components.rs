@@ -462,6 +462,7 @@ fn shelf_hbas(
 pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
     let ses = state.shelves.read().await.clone();
     let hbas = state.hbas.read().await.clone();
+    let media = state.media.read().await.clone();
     let inv = state.inventory.read().await;
     let mut drives: Vec<&Drive> = inv.drives.values().collect();
     drives.sort_by(|a, b| a.name.cmp(&b.name));
@@ -510,7 +511,11 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
         kind: "storage".into(),
         label: format!("stormdrive · {}", state.node_name),
         health: system_health,
-        detail: format!("{total} drives · {fleet} in fleet · {} shelves", shelves.len()),
+        detail: format!(
+            "{total} drives · {fleet} in fleet · {} shelves{}",
+            shelves.len(),
+            if media.iter().any(|m| m.boot_stick) { " · boot stick present" } else { "" }
+        ),
         metrics: vec![
             Metric::new("drives", total.to_string()),
             Metric::new("fleet", fleet.to_string()).tone("accent"),
@@ -522,6 +527,26 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
         ],
         link: None,
     });
+    // USB media (#106): its own kind, so nothing counts it as a drive. No
+    // actions: stormdrive does nothing to it.
+    for m in &media {
+        out.push(ComponentSummary {
+            id: format!("media:{}", m.name),
+            kind: "removable-media".into(),
+            label: m.model.clone(),
+            health: Health::Idle,
+            detail: format!(
+                "{}{:.1} GB · {}",
+                if m.boot_stick { "boot stick · " } else { "" },
+                m.capacity_bytes as f64 / 1e9,
+                m.path
+            ),
+            metrics: vec![Metric::new("boot stick", if m.boot_stick { "yes" } else { "no" }).tone("muted")],
+            actions: Vec::new(),
+            relations: Vec::new(),
+            link: None,
+        });
+    }
     for h in hbas.values() {
         out.push(hba_component(h, &drives));
     }

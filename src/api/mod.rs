@@ -39,6 +39,8 @@ pub struct AppState {
     pub shelf_firmware: RwLock<crate::iomfw::ShelfRuns>,
     /// Latest SES scan: every shelf the node can talk to, by logical id.
     pub shelves: RwLock<crate::topology::Shelves>,
+    /// Disks on USB hosts: not drives of the node (#106).
+    pub media: RwLock<Vec<crate::discovery::Media>>,
     /// Latest HBA scan: every PCIe SCSI controller, by PCIe address.
     pub hbas: RwLock<crate::hba::Hbas>,
     pub inventory_path: Option<PathBuf>,
@@ -239,6 +241,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/shelves/{key}/bays/{bay}/power", post(shelf_bay_power))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/hbas", get(list_hbas))
+        .route("/api/v1/media", get(list_media))
         .route("/api/v1/placement", get(placement))
         .route("/api/v1/placement/{id}", get(placement_one))
         // The drive worker (#5): prepare drives at fleet scale.
@@ -1311,6 +1314,12 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         })
         .collect();
     Json(json!({ "controllers": controllers, "unlocated": unlocated }))
+}
+
+/// `GET /api/v1/media`: disks on USB hosts, which are not drives of the node
+/// and appear nowhere else in the API but the feed (#106).
+async fn list_media(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({ "media": *s.media.read().await }))
 }
 
 /// `GET /api/v1/hbas` — every PCIe SCSI controller with its firmware,

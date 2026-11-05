@@ -42,6 +42,45 @@ pub struct Observed {
     pub link_rate_mbps: Option<u32>,
 }
 
+/// A disk on a USB host (#106): not a drive of the node. It is left out of the
+/// drive list, counts, capacity, shelves and every fleet decision, and reported
+/// apart: `GET /api/v1/media`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Media {
+    pub name: String,
+    pub path: String,
+    pub vendor: Option<String>,
+    pub model: String,
+    pub serial: String,
+    pub wwid: Option<String>,
+    pub capacity_bytes: u64,
+    /// What is on it, as a drive's `contents`.
+    pub contents: Option<String>,
+    /// It carries a stormblock slab: the engine may be using it.
+    pub in_use_by: Option<String>,
+    /// This is stormbootx's boot stick.
+    pub boot_stick: bool,
+}
+
+/// stormbootx's medium: its partition is named `STORMBOOTX`.
+pub fn is_boot_stick(contents: Option<&str>) -> bool {
+    contents.is_some_and(|c| c.contains("'STORMBOOTX'"))
+}
+
+/// Does this sysfs path go through a USB bus (`…/usb2/2-1/2-1:1.0/host6/…`)?
+pub fn is_usb_path(real: &std::path::Path) -> bool {
+    real.components().any(|c| {
+        let c = c.as_os_str().to_string_lossy();
+        c.strip_prefix("usb").is_some_and(|n| !n.is_empty() && n.chars().all(|d| d.is_ascii_digit()))
+    })
+}
+
+/// A USB host controller's driver, as a location's `controller.driver` has it
+/// for a disk behind one. (`ahci` is not one.)
+pub fn is_usb_host_driver(driver: &str) -> bool {
+    ["xhci", "ehci", "ohci", "uhci"].iter().any(|p| driver.starts_with(p))
+}
+
 /// Is a sector size one the kernel will drive?
 pub fn kernel_usable_block_size(bs: u32) -> bool {
     matches!(bs, 512 | 1024 | 2048 | 4096)
@@ -238,6 +277,73 @@ mod linux {
         scan_in(Path::new("/sys"), Path::new("/dev"), &mounts, cfg)
     }
 
+    pub fn media(cfg: &DiscoveryConfig) -> Vec<Media> {
+        media_in(Path::new("/sys"), Path::new("/dev"), cfg)
+    }
+
+    /// The disks on USB hosts in a sysfs tree at `sys`. An empty card reader
+    /// slot (no capacity) is no medium. What is on one is read through the
+    /// probe cache, like a drive's.
+    pub fn media_in(sys: &Path, dev_root: &Path, cfg: &DiscoveryConfig) -> Vec<Media> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(sys.join("block")) else {
+            return out;
+        };
+        let mut cache = probe_cache().lock().unwrap_or_else(|e| e.into_inner());
+        let now = std::time::Instant::now();
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name_eligible(cfg, &name) || !std::fs::canonicalize(e.path()).is_ok_and(|r| is_usb_path(&r)) {
+                continue;
+            }
+            let base = e.path();
+            let dev = base.join("device");
+            let sectors: u64 = read_trim(&base.join("size")).and_then(|s| s.parse().ok()).unwrap_or(0);
+            if sectors == 0 {
+                continue;
+            }
+            let wwid = read_trim(&base.join("wwid")).or_else(|| read_trim(&dev.join("wwid")));
+            let key = ProbeKey { name: name.clone(), dev: read_trim(&base.join("dev")).unwrap_or_default(), sectors, wwid: wwid.clone() };
+            let (contents, in_use_by) = match cache.get(&key, now) {
+                Some(p) => (p.contents.clone(), p.in_use_by.clone()),
+                None => {
+                    let node = dev_root.join(&name).to_string_lossy().to_string();
+                    let contents = crate::contents::holds(&node);
+                    let (in_use_by, slabs) = crate::contents::probe_slabs(&node);
+                    cache.put(
+                        key,
+                        Probed {
+                            block_size: 512,
+                            physical_block_size: 512,
+                            capacity_bytes: sectors * 512,
+                            in_use_by: in_use_by.clone(),
+                            contents: contents.clone(),
+                            slabs,
+                            supports: None,
+                            link: Default::default(),
+                            at: now,
+                        },
+                    );
+                    (contents, in_use_by)
+                }
+            };
+            out.push(Media {
+                path: format!("/dev/{name}"),
+                vendor: read_trim(&dev.join("vendor")),
+                model: read_trim(&dev.join("model")).unwrap_or_default(),
+                serial: read_trim(&dev.join("serial")).or_else(|| read_trim(&base.join("serial"))).unwrap_or_default(),
+                wwid,
+                capacity_bytes: sectors * 512,
+                boot_stick: is_boot_stick(contents.as_deref()),
+                contents,
+                in_use_by,
+                name,
+            });
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
     /// [`scan`] of a sysfs tree at `sys`, opening devices under `dev` (#31:
     /// a simulated chassis is a tree in a directory).
     pub fn scan_in(sys: &Path, dev_root: &Path, mounts: &str, cfg: &DiscoveryConfig) -> Vec<Observed> {
@@ -260,6 +366,11 @@ mod linux {
             }
             if !cfg.manage_mounted && super::mounted_in(mounts, &name) {
                 tracing::debug!(%name, "skipping drive with mounted partitions");
+                continue;
+            }
+            // USB: reported apart by `media_in`. Still "seen", for its probe.
+            if std::fs::canonicalize(e.path()).is_ok_and(|r| is_usb_path(&r)) {
+                seen.insert(name);
                 continue;
             }
             let base = e.path();
@@ -428,7 +539,20 @@ mod linux {
 /// [`scan`] over a sysfs tree at `sys` with device nodes under `dev` (#31,
 /// the simulated 160-bay chassis). Linux only.
 #[cfg(target_os = "linux")]
-pub use linux::scan_in;
+pub use linux::{media_in, scan_in};
+
+/// The disks on USB hosts (#106). Empty on non-Linux.
+pub fn media(cfg: &DiscoveryConfig) -> Vec<Media> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::media(cfg)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = cfg;
+        Vec::new()
+    }
+}
 
 /// Scan the node for physical drives. Empty on non-Linux (build-on-dev rule:
 /// the real path only exists there).
@@ -570,5 +694,63 @@ mod tests {
         assert_eq!(kinds["sde"], DriveKind::SataHdd);
         assert_eq!(kinds["sdf"], DriveKind::SasHdd);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #106: forge1's boot stick under xhci, beside a real drive. The stick is
+    /// a real GPT with a FAT partition named STORMBOOTX, read through its node.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_usb_disk_is_media_and_not_a_drive() {
+        let root = std::env::temp_dir().join(format!("stormdrive-usb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sys = root.join("sys");
+        let dev_dir = root.join("dev");
+        std::fs::create_dir_all(sys.join("block")).unwrap();
+        std::fs::create_dir_all(&dev_dir).unwrap();
+        let disk = |name: &str, under: &str, sectors: u64| {
+            let real = sys.join("devices/pci0000:00").join(under).join(format!("0:0:{name}:0"));
+            let block = real.join("block").join(name);
+            std::fs::create_dir_all(block.join("queue")).unwrap();
+            std::fs::write(block.join("size"), format!("{sectors}\n")).unwrap();
+            std::fs::write(block.join("dev"), "8:64\n").unwrap();
+            std::fs::write(real.join("type"), "0\n").unwrap();
+            std::fs::write(real.join("vendor"), "VendorCo\n").unwrap();
+            std::fs::write(real.join("model"), "ProductCode\n").unwrap();
+            std::os::unix::fs::symlink(&real, block.join("device")).unwrap();
+            std::os::unix::fs::symlink(&block, sys.join("block").join(name)).unwrap();
+        };
+        let usb = "0000:00:14.0/usb2/2-1/2-1:1.0/host6/target6:0:0";
+        disk("sde", usb, 131072);
+        disk("sdy", usb, 0); // an empty card reader slot
+        disk("sdc", "0000:00:01.1/0000:03:00.0/host0/target0:0:6", 131072);
+
+        const CAP: u64 = 64 << 20;
+        let l = crate::gpt::layout(CAP, 512, crate::gpt::TYPE_SLAB, "STORMBOOTX", [1; 16], [2; 16]).unwrap();
+        let mut image = vec![0u8; CAP as usize];
+        image[..l.primary.len()].copy_from_slice(&l.primary);
+        let start = (l.first_lba * 512) as usize;
+        image[start + 82..start + 90].copy_from_slice(b"FAT32   ");
+        image[start + 510..start + 512].copy_from_slice(&[0x55, 0xAA]);
+        std::fs::write(dev_dir.join("sde"), &image).unwrap();
+
+        let drives: Vec<String> = scan_in(&sys, &dev_dir, "", &cfg()).into_iter().map(|o| o.name).collect();
+        assert_eq!(drives, vec!["sdc".to_string()], "the stick is not a drive of the node");
+        let media = media_in(&sys, &dev_dir, &cfg());
+        assert_eq!(media.len(), 1, "an empty slot is no medium, and sdc is a drive: {media:?}");
+        let m = &media[0];
+        assert_eq!((m.name.as_str(), m.model.as_str(), m.capacity_bytes), ("sde", "ProductCode", 131072 * 512));
+        assert!(m.boot_stick, "{:?}", m.contents);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn usb_paths_and_drivers() {
+        use std::path::Path;
+        assert!(is_usb_path(Path::new("/sys/devices/pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0/host6/target6:0:0/6:0:0:0/block/sde")));
+        assert!(!is_usb_path(Path::new("/sys/devices/pci0000:00/0000:03:00.0/host0/target0:0:6/0:0:6:0/block/sdc")));
+        assert!(!is_usb_path(Path::new("/sys/devices/usbfoo/sda")), "only usb<N>");
+        assert!(is_usb_host_driver("xhci_hcd") && is_usb_host_driver("ehci-pci") && is_usb_host_driver("uhci_hcd"));
+        assert!(!is_usb_host_driver("ahci") && !is_usb_host_driver("megaraid_sas"));
+        assert!(!is_boot_stick(Some("vfat in partition 1 'EFI'")) && !is_boot_stick(None));
     }
 }

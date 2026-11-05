@@ -201,6 +201,12 @@ dm-multipath device instead is a later option — one path is correct until
 path failover is actually needed.
 
 ### Discovery (`discovery/`)
+- **USB is not a drive** (#106): `is_usb_path` (`usb<N>` on the canonical sysfs
+  path) keeps a disk out of `scan_in`; `media_in` reports it as `Media`, its
+  contents read through the probe cache. `monitor::merge_media` runs before
+  `merge_observed`, so an old entry is gone before it could read as missing, and
+  a fleet entry could not push `missing` to the engine and start a drain. A
+  STORMBOOTX disk on another bus is still a drive (#100).
 - Full scan on startup and every `discovery.interval_secs`: walk
   `/sys/block`, skip virtual/managed devices (`loop* ram* zram* dm-* md*
   sr* fd* nbd* ublkb* zd* pmem* drbd*` — ublkb is stormblock's own export

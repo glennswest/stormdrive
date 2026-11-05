@@ -26,6 +26,7 @@ pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("system-drives", system_drives(api)).await;
     r.run("summary-card", summary_card(api)).await;
     r.run("placement", placement(api)).await;
+    r.run("media", media(api)).await;
     r.run("components-feed", components_feed(api)).await;
     r.run("kube-drives", kube_drives(api)).await;
     r.run("events", events(api)).await;
@@ -238,6 +239,22 @@ async fn summary_card(api: &Api) -> Outcome {
 
 /// Where every drive is: one record per drive, and an unchanged view
 /// answers 304 to its own ETag.
+/// #106: a USB disk is media, never a drive. A check of what the node has, so
+/// it holds with no stick plugged in.
+async fn media(api: &Api) -> Outcome {
+    api.need((0, 37, 0), "/api/v1/media")?;
+    let v = api.get("api/v1/media").await?.json("GET /api/v1/media")?;
+    let media = v["media"].as_array().ok_or_else(|| Why::Fail("no media list".into()))?;
+    let names: Vec<&str> = media.iter().filter_map(|m| m["path"].as_str()).collect();
+    for d in crate::drives(api).await? {
+        let path = d["path"].as_str().unwrap_or_default();
+        ensure(!names.contains(&path), format!("{path} is both media and a drive"))?;
+        let driver = d["location"]["controller"]["driver"].as_str().unwrap_or_default();
+        ensure(!["xhci", "ehci", "ohci", "uhci"].iter().any(|p| driver.starts_with(p)), format!("{path} is a drive on USB host {driver}"))?;
+    }
+    Ok(format!("{} removable, none listed as a drive", media.len()))
+}
+
 async fn placement(api: &Api) -> Outcome {
     api.need((0, 12, 0), "/api/v1/placement")?;
     let n = crate::drives(api).await?.len();

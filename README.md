@@ -39,6 +39,13 @@ are listed under [Not yet](#not-yet).
   SAS target port in VPD 0x83, the SAS port log page (0x18) or a `sas_address`
   means SAS, so a SAS drive behind `megaraid_sas`, which has no `sas_address`,
   reads as SAS. A disk with none of these still reads as SATA.
+  - **USB is not a drive** (#106): a disk whose sysfs path goes through a USB
+    bus is left out of the drive list, counts, capacity, shelves, placement,
+    metrics, the worker and every fleet decision, so nothing can format or
+    enrol it. It is reported apart: `GET /api/v1/media`, a `removable-media`
+    component in the feed, and "boot stick present" on the system card when a
+    partition is named `STORMBOOTX`. An inventory entry from an older release
+    goes, with a `media` event, by its identity or its USB controller.
   - **Stable id:** a UUIDv5 of the WWID, or of model + serial when there is
     no WWID. It is the same across reboots, path changes and re-bays.
   - **Multipath:** a dual-IOM shelf shows one drive on two `/dev` nodes. That
@@ -807,6 +814,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
 | `GET /api/v1/monitor` | health-poll cost, stuck drives, last discovery pass |
 | `GET /metrics` | Prometheus text: per-drive SMART, temperature, wear, errors, last poll; shelf sensors; the poller (see below) |
+| `GET /api/v1/media` | disks on USB hosts, which are not drives of the node (#106): name, path, vendor, model, serial, capacity, `contents`, `in_use_by`, `boot_stick` |
 | `GET /api/v1/drives` | every drive, with any running test/format/firmware run inlined |
 | `GET /api/v1/drives/{id}` · `DELETE` | one drive · forget a missing, out-of-fleet drive |
 | `GET /api/v1/drives/{id}/health` | health report + trend |

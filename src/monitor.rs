@@ -209,8 +209,9 @@ async fn tick(
         merge_hbas(state, hbas).await;
         let started = std::time::Instant::now();
         let cfg = state.config.discovery.clone();
-        let observed = tokio::task::spawn_blocking(move || discovery::scan(&cfg)).await?;
+        let (observed, media) = tokio::task::spawn_blocking(move || (discovery::scan(&cfg), discovery::media(&cfg))).await?;
         let seen = observed.len();
+        merge_media(state, media).await;
         merge_observed(state, observed).await;
         let cached = discovery::probe_cache().lock().map(|c| c.len()).unwrap_or_default();
         state.poller.record_discovery(started.elapsed().as_millis() as u64, seen, cached);
@@ -675,6 +676,54 @@ async fn merge_hbas(state: &Arc<AppState>, fresh: crate::hba::Hbas) {
     }
 }
 
+/// The inventory entries that are USB media (#106), kept from before a USB disk
+/// stopped being a drive: this medium's identity, or a controller that is a USB
+/// host, whether the stick is plugged in now or not.
+fn usb_entries<'a>(drives: impl Iterator<Item = &'a crate::drive::Drive>, media: &[discovery::Media]) -> Vec<DriveId> {
+    let ids: Vec<DriveId> = media.iter().map(|m| DriveId::derive(m.wwid.as_deref(), &m.model, &m.serial)).collect();
+    drives
+        .filter(|d| {
+            ids.contains(&d.id)
+                || d.location.controller.as_ref().and_then(|c| c.driver.as_deref()).is_some_and(discovery::is_usb_host_driver)
+        })
+        .map(|d| d.id)
+        .collect()
+}
+
+/// This pass's removable media, and a drive entry that was really one goes:
+/// otherwise it would read as a missing drive for good.
+async fn merge_media(state: &Arc<AppState>, media: Vec<discovery::Media>) {
+    let mut events: Vec<(Severity, String)> = Vec::new();
+    {
+        let old = state.media.read().await;
+        for m in &media {
+            if !old.iter().any(|o| o.name == m.name && o.capacity_bytes == m.capacity_bytes) {
+                let what = if m.boot_stick { "the boot stick" } else { "removable" };
+                events.push((Severity::Info, format!("{}: {} {} B, {what}, not a drive of this node", m.name, m.model, m.capacity_bytes)));
+            }
+        }
+        for o in old.iter().filter(|o| !media.iter().any(|m| m.name == o.name)) {
+            events.push((Severity::Info, format!("{}: removable media gone ({})", o.name, o.model)));
+        }
+    }
+    {
+        let mut inv = state.inventory.write().await;
+        for id in usb_entries(inv.drives.values(), &media) {
+            if let Some(d) = inv.drives.remove(&id) {
+                let sev = if d.membership == Membership::Fleet { Severity::Warning } else { Severity::Info };
+                events.push((sev, format!("{} ({}): on a USB host, no longer listed as a drive (was {:?})", d.name, d.model, d.membership).to_lowercase()));
+            }
+        }
+    }
+    *state.media.write().await = media;
+    if !events.is_empty() {
+        let mut log = state.events.write().await;
+        for (sev, msg) in events {
+            log.push(None, sev, "media", msg);
+        }
+    }
+}
+
 async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed>) {
     let now = SystemTime::now();
     let shelves = state.shelves.read().await.clone();
@@ -1038,6 +1087,33 @@ pub fn fallback_issue(name: &str, s: Option<&crate::pi::Supports>) -> Option<Str
 
 #[cfg(test)]
 mod tests {
+    /// #106: a stick already in inventory.json goes, by identity when it is
+    /// plugged in and by its USB controller when it is not.
+    #[test]
+    fn usb_entries_are_found_by_identity_or_controller() {
+        let entry = |model: &str, serial: &str, driver: Option<&str>| {
+            let mut d: Drive = serde_json::from_value(serde_json::json!({
+                "id": DriveId::derive(None, model, serial),
+                "path": "/dev/sdx", "name": "sdx", "kind": "sata_hdd", "model": model, "serial": serial,
+                "firmware": "F", "capacity_bytes": 1, "block_size": 512,
+                "first_seen": UNIX_EPOCH, "last_seen": UNIX_EPOCH,
+            }))
+            .unwrap();
+            d.location.controller = driver.map(|x| crate::drive::Controller { driver: Some(x.into()), ..Default::default() });
+            d
+        };
+        let stick = entry("ProductCode", "", None);
+        let old_stick = entry("Other", "", Some("xhci_hcd"));
+        let real = entry("H7210A521SUN010T", "S1", Some("megaraid_sas"));
+        let sata = entry("WD", "S2", Some("ahci"));
+        let media = vec![discovery::Media {
+            name: "sde".into(), path: "/dev/sde".into(), vendor: None, model: "ProductCode".into(), serial: String::new(),
+            wwid: None, capacity_bytes: 1, contents: None, in_use_by: None, boot_stick: true,
+        }];
+        let found = usb_entries([&stick, &old_stick, &real, &sata].into_iter(), &media);
+        assert_eq!(found, vec![stick.id, old_stick.id]);
+    }
+
     use super::*;
 
     fn cfg() -> MonitorConfig {
