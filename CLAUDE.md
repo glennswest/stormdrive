@@ -631,6 +631,36 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #108: 4096 + PI when VPD 0xB4 is absent; format progress kept (P0, owner, 2026-11-05) — in progress
+
+Owner, before forge1's drives 2–4 are formatted: "fix the sector sizes … and we
+need progress monitoring as well"; "at least 4K, 4K + PI if possible". forge1's
+HGST H7210A521SUN010T (physical 4096, PI 1 + 2, today 512 + PI1, no VPD 0xB4)
+plans 512. Design (the issue's; my calls are said on it):
+- `Supports.physical_block_size` (READ CAPACITY(16) LBPPBE). No VPD 0xB4 and a
+  4K physical block: 4096 and 4096+PI1 are offered with basis `try`. A 520-byte
+  512-native drive still never assumes 4096; a listed VPD 0xB4 is the truth
+- preference is now 4096+PI1, 4096, 512+PI1, 512 (at least 4K first; #82 had
+  512+PI1 second)
+- fallback at run time, only when the format is the drive's `try` plan and the
+  drive refuses (ILLEGAL REQUEST on MODE SELECT or FORMAT UNIT): 4096, then
+  512+PI1; `plannedFormat.fallbacks` shows it beforehand, each refusal is kept on
+  the record + a warning event. A format asked for that is not the plan stays
+  exact. All refused: the old block length is put back, nothing formatted
+- a format the drive took and read back differently is a failure with what was
+  read, never a second 14–20 h format on its own
+- progress: REQUEST SENSE first (GOOD, so no `io errs` per poll), TUR decides the
+  end. `FormatRecord`: phase, pct, eta_secs, progress_at, refused, block_size_after,
+  prot_type_after, boot_id; synced + persisted as it moves. Kube `status.format`
+- restart: a worker's format is re-attached through the record too (it was a
+  bare TUR wait that verified nothing); after a node restart the drive is found
+  by WWID, names move
+- REST format bodies take `protection`
+Steps:
+- [ ] pi.rs plan + tests · [ ] scsi REQUEST SENSE · [ ] format.rs attempts,
+      record, sync, reattach + tests · [ ] worker, REST, kube, prep
+- [ ] docs, changelog; build VM; console contract on stormconsole#165; v0.39.0; golden
+
 ### #107: a drive's warning shown as failed, with no reason (owner's forge1 list, 2026-11-05) — DONE (v0.38.0)
 
 Owner: "why is sdc failed?", "33 is failing?", "can we reset it?" `parse_ie` made
