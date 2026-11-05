@@ -249,7 +249,7 @@ async fn placement(api: &Api) -> Outcome {
         let listed = v["drives"].as_array().map(Vec::len).unwrap_or(0);
         ensure(listed == n, format!("placement lists {listed} drives, /drives {n}"))?;
         // Every shelf has a position, in the engine's words (#65).
-        if api.at_least((0, 35, 0)) {
+        if api.has((0, 35, 0)) {
             const WORDS: [&str; 4] = ["internal", "front", "rear", "external"];
             let shelves = v["shelves"].as_array().into_iter().flatten();
             let ds = v["drives"].as_array().into_iter().flatten();
