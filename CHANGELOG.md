@@ -3,6 +3,8 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.39.0] — 2026-11-05
+
 ### Added
 - A running format's progress is kept: `progress_pct`, `started`, `eta_secs`, `progress_at`, `phase` on the drive's persisted `format` record, `status.format` on the Drive object (with `refused`, `blockSizeAfter`, `protTypeAfter`), `eta_secs` in `prep`, `progress` and `left` in the feed. It outlives a restart of stormdrive or the node (#108)
 - `plannedFormat.fallbacks`: what the run formats if the drive refuses a `try` plan; `plannedFormat.basis` can read `try` (#108)

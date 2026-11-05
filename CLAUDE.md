@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.38.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.39.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -631,7 +631,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #108: 4096 + PI when VPD 0xB4 is absent; format progress kept (P0, owner, 2026-11-05) — in progress
+### #108: 4096 + PI when VPD 0xB4 is absent; format progress kept (P0, owner, 2026-11-05) — DONE (v0.39.0)
 
 Owner, before forge1's drives 2–4 are formatted: "fix the sector sizes … and we
 need progress monitoring as well"; "at least 4K, 4K + PI if possible". forge1's
@@ -657,9 +657,12 @@ plans 512. Design (the issue's; my calls are said on it):
   by WWID, names move
 - REST format bodies take `protection`
 Steps:
-- [ ] pi.rs plan + tests · [ ] scsi REQUEST SENSE · [ ] format.rs attempts,
-      record, sync, reattach + tests · [ ] worker, REST, kube, prep
-- [ ] docs, changelog; build VM; console contract on stormconsole#165; v0.39.0; golden
+- [x] pi.rs plan + tests · [x] scsi REQUEST SENSE · [x] format.rs attempts,
+      record, sync, reattach + tests · [x] worker, REST, kube, prep
+- [x] docs, changelog; build VM (clippy -D warnings --locked, 315 unit + harnesses;
+      #118 was my test's type); console contract on stormconsole#165; v0.39.0; golden requested
+- Not on metal: the commands have only met a fake drive. Live: the owner's format
+  of forge1's drives 2-4 from the console; READ CAPACITY's read-back says what took
 
 ### #107: a drive's warning shown as failed, with no reason (owner's forge1 list, 2026-11-05) — DONE (v0.38.0)
 
