@@ -1092,7 +1092,7 @@ mod tests {
     #[test]
     fn usb_entries_are_found_by_identity_or_controller() {
         let entry = |model: &str, serial: &str, driver: Option<&str>| {
-            let mut d: Drive = serde_json::from_value(serde_json::json!({
+            let mut d: crate::drive::Drive = serde_json::from_value(serde_json::json!({
                 "id": DriveId::derive(None, model, serial),
                 "path": "/dev/sdx", "name": "sdx", "kind": "sata_hdd", "model": model, "serial": serial,
                 "firmware": "F", "capacity_bytes": 1, "block_size": 512,
