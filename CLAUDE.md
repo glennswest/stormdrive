@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.35.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.36.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -630,7 +630,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #105: SAS drives behind megaraid_sas read as SATA (P1, owner, 2026-11-05) — in progress
+### #105: SAS drives behind megaraid_sas read as SATA (P1, owner, 2026-11-05) — DONE (v0.36.0)
 
 Owner: "why are they shown as sata, those are sas12 drives". `classify()` called
 a drive SAS only with `device/sas_address`, which megaraid_sas's host doesn't
@@ -644,7 +644,8 @@ have. Design (the issue's, no open decision):
   are `cool`/`warm` alike, so a drive's tier does not move
 Steps:
 - [x] transport.rs + discovery + outputs + tests (megaraid-shaped tree)
-- [ ] build VM; version; golden. Live: forge1 with #112
+- [x] build VM on 19f1339 (clippy -D warnings --locked, 293 unit + harnesses); v0.36.0; golden requested
+- Not on metal yet: VPD 0x83 and page 0x18 through a real PERC are checked with the shelf on #112
 
 ### #65: every shelf has an identity and a position; a PERC's bays are an internal shelf (P0, owner, 2026-11-05) — DONE (v0.35.0)
 

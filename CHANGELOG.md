@@ -3,9 +3,13 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-05
-- **fix:** a SAS drive behind `megaraid_sas` reads as SAS: the transport comes from the drive itself. Vendor `ATA` is SATA; otherwise VPD 0x83's SAS target port or the SAS port log page (0x18). `sas_address` is a hint, no longer the only test (#105)
-- **feat:** `link_rate_mbps` on a SAS drive, the rate its phy negotiated (log page 0x18); on `/api/v1/drives`, the kube Drive status (`linkRateMbps`) and the feed's `link` metric (#105)
+## [v0.36.0] — 2026-11-05
+
+### Added
+- `link_rate_mbps` on a SAS drive, the rate its phy negotiated (log page 0x18); on `/api/v1/drives`, the kube Drive status (`linkRateMbps`) and the feed's `link` metric (#105)
+
+### Fixed
+- A SAS drive behind `megaraid_sas` reads as SAS: the transport comes from the drive itself. Vendor `ATA` is SATA; otherwise VPD 0x83's SAS target port or the SAS port log page (0x18). `sas_address` is a hint, no longer the only test (#105). Not yet run on a real controller
 
 ## [v0.35.0] — 2026-11-05
 
