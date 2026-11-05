@@ -182,10 +182,12 @@ drive's shelf, bay, vendor, model, serial, firmware, kind, sector size and
 capacity.
 
 What the format does is set by #82:
-- The FORMAT UNIT here sends FOV=0, so the drive is formatted without
-  protection information.
-- A drive that cannot take 4096 refuses the MODE SELECT, and the job fails
-  for that drive.
+- The FORMAT UNIT sends FMTPINFO for the protection asked for (none, or
+  type 1), so a drive is formatted without PI only when the plan says so
+  (#85, #108).
+- A drive that cannot take the planned size refuses the MODE SELECT or the
+  FORMAT UNIT. On the drive's own `try` plan the run falls back (4096, then
+  512+PI1); any other format asked for fails for that drive (#108).
 - The ST1200MM0098 is sold as a 512-native drive, and such drives usually
   offer only 512, 520 and 528.
 
