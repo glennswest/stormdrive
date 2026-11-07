@@ -643,8 +643,9 @@ length back, sends no FORMAT UNIT and fails with the refusal +
 order) for the person to choose. `target` on the record / `status.format`,
 feed metric `to`. `plannedFormat.fallbacks` stays as the list shown beforehand.
 - [x] code + tests (4096 refused → no FORMAT UNIT), docs, changelog, v0.42.0
-- [ ] build VM, golden. Console's "refused: format at … instead?" choice →
-      stormconsole issue
+- [x] build VM on 923d645: clippy -D warnings --locked, 336 unit + harnesses;
+      golden requested. Console's "refused: format at … instead?" choice →
+      stormconsole#322
 
 ### #129: MODE SELECT refused 26/00 on a NetApp X378 (forge1 sdd) (P0, 2026-11-07) — DONE (v0.41.1)
 
