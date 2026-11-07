@@ -633,6 +633,29 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #129: MODE SELECT refused 26/00 on a NetApp X378 (forge1 sdd) (P0, 2026-11-07) — in progress
+
+forge1 sdd (NETAPP X378_HLBRE10TA07, 10 TB at 512) refused 4096 + PI1 at
+MODE SELECT(10) with ILLEGAL REQUEST 26/00; the HGSTs beside it took it.
+Found in the code: `mode_select10_block_length` wrote the drive's
+`bd[0]` back as a "density code", but SBC's short descriptor for a disk has
+no density: byte 0 is the top byte of NUMBER OF LOGICAL BLOCKS. On a drive
+past 2^32 blocks the short count reads FFFFFFFFh, so we asked for
+FF000000h blocks: more than a 10 TB drive has at 4096 → 26/00 (the HGSTs
+clamp it). Design (the issue's):
+- sense: the sense-key-specific field pointer (SKSV, C/D, BPV, bit, byte)
+  decoded from fixed and descriptor sense, in every ILLEGAL REQUEST message
+- MODE SENSE(10) LLBAA=1 (retried without when refused); the parameter
+  list is the drive's own: header with mode data length 0, medium type
+  kept, device-specific 0, LONGLBA as returned, the descriptor as returned
+  with NUMBER OF LOGICAL BLOCKS 0 (SBC: max at the new length) and the new
+  length; MODE SELECT(10) PF=1 SP=0. Long refused → short (count 0) → (6)
+- tests: a fake unit that refuses a short descriptor / a non-zero count on
+  a >2 TiB drive with 26/00 + field pointer; the HGST path unchanged
+Steps:
+- [ ] sense field pointer · [ ] parameter list + set_length · [ ] tests
+- [ ] docs, changelog, build VM, v0.41.1, golden; owner retries sdd
+
 ### #125: thermal management — readings, limits, alerts, cooling, hot drives (P1, owner, 2026-11-07) — DONE (v0.41.0)
 
 Owner: "We also need thermal management on drives and all components."
