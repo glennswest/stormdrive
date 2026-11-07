@@ -652,7 +652,10 @@ forge1 sdb–sdd, powered off mid-format (512 + PI, #130's fallback), answer
 - a name moves (`sdb` → `sg2`, then `sdX` after the format): ask by id/WWN
 - [x] code + tests (sg_only_disks tree, reason, blocker, feed, fake unit
       3/31/00 → select 4096 + FMTPINFO 2), docs, changelog, v0.42.1
-- [ ] build VM; golden; forge1 formats from the console
+- [x] build VM on 60f7d2b: clippy -D warnings --locked, 341 unit + harnesses;
+      golden `golden-stormdrive-0dc06d4816df` (60f7d2b)
+- Live: forge1's sdb–sdd read present (`sgN`, `format_reason` 3/31/00) and
+  the owner formats them at 4096 + PI1 from the console
 
 ### #130: a format runs only what was asked; the target shows while it runs (P0, 2026-11-07) — DONE (v0.42.0)
 
