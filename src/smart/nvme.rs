@@ -23,6 +23,7 @@ pub fn decode_smart_page(page: &[u8; 512]) -> Sample {
     Sample {
         critical_warning: page[0],
         temperature_c,
+        temp_limits: None,
         available_spare_pct: Some(page[3].min(100)),
         wear_pct: Some(page[5]),
         power_on_hours: Some(u128_at(128)),

@@ -946,6 +946,54 @@ mod tests {
         assert!(!c.set_overcommit("/dev/sdb", oc, uuid, None, "S").await.unwrap());
     }
 
+    /// The thermal push (#125, stormblock#564): what the engine is told about
+    /// a hot drive, and an engine without the route.
+    #[tokio::test]
+    async fn thermal_push_says_what_a_hot_drive_asks_of_the_engine() {
+        let seen: Arc<RwLock<Option<Value>>> = Arc::default();
+        let got = seen.clone();
+        let app = axum::Router::new().route(
+            "/api/v1/drives/{id}/thermal",
+            axum::routing::put(move |axum::extract::Path(id): axum::extract::Path<String>, axum::Json(v): axum::Json<Value>| {
+                let got = got.clone();
+                async move {
+                    if id != "/dev/sda" {
+                        return axum::http::StatusCode::NOT_FOUND;
+                    }
+                    *got.write().unwrap() = Some(v);
+                    axum::http::StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let c = StormBlockClient::new(StormBlockConfig { url, api_token: "t".into(), ..Default::default() });
+        let limits = crate::thermal::resolve(crate::thermal::DeviceLimits { warn_c: None, crit_c: Some(60.0) }, None, (55.0, 70.0));
+        let t = crate::thermal::DriveThermal {
+            level: crate::thermal::Level::Critical,
+            temp_c: Some(61.0),
+            limits,
+            since_unix: 100,
+            throttle_background: true,
+            exclude_new_placement: true,
+            replace_proposed: false,
+        };
+        assert!(c.set_thermal("/dev/sda", &t, Uuid::nil(), Some("naa.5000"), "S1").await.unwrap());
+        let v = seen.read().unwrap().clone().unwrap();
+        assert_eq!((v["level"].as_str(), v["crit_c"].as_f64(), v["warn_c"].as_f64()), (Some("critical"), Some(60.0), Some(55.0)));
+        assert_eq!((v["throttle_background"].as_bool(), v["exclude_new_placement"].as_bool()), (Some(true), Some(true)));
+        assert_eq!((v["limit_source"].as_str(), v["drive"]["serial"].as_str()), (Some("device"), Some("S1")));
+        assert!(!c.set_thermal("/dev/sdb", &t, Uuid::nil(), None, "S2").await.unwrap());
+        // Due: on a change of what the engine is told; a cool drive never
+        // pushed is not sent.
+        assert!(crate::fleet::thermal_push_due(None, &t));
+        assert!(!crate::fleet::thermal_push_due(Some(&t.engine_word()), &t));
+        let cool = crate::thermal::DriveThermal { level: crate::thermal::Level::Ok, throttle_background: false, exclude_new_placement: false, ..t.clone() };
+        assert!(!crate::fleet::thermal_push_due(None, &cool));
+        assert!(crate::fleet::thermal_push_due(Some(&t.engine_word()), &cool), "the all-clear goes out");
+    }
+
     /// A stand-in engine with stormblock#274's classes: slab format and drive
     /// close take the admin token `root` or the storage-admin bearer `sa`
     /// (`viewer` is a valid bearer without the role: 403), and the node token

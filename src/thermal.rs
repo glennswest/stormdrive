@@ -736,10 +736,29 @@ pub struct Chip {
     pub device: Option<String>,
     pub on_net_device: bool,
     pub on_scsi_host: bool,
-    /// (index, label, temp, max, crit)
-    pub temps: Vec<(u32, Option<String>, Option<f64>, Option<f64>, Option<f64>)>,
-    /// (index, label, rpm, min, alarm or fault)
-    pub fans: Vec<(u32, Option<String>, Option<u64>, Option<u64>, bool)>,
+    pub temps: Vec<TempSensor>,
+    pub fans: Vec<FanSensor>,
+}
+
+/// `temp<N>_*` of a hwmon chip, in °C.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TempSensor {
+    pub index: u32,
+    pub label: Option<String>,
+    pub input: Option<f64>,
+    pub max: Option<f64>,
+    pub crit: Option<f64>,
+}
+
+/// `fan<N>_*` of a hwmon chip.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FanSensor {
+    pub index: u32,
+    pub label: Option<String>,
+    pub rpm: Option<u64>,
+    pub min: Option<u64>,
+    /// `_alarm` or `_fault` set.
+    pub flagged: bool,
 }
 
 impl Chip {
@@ -788,17 +807,17 @@ pub fn read_chip(dir: &std::path::Path) -> Option<Chip> {
             let t = get(format!("temp{n}_input")).and_then(|v| milli(&v));
             let max = get(format!("temp{n}_max")).and_then(|v| milli(&v));
             let crit = get(format!("temp{n}_crit")).and_then(|v| milli(&v));
-            chip.temps.push((n, get(format!("temp{n}_label")), t, max, crit));
+            chip.temps.push(TempSensor { index: n, label: get(format!("temp{n}_label")), input: t, max, crit });
         }
         if let Some(n) = f.strip_prefix("fan").and_then(|r| r.strip_suffix("_input")).and_then(|n| n.parse::<u32>().ok()) {
             let rpm = get(format!("fan{n}_input")).and_then(|v| v.parse::<u64>().ok());
             let min = get(format!("fan{n}_min")).and_then(|v| v.parse::<u64>().ok());
             let flag = |k: &str| get(format!("fan{n}_{k}")).is_some_and(|v| v != "0");
-            chip.fans.push((n, get(format!("fan{n}_label")), rpm, min, flag("alarm") || flag("fault")));
+            chip.fans.push(FanSensor { index: n, label: get(format!("fan{n}_label")), rpm, min, flagged: flag("alarm") || flag("fault") });
         }
     }
-    chip.temps.sort_by_key(|t| t.0);
-    chip.fans.sort_by_key(|f| f.0);
+    chip.temps.sort_by_key(|t| t.index);
+    chip.fans.sort_by_key(|f| f.index);
     Some(chip)
 }
 
@@ -807,8 +826,9 @@ pub fn hwmon_readings(chips: &[Chip]) -> (Vec<Reading>, Vec<Fan>) {
     let (mut temps, mut fans) = (Vec::new(), Vec::new());
     for chip in chips {
         let handle = chip.handle();
-        for (n, label, t, max, crit) in &chip.temps {
-            let l = label.clone().unwrap_or_else(|| format!("temp{n}"));
+        for s in &chip.temps {
+            let n = s.index;
+            let l = s.label.clone().unwrap_or_else(|| format!("temp{n}"));
             let Some(class) = hwmon_class(&chip.name, &l, chip.on_net_device, chip.on_scsi_host) else { continue };
             let where_ = chip.device.as_deref().map(|d| format!(" ({d})")).unwrap_or_default();
             temps.push(Reading {
@@ -818,24 +838,25 @@ pub fn hwmon_readings(chips: &[Chip]) -> (Vec<Reading>, Vec<Fan>) {
                 source: format!("hwmon:{}", chip.name),
                 drive_id: None,
                 shelf: None,
-                temp_c: *t,
-                device: DeviceLimits { warn_c: *max, crit_c: *crit },
+                temp_c: s.input,
+                device: DeviceLimits { warn_c: s.max, crit_c: s.crit },
             });
         }
         if hwmon_class(&chip.name, "", false, false).is_none() {
             continue;
         }
-        for (n, label, rpm, min, failed) in &chip.fans {
-            let l = label.clone().unwrap_or_else(|| format!("fan{n}"));
+        for f in &chip.fans {
+            let n = f.index;
+            let l = f.label.clone().unwrap_or_else(|| format!("fan{n}"));
             fans.push(Fan {
                 id: format!("hwmon:{handle}:fan{n}"),
                 label: format!("{} {l}", chip.name),
                 source: format!("hwmon:{}", chip.name),
                 shelf: None,
-                rpm: *rpm,
+                rpm: f.rpm,
                 // Many chips report 0 as "no minimum set".
-                min_rpm: min.filter(|m| *m > 0),
-                failed: *failed,
+                min_rpm: f.min.filter(|m| *m > 0),
+                failed: f.flagged,
                 problem: None,
             });
         }
@@ -865,9 +886,9 @@ pub fn drive_hwmon(sys: &std::path::Path, name: &str) -> Option<(Option<f64>, De
     for c in chips {
         let Some(chip) = read_chip(&c) else { continue };
         // temp1 is the composite / the drive's own sensor.
-        if let Some((_, _, t, max, crit)) = chip.temps.iter().find(|t| t.0 == 1).or(chip.temps.first()) {
-            if t.is_some() {
-                return Some((*t, DeviceLimits { warn_c: *max, crit_c: *crit }.sane()));
+        if let Some(s) = chip.temps.iter().find(|t| t.index == 1).or(chip.temps.first()) {
+            if s.input.is_some() {
+                return Some((s.input, DeviceLimits { warn_c: s.max, crit_c: s.crit }.sane()));
             }
         }
     }
