@@ -3,10 +3,15 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-07
-- **feat:** every drive says whether it is in use, structured (#123): `in_use`, `use` (`system`, `raid_member`, `data`, `slab_member`, `mounted`, `free`), `slabs` by partition, name and role, `depends_on` (the node's root, its data half, a RAID set, the engine's volumes) and `in_use_reason`, on `/api/v1/drives`, `/api/v1/drives/{id}`, the Drive object (`inUse`, `use`, `slabs`, `dependsOn`, `inUseReason`) and the feed (`use` metric). Read from the partition table and the engine, not the `contents` text. forge1's sda reads `use: system`, "sda holds this node's system slab (partition 2 'stormblock'); the node runs from it"
-- **fix:** a drive in use is not destroyed on `destroy` alone (#123): worker format, sanitize, security erase, partition and the destructive sample also need it named in the new `i_know_in_use` (DriveOperation `iKnowInUse`); a fresh read finding a slab or RAID superblock counts too. The REST formats and the destructive test refuse it with the use as the reason. Designation `system` is refused on a drive used for data, RAID or a mount, `failed` on the system drive; the feed's Mark failed follows
-- **feat:** `mounted` on a drive (only seen with `discovery.manage_mounted`) (#123)
+## [v0.40.0] — 2026-11-07
+
+### Added
+- every drive says whether it is in use, structured (#123): `in_use`, `use` (`system`, `raid_member`, `data`, `slab_member`, `mounted`, `free`), `slabs` by partition, name and role, `depends_on` (the node's root, its data half, a RAID set, the engine's volumes) and `in_use_reason`, on `/api/v1/drives`, `/api/v1/drives/{id}`, the Drive object (`inUse`, `use`, `slabs`, `dependsOn`, `inUseReason`) and the feed (`use` metric). Read from the partition table and the engine, not the `contents` text. forge1's sda reads `use: system`, "sda holds this node's system slab (partition 2 'stormblock'); the node runs from it"
+- `mounted` on a drive (only seen with `discovery.manage_mounted`) (#123)
+
+### Fixed
+- a drive in use is not destroyed on `destroy` alone (#123): worker format, sanitize, security erase, partition and the destructive sample also need it named in the new `i_know_in_use` (DriveOperation `iKnowInUse`); a fresh read finding a slab or RAID superblock counts too. The REST formats and the destructive test refuse it with the use as the reason. Designation `system` is refused on a drive used for data, RAID or a mount, `failed` on the system drive; the feed's Mark failed follows
+- a worker refusal of a fleet drive names its use ("in use: sda holds this node's system slab … — in the fleet: leave (drain) first"), not only its membership (#123)
 
 ## [v0.39.1] — 2026-11-07
 

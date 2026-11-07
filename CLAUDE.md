@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.39.1** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.40.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -631,7 +631,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #123: a drive in use says so, and destructive verbs refuse it (P0, owner, 2026-11-07) — in progress
+### #123: a drive in use says so, and destructive verbs refuse it (P0, owner, 2026-11-07) — DONE (v0.40.0)
 
 Owner, forge1's console: "also there no indication a drive is in use!" forge1's
 live `/api/v1/drives` (0.39.0) does carry it for sda — `in_use_by`, `owner:
@@ -660,8 +660,12 @@ is one structured answer, and an override that is not just `destroy`. Design
   `reserved`, `spare` stay allowed in the fleet and out (Phase 1b's rule)
 - test on forge1's layout: sda refused everywhere, sdb–sdd allowed
 Steps:
-- [ ] inuse.rs + Drive.mounted + outputs · [ ] guards + worker override + CRD
-- [ ] tests (forge1 layout), docs, changelog; build VM; v0.40.0; golden
+- [x] inuse.rs + Drive.mounted + outputs · [x] guards + worker override + CRD
+- [x] tests (forge1 layout), docs, changelog; build VM on e964813 (clippy
+      -D warnings --locked, 322 unit + harnesses; #124 was the old destroy-only
+      test); v0.40.0; golden requested
+- Live: forge1's `/api/v1/drives` sda `use: system` once the release is there;
+  the console side is stormconsole#308
 
 ### #122: forge1's BP14G+ read as two shelves (P1, owner, 2026-11-07) — DONE (v0.39.1)
 
