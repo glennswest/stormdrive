@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.41.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.41.1** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -653,8 +653,8 @@ clamp it). Design (the issue's):
 - tests: a fake unit that refuses a short descriptor / a non-zero count on
   a >2 TiB drive with 26/00 + field pointer; the HGST path unchanged
 Steps:
-- [ ] sense field pointer · [ ] parameter list + set_length · [ ] tests
-- [ ] docs, changelog, build VM, v0.41.1, golden; owner retries sdd
+- [x] sense field pointer · [x] parameter list + set_length · [x] tests
+- [x] docs, changelog, v0.41.1 · [ ] build VM, golden; owner retries sdd
 
 ### #125: thermal management — readings, limits, alerts, cooling, hot drives (P1, owner, 2026-11-07) — DONE (v0.41.0)
 

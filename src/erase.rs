@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn sanitize_progress_from_tur() {
         use crate::scsi::{Error, Sense};
-        let s = |key, asc, ascq, progress| Err(Error::Sense(Sense { key, asc, ascq, progress }));
+        let s = |key, asc, ascq, progress| Err(Error::Sense(Sense { key, asc, ascq, progress, field: None }));
         assert_eq!(interpret_sanitize_tur(&Ok(())), Ok(None));
         assert_eq!(interpret_sanitize_tur(&s(2, 4, 0x1B, Some(16384))), Ok(Some(Some(25))));
         assert_eq!(interpret_sanitize_tur(&s(6, 0x29, 0, None)), Ok(Some(None)));

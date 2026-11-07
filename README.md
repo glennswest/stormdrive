@@ -394,7 +394,9 @@ are listed under [Not yet](#not-yet).
     out-of-fleet, unmounted drive that holds no slab.
 - **Sector reformat** (`src/format.rs`, `src/scsi.rs`). This turns 520/528
   byte drives into 512 or 4096, with T10 PI type 1 where the drive offers it.
-  It sends MODE SELECT with the new block length, then FORMAT UNIT (IMMED,
+  It sends MODE SELECT with the new block length in the drive's own block
+  descriptor (MODE SENSE with LLBAA, long LBA when the drive gives it, count 0;
+  a refusal names the field the drive points at, #129), then FORMAT UNIT (IMMED,
   FMTPINFO). It polls REQUEST SENSE for the drive's progress (percent; TEST
   UNIT READY says when it ended). Then it rescans the sd device and reads back
   the block length and P_TYPE with READ CAPACITY(16).

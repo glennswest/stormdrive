@@ -52,9 +52,49 @@ pub struct Sense {
     /// Sense-key-specific progress indication (0..=65535 of the whole),
     /// present while a FORMAT UNIT runs (key NOT READY, 04/04).
     pub progress: Option<u16>,
+    /// ILLEGAL REQUEST: the byte (and bit) the drive objects to, from the
+    /// sense-key-specific field pointer (SPC "field pointer", #129).
+    pub field: Option<FieldPointer>,
+}
+
+/// SPC sense-key-specific field pointer: which byte of the CDB or of the
+/// parameter list an ILLEGAL REQUEST is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldPointer {
+    /// C/D = 1: the CDB; 0: the parameter list (data out).
+    pub in_cdb: bool,
+    /// BPV = 1: the bit within the byte (7 = most significant).
+    pub bit: Option<u8>,
+    pub byte: u16,
+}
+
+impl FieldPointer {
+    /// The three sense-key-specific bytes (SKSV in the first's bit 7).
+    pub fn from_sks(b: [u8; 3]) -> Option<Self> {
+        (b[0] & 0x80 != 0).then(|| FieldPointer {
+            in_cdb: b[0] & 0x40 != 0,
+            bit: (b[0] & 0x08 != 0).then_some(b[0] & 0x07),
+            byte: u16::from_be_bytes([b[1], b[2]]),
+        })
+    }
+}
+
+impl fmt::Display for FieldPointer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} byte {}", if self.in_cdb { "cdb" } else { "parameter list" }, self.byte)?;
+        if let Some(b) = self.bit {
+            write!(f, " bit {b}")?;
+        }
+        Ok(())
+    }
 }
 
 impl Sense {
+    /// Sense with no sense-key-specific data.
+    pub fn new(key: u8, asc: u8, ascq: u8) -> Self {
+        Sense { key, asc, ascq, progress: None, field: None }
+    }
+
     pub fn key_name(&self) -> &'static str {
         match self.key {
             0x0 => "no sense",
@@ -95,12 +135,16 @@ impl fmt::Display for Sense {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} (key 0x{:x}, asc/ascq 0x{:02x}/0x{:02x})",
+            "{} (key 0x{:x}, asc/ascq 0x{:02x}/0x{:02x}",
             self.key_name(),
             self.key,
             self.asc,
             self.ascq
-        )
+        )?;
+        if let Some(p) = self.field {
+            write!(f, ", field pointer: {p}")?;
+        }
+        write!(f, ")")
     }
 }
 
@@ -125,11 +169,17 @@ pub fn parse_sense(raw: &[u8]) -> Option<Sense> {
             } else {
                 None
             };
+            let field = if raw.len() >= 18 && key == 0x5 {
+                FieldPointer::from_sks([raw[15], raw[16], raw[17]])
+            } else {
+                None
+            };
             Some(Sense {
                 key,
                 asc,
                 ascq,
                 progress,
+                field,
             })
         }
         0x72 | 0x73 => {
@@ -142,6 +192,7 @@ pub fn parse_sense(raw: &[u8]) -> Option<Sense> {
             let add_len = raw[7] as usize;
             let end = (8 + add_len).min(raw.len());
             let mut progress = None;
+            let mut field = None;
             let mut i = 8;
             while i + 2 <= end {
                 let dtype = raw[i];
@@ -152,6 +203,9 @@ pub fn parse_sense(raw: &[u8]) -> Option<Sense> {
                     if raw[i + 4] & 0x80 != 0 && (key == 0x0 || key == 0x2) {
                         progress = Some(u16::from_be_bytes([raw[i + 5], raw[i + 6]]));
                     }
+                    if key == 0x5 {
+                        field = FieldPointer::from_sks([raw[i + 4], raw[i + 5], raw[i + 6]]);
+                    }
                 }
                 i += 2 + dlen;
             }
@@ -160,6 +214,7 @@ pub fn parse_sense(raw: &[u8]) -> Option<Sense> {
                 asc,
                 ascq,
                 progress,
+                field,
             })
         }
         _ => None,
@@ -304,33 +359,50 @@ pub fn parse_mode_sense10(raw: &[u8]) -> Result<ModeHeader10> {
     })
 }
 
-/// The MODE SELECT parameter list that sets a new logical block length:
-/// an 8-byte MODE SELECT(10) header (mode data length reserved, block
-/// descriptor length 8) and one short block descriptor whose NUMBER OF
-/// LOGICAL BLOCKS is 0 — "all remaining blocks take these characteristics"
-/// (SBC). Density code and medium type are kept from what the drive
-/// reported; everything else is zero.
-pub fn mode_select10_block_length(block_len: u32, medium_type: u8, density: u8) -> Vec<u8> {
-    let mut v = vec![0u8; 16];
-    v[2] = medium_type;
-    v[7] = 8;
-    v[8] = density;
-    v[13] = ((block_len >> 16) & 0xff) as u8;
-    v[14] = ((block_len >> 8) & 0xff) as u8;
-    v[15] = (block_len & 0xff) as u8;
+/// The MODE SELECT(10) parameter list that sets a new logical block
+/// length, built from what the drive's MODE SENSE(10) returned (sg_format's
+/// way, #129): an 8-byte header with the mode data length 0 (reserved on
+/// select), the medium type kept, the device-specific byte 0 (WP/DPOFUA are
+/// reserved on select) and LONGLBA as the drive returned it; then the
+/// drive's own block descriptor, 8 bytes or 16 (long LBA), with NUMBER OF
+/// LOGICAL BLOCKS 0 — with a changed length SBC sets the most blocks the
+/// drive has at that length — and the new LOGICAL BLOCK LENGTH. No mode
+/// pages follow. `long: false` sends a short descriptor whatever came back.
+///
+/// SBC's short descriptor for a disk has no density code: byte 0 is the top
+/// byte of the block count. The list before #129 copied it back as a
+/// "density", so a drive past 2^32 blocks (short count FFFFFFFFh) was asked
+/// for FF000000h blocks: more than a 10 TB drive has at 4096 → 26/00.
+pub fn mode_select10_list(h: &ModeHeader10, block_len: u32, long: bool) -> Vec<u8> {
+    let long = long && h.long_lba && h.block_descriptor.as_ref().is_some_and(|bd| bd.len() >= 16);
+    let bd_len = if long { 16 } else { 8 };
+    let mut v = vec![0u8; 8 + bd_len];
+    v[2] = h.medium_type;
+    v[4] = u8::from(long);
+    v[7] = bd_len as u8;
+    let own = h.block_descriptor.as_deref().unwrap_or(&[]);
+    if own.len() == bd_len {
+        v[8..].copy_from_slice(own);
+    }
+    let bd = &mut v[8..];
+    if long {
+        bd[0..8].fill(0);
+        bd[12..16].copy_from_slice(&block_len.to_be_bytes());
+    } else {
+        bd[0..4].fill(0);
+        bd[5..8].copy_from_slice(&block_len.to_be_bytes()[1..]);
+    }
     v
 }
 
-/// Same, in MODE SELECT(6) shape (4-byte header) for drives that reject
-/// the 10-byte form.
-pub fn mode_select6_block_length(block_len: u32, medium_type: u8, density: u8) -> Vec<u8> {
-    let mut v = vec![0u8; 12];
-    v[1] = medium_type;
+/// The same in MODE SELECT(6) shape (4-byte header, a short descriptor),
+/// for drives that reject the 10-byte form.
+pub fn mode_select6_list(h: &ModeHeader10, block_len: u32) -> Vec<u8> {
+    let ten = mode_select10_list(h, block_len, false);
+    let mut v = vec![0u8; 4];
+    v[1] = h.medium_type;
     v[3] = 8;
-    v[4] = density;
-    v[9] = ((block_len >> 16) & 0xff) as u8;
-    v[10] = ((block_len >> 8) & 0xff) as u8;
-    v[11] = (block_len & 0xff) as u8;
+    v.extend_from_slice(&ten[8..16]);
     v
 }
 
@@ -372,8 +444,13 @@ pub mod cdb {
     }
     /// Current values, page 0x01 (mandatory), block descriptors included.
     pub fn mode_sense10(page: u8, alloc: u16) -> [u8; 10] {
+        mode_sense10_llbaa(page, alloc, false)
+    }
+    /// LLBAA=1 (byte 1 bit 4): a long LBA (16-byte) block descriptor may
+    /// come back (#129).
+    pub fn mode_sense10_llbaa(page: u8, alloc: u16, llbaa: bool) -> [u8; 10] {
         let [hi, lo] = alloc.to_be_bytes();
-        [0x5a, 0x00, page & 0x3f, 0, 0, 0, 0, hi, lo, 0]
+        [0x5a, if llbaa { 0x10 } else { 0 }, page & 0x3f, 0, 0, 0, 0, hi, lo, 0]
     }
     pub fn mode_select10(len: u16) -> [u8; 10] {
         let [hi, lo] = len.to_be_bytes();
@@ -636,6 +713,18 @@ impl Device {
         parse_mode_sense10(&buf[..n])
     }
 
+    /// MODE SENSE(10) with LLBAA=1, so a drive past 2^32 blocks returns its
+    /// long LBA descriptor; asked again without when the drive refuses the
+    /// bit (#129).
+    pub fn mode_sense10_long(&self, page: u8) -> Result<ModeHeader10> {
+        let mut buf = vec![0u8; 252];
+        match self.io(&cdb::mode_sense10_llbaa(page, 252, true), Dir::FromDevice, &mut buf, T_SHORT) {
+            Ok(n) => parse_mode_sense10(&buf[..n]),
+            Err(Error::Sense(s)) if s.is_illegal_request() => self.mode_sense10(page),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn mode_select10(&self, data: &[u8]) -> Result<()> {
         let mut d = data.to_vec();
         self.io(&cdb::mode_select10(d.len() as u16), Dir::ToDevice, &mut d, T_SHORT)
@@ -842,19 +931,81 @@ mod tests {
         assert!(none.block_descriptor.is_none());
     }
 
+    fn header(long: bool, bd: Vec<u8>) -> ModeHeader10 {
+        ModeHeader10 { medium_type: 0, device_specific: 0x10, long_lba: long, block_descriptor: Some(bd) }
+    }
+
     #[test]
     fn mode_select_lists_carry_block_length_and_zero_count() {
-        let v = mode_select10_block_length(4096, 0, 0);
+        // A 10 TB drive at 512, short descriptor: count FFFFFFFFh.
+        let short = header(false, vec![0xff, 0xff, 0xff, 0xff, 0, 0, 0x02, 0x00]);
+        let v = mode_select10_list(&short, 4096, true);
         assert_eq!(v.len(), 16);
         assert_eq!(&v[0..2], &[0, 0], "mode data length reserved");
+        assert_eq!(v[3], 0, "device-specific zero on select");
+        assert_eq!(v[4], 0, "no LONGLBA");
         assert_eq!(v[7], 8, "block descriptor length");
-        assert_eq!(&v[9..12], &[0, 0, 0], "number of blocks 0 = all");
+        assert_eq!(&v[8..12], &[0, 0, 0, 0], "number of blocks 0 = the most at 4096 (not FF000000h, #129)");
         assert_eq!(u32::from_be_bytes([0, v[13], v[14], v[15]]), 4096);
 
-        let v6 = mode_select6_block_length(512, 0, 0);
+        // The same drive's long descriptor: 19532873728 blocks of 512.
+        let mut bd = vec![0u8; 16];
+        bd[0..8].copy_from_slice(&19_532_873_728u64.to_be_bytes());
+        bd[12..16].copy_from_slice(&512u32.to_be_bytes());
+        let long = header(true, bd);
+        let v = mode_select10_list(&long, 4096, true);
+        assert_eq!(v.len(), 24);
+        assert_eq!(v[4], 1, "LONGLBA as the drive returned it");
+        assert_eq!(v[7], 16);
+        assert_eq!(&v[8..16], &[0; 8], "count 0");
+        assert_eq!(u32::from_be_bytes(v[20..24].try_into().unwrap()), 4096);
+        // The short fallback from a long answer.
+        let v = mode_select10_list(&long, 4096, false);
+        assert_eq!((v.len(), v[4], v[7]), (16, 0, 8));
+        assert_eq!(u32::from_be_bytes([0, v[13], v[14], v[15]]), 4096);
+
+        let v6 = mode_select6_list(&long, 512);
         assert_eq!(v6.len(), 12);
         assert_eq!(v6[3], 8);
+        assert_eq!(&v6[4..8], &[0; 4]);
         assert_eq!(u32::from_be_bytes([0, v6[9], v6[10], v6[11]]), 512);
+
+        // No descriptor came back: a zero one with the length.
+        let none = ModeHeader10 { medium_type: 0, device_specific: 0, long_lba: false, block_descriptor: None };
+        let v = mode_select10_list(&none, 4096, true);
+        assert_eq!(&v[8..13], &[0; 5]);
+        assert_eq!(u32::from_be_bytes([0, v[13], v[14], v[15]]), 4096);
+    }
+
+    #[test]
+    fn illegal_request_names_the_field() {
+        // Fixed: 05/26/00, SKSV, C/D=0, BPV bit 4, parameter list byte 8.
+        let mut raw = vec![0u8; 18];
+        raw[0] = 0x70;
+        raw[2] = 0x05;
+        raw[7] = 10;
+        raw[12] = 0x26;
+        raw[15] = 0x80 | 0x08 | 0x04;
+        raw[17] = 8;
+        let s = parse_sense(&raw).unwrap();
+        assert_eq!(s.field, Some(FieldPointer { in_cdb: false, bit: Some(4), byte: 8 }));
+        assert_eq!(s.progress, None);
+        assert_eq!(
+            s.to_string(),
+            "illegal request (key 0x5, asc/ascq 0x26/0x00, field pointer: parameter list byte 8 bit 4)"
+        );
+        // Descriptor: 05/24/00 in the CDB byte 1, no bit.
+        let raw = [0x72, 0x05, 0x24, 0x00, 0, 0, 0, 8, 0x02, 0x06, 0, 0, 0x80 | 0x40, 0x00, 0x01, 0];
+        let s = parse_sense(&raw).unwrap();
+        assert_eq!(s.field, Some(FieldPointer { in_cdb: true, bit: None, byte: 1 }));
+        assert!(s.to_string().ends_with("field pointer: cdb byte 1)"), "{s}");
+        // No SKSV: nothing named; other keys never read it as a pointer.
+        let mut nr = vec![0u8; 18];
+        nr[0] = 0x70;
+        nr[2] = 0x02;
+        nr[15] = 0x80;
+        assert_eq!(parse_sense(&nr).unwrap().field, None);
+        assert_eq!(cdb::mode_sense10_llbaa(1, 252, true)[1], 0x10, "LLBAA");
     }
 
     #[test]

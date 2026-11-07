@@ -145,7 +145,7 @@ INQUIRY revision (`esps[].revision`). Both read 0401 here.
 | SSD endurance | LOG SENSE page 0x11 | each sample, SSDs |
 | Grown defects | READ DEFECT DATA(12) (0xB7), GLIST, header only (8 bytes): list length ÷ descriptor size | each sample (#81) |
 | SATA behind SAT | ATA PASS-THROUGH(16) (0x85): SMART READ DATA / THRESHOLDS | each sample, vendor `ATA` |
-| Reformat | MODE SELECT(10) (fallback 6) block descriptor = new length; FORMAT UNIT (0x04) FMTDATA + IMMED, FOV=0 (drive defaults; no protection); progress by TEST UNIT READY sense (02/04/04 + progress indicator) | format / worker `format` step |
+| Reformat | MODE SENSE(10) LLBAA=1, then MODE SELECT(10) PF=1 SP=0 with the drive's own block descriptor (long LBA if given, count 0) = new length, short and then (6) as fallbacks (#129); FORMAT UNIT (0x04) FMTDATA + IMMED, FOV=0 (drive defaults; no protection); progress by TEST UNIT READY sense (02/04/04 + progress indicator) | format / worker `format` step |
 | Sanitize | SANITIZE (0x48) block / crypto / overwrite, IMMED | worker `sanitize` step |
 | Firmware | WRITE BUFFER (0x3B) mode 0x0E/0x0F (0x07 fallback); READ BUFFER descriptor | firmware update, never automatic |
 

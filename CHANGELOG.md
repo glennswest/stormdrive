@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.41.1] — 2026-11-07
+
+### Fixed
+- a format refused at MODE SELECT with 26/00 on forge1's NetApp X378 (#129). The parameter list copied the short block descriptor's byte 0 back as a "density code"; for a disk that byte is the top of NUMBER OF LOGICAL BLOCKS, so a drive past 2^32 blocks (count FFFFFFFFh) was asked for FF000000h blocks, more than it has at 4096. The list is now the drive's own, sg_format's way: MODE SENSE(10) with LLBAA=1, the descriptor sent back (16-byte long LBA when given) with count 0 and the new length, mode data length and device-specific byte 0, MODE SELECT(10) PF=1 SP=0; long refused → short → MODE SELECT(6). An ILLEGAL REQUEST from any of the (10) forms is a refusal (the format chain goes on), even when (6) then fails at the transport
+- sense data's field pointer (SKSV, C/D, BPV, bit, byte) is decoded from fixed and descriptor sense and named in every ILLEGAL REQUEST message ("field pointer: parameter list byte 7"); a refused MODE SELECT logs the parameter list it sent (#129)
+
 ## [v0.41.0] — 2026-11-07
 
 ### Added

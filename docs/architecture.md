@@ -558,8 +558,16 @@ attaches with 0 blocks, so nothing above the SCSI layer can touch them.
 Discovery keeps them anyway (`usable: false`, `block_size` from READ
 CAPACITY, `needs_reformat`), and the format job turns them into drives:
 
-1. MODE SELECT(10) with a block descriptor carrying the new block length
-   and a block count of 0 ("all"); MODE SELECT(6) if (10) is refused.
+1. MODE SENSE(10) with LLBAA=1, then MODE SELECT(10) (PF=1, SP=0) with the
+   drive's own block descriptor sent back (#129): long (16 bytes, LONGLBA)
+   when the drive gave one, mode data length and device-specific byte 0,
+   NUMBER OF LOGICAL BLOCKS 0 (SBC: the most the drive has at the new
+   length) and the new block length. A refused long descriptor is tried
+   short, then MODE SELECT(6). Every ILLEGAL REQUEST carries the sense's
+   field pointer (CDB or parameter list, byte, bit) into the refusal, and
+   the parameter list sent is logged. A disk's short descriptor has no
+   density code: byte 0 is the top of the block count (the list before
+   #129 copied it back, asking a >2^32-block drive for FF000000h blocks).
 2. FORMAT UNIT, FMTDATA + IMMED, no defect list (FOV=0: drive defaults).
    Blocking form with a day-long timeout if the drive refuses IMMED.
 3. TEST UNIT READY every 5 s: NOT READY 04/04 with a progress

@@ -191,6 +191,7 @@ fn dev_path(drive: &Drive) -> String {
 /// What starting a format needs of a drive: a trait so the commands and
 /// their order are tested without one.
 trait Unit {
+    /// MODE SENSE(10), long LBA descriptors allowed (LLBAA=1).
     fn mode_sense10(&self, page: u8) -> scsi::Result<scsi::ModeHeader10>;
     fn mode_select10(&self, data: &[u8]) -> scsi::Result<()>;
     fn mode_select6(&self, data: &[u8]) -> scsi::Result<()>;
@@ -199,7 +200,7 @@ trait Unit {
 
 impl Unit for Device {
     fn mode_sense10(&self, page: u8) -> scsi::Result<scsi::ModeHeader10> {
-        Device::mode_sense10(self, page)
+        Device::mode_sense10_long(self, page)
     }
     fn mode_select10(&self, data: &[u8]) -> scsi::Result<()> {
         Device::mode_select10(self, data)
@@ -231,21 +232,42 @@ fn refused_or_failed(e: &ScsiError, why: String) -> Attempt {
     }
 }
 
-/// MODE SELECT with the new block length in the block descriptor.
+/// MODE SELECT with the new block length in the drive's own block
+/// descriptor (#129): MODE SENSE(10) with LLBAA, then MODE SELECT(10)
+/// PF=1 SP=0 with what came back (long descriptor if the drive gave one),
+/// count 0 and the new length; a refused long descriptor is tried short,
+/// then MODE SELECT(6). An ILLEGAL REQUEST from any of them is the drive's
+/// answer (refused, with the field it points at); only errors that answer
+/// nothing (the (6) failing at the transport on a drive that has no (6))
+/// leave it failed.
 fn set_length(dev: &impl Unit, name: &str, to: u32) -> Result<(), Attempt> {
-    let (medium, density) = match dev.mode_sense10(0x01) {
-        Ok(h) => (h.medium_type, h.block_descriptor.as_ref().map(|bd| bd[0]).unwrap_or(0)),
-        Err(e) => {
-            tracing::debug!(drive = %name, "mode sense failed ({e}); using zeros");
-            (0, 0)
-        }
-    };
-    if let Err(e10) = dev.mode_select10(&scsi::mode_select10_block_length(to, medium, density)) {
-        if let Err(e6) = dev.mode_select6(&scsi::mode_select6_block_length(to, medium, density)) {
-            return Err(refused_or_failed(&e6, format!("mode select rejected: (10) {e10}; (6) {e6}")));
+    let h = dev.mode_sense10(0x01).unwrap_or_else(|e| {
+        tracing::debug!(drive = %name, "mode sense failed ({e}); a zero block descriptor");
+        scsi::ModeHeader10 { medium_type: 0, device_specific: 0, long_lba: false, block_descriptor: None }
+    });
+    let long = h.long_lba && h.block_descriptor.as_ref().is_some_and(|bd| bd.len() >= 16);
+    let mut lists: Vec<(&str, Vec<u8>, bool)> = vec![];
+    if long {
+        lists.push(("10, long", scsi::mode_select10_list(&h, to, true), true));
+    }
+    lists.push(("10", scsi::mode_select10_list(&h, to, false), true));
+    lists.push(("6", scsi::mode_select6_list(&h, to), false));
+    let mut errs = vec![];
+    let mut refused = false;
+    for (what, list, ten) in lists {
+        let r = if ten { dev.mode_select10(&list) } else { dev.mode_select6(&list) };
+        match r {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let hex: String = list.iter().map(|b| format!("{b:02x}")).collect();
+                tracing::warn!(drive = %name, "mode select ({what}) of {to} refused: {e}; parameter list {hex}");
+                refused |= matches!(&e, ScsiError::Sense(s) if s.is_illegal_request());
+                errs.push(format!("({what}) {e}"));
+            }
         }
     }
-    Ok(())
+    let why = format!("mode select rejected: {}", errs.join("; "));
+    Err(if refused { Attempt::Refused(why) } else { Attempt::Failed(why) })
 }
 
 /// The block length, then FORMAT UNIT.
@@ -809,6 +831,7 @@ mod tests {
             asc,
             ascq,
             progress,
+            field: None,
         }))
     }
 
@@ -833,15 +856,50 @@ mod tests {
         refuse_select: Vec<u32>,
         refuse_fmtpinfo: Vec<u8>,
         transport_error_on_format: bool,
+        /// forge1's NetApp X378 (#129): 10 TB at 512, so past 2^32 blocks.
+        /// MODE SENSE gives the long descriptor when LLBAA is asked; a short
+        /// descriptor in MODE SELECT, or a non-zero block count, is 26/00
+        /// with the field pointer; MODE SELECT(6) dies at the transport.
+        netapp_x378: bool,
+    }
+
+    const X378_BLOCKS: u64 = 19_532_873_728;
+
+    fn invalid_field(byte: u16) -> scsi::Result<()> {
+        Err(ScsiError::Sense(Sense {
+            field: Some(scsi::FieldPointer { in_cdb: false, bit: None, byte }),
+            ..Sense::new(5, 0x26, 0)
+        }))
     }
 
     impl Unit for FakeUnit {
         fn mode_sense10(&self, _: u8) -> scsi::Result<scsi::ModeHeader10> {
-            Ok(scsi::ModeHeader10 { medium_type: 0, device_specific: 0, long_lba: false, block_descriptor: Some(vec![0; 8]) })
+            if self.netapp_x378 {
+                let mut bd = vec![0u8; 16];
+                bd[0..8].copy_from_slice(&X378_BLOCKS.to_be_bytes());
+                bd[12..16].copy_from_slice(&512u32.to_be_bytes());
+                return Ok(scsi::ModeHeader10 { medium_type: 0, device_specific: 0x10, long_lba: true, block_descriptor: Some(bd) });
+            }
+            // The HGST beside it: a short descriptor, its count FFFFFFFFh.
+            let bd = vec![0xff, 0xff, 0xff, 0xff, 0, 0, 0x02, 0x00];
+            Ok(scsi::ModeHeader10 { medium_type: 0, device_specific: 0x10, long_lba: false, block_descriptor: Some(bd) })
         }
         fn mode_select10(&self, data: &[u8]) -> scsi::Result<()> {
-            let len = u32::from_be_bytes([0, data[13], data[14], data[15]]);
-            self.log.borrow_mut().push(format!("select10 {len}"));
+            let long = data[4] & 1 != 0;
+            let (len, count_zero) = if long {
+                (u32::from_be_bytes(data[20..24].try_into().unwrap()), data[8..16].iter().all(|b| *b == 0))
+            } else {
+                (u32::from_be_bytes([0, data[13], data[14], data[15]]), data[8..12].iter().all(|b| *b == 0))
+            };
+            self.log.borrow_mut().push(format!("select10{} {len}", if long { "L" } else { "" }));
+            assert_eq!(&data[0..2], &[0, 0], "mode data length is reserved on select");
+            assert_eq!(data[3], 0, "device-specific is zero on select");
+            if self.netapp_x378 && !long {
+                return invalid_field(7);
+            }
+            if !count_zero {
+                return invalid_field(8);
+            }
             if self.refuse_select.contains(&len) {
                 return sense(5, 0x26, 0, None);
             }
@@ -850,6 +908,9 @@ mod tests {
         fn mode_select6(&self, data: &[u8]) -> scsi::Result<()> {
             let len = u32::from_be_bytes([0, data[9], data[10], data[11]]);
             self.log.borrow_mut().push(format!("select6 {len}"));
+            if self.netapp_x378 {
+                return Err(ScsiError::Transport { status: 2, host: 7, driver: 8 });
+            }
             if self.refuse_select.contains(&len) {
                 return sense(5, 0x26, 0, None);
             }
@@ -885,6 +946,30 @@ mod tests {
         assert_eq!(r.unwrap(), (4096, Protection::Type1, true));
         assert!(refused.is_empty());
         assert_eq!(*u.log.borrow(), ["select10 4096", "format immed=true fmtpinfo=2"]);
+    }
+
+    #[test]
+    fn the_netapp_x378_gets_its_own_long_descriptor_back() {
+        let u = FakeUnit { netapp_x378: true, ..Default::default() };
+        let (r, refused) = run_fake(&u);
+        assert_eq!(r.unwrap(), (4096, Protection::Type1, true));
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(*u.log.borrow(), ["select10L 4096", "format immed=true fmtpinfo=2"]);
+    }
+
+    #[test]
+    fn a_refused_mode_select_is_a_refusal_naming_the_field_even_when_6_fails_at_the_transport() {
+        // forge1 sdd before #129: every list it got was refused. Here the
+        // drive refuses 4096 outright: the long and short (10) are its
+        // answer, the (6) dying at the transport does not make it "failed",
+        // so the chain goes on to 512 + PI1.
+        let u = FakeUnit { netapp_x378: true, refuse_select: vec![4096], ..Default::default() };
+        let (r, refused) = run_fake(&u);
+        assert_eq!(r.unwrap(), (512, Protection::Type1, true));
+        assert_eq!(refused.len(), 2);
+        assert!(refused[0].contains("(10, long) illegal request"), "{}", refused[0]);
+        assert!(refused[0].contains("(10) illegal request (key 0x5, asc/ascq 0x26/0x00, field pointer: parameter list byte 7)"), "{}", refused[0]);
+        assert!(refused[0].contains("(6) scsi status 0x02, host 0x07"), "{}", refused[0]);
     }
 
     #[test]
