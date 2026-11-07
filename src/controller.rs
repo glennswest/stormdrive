@@ -894,6 +894,7 @@ impl Controller {
                     select: crate::worker::Select { drives: ds.iter().map(|d| d.id.0.to_string()).collect(), ..Default::default() },
                     steps: steps.clone(),
                     destroy: vec![],
+                    i_know_in_use: vec![],
                     dry_run: false,
                 };
                 let plan = steps.iter().map(|s| s.describe()).collect::<Vec<_>>();
@@ -1040,6 +1041,7 @@ mod tests {
             select: Select { drives: vec!["sdb".into()], ..Default::default() },
             steps: vec![Step::Format { block_size: 4096, protection: crate::pi::Protection::None }],
             destroy: vec![],
+            i_know_in_use: vec![],
             drives: states
                 .iter()
                 .enumerate()
@@ -1056,6 +1058,7 @@ mod tests {
                     error: None,
                     done: vec![],
                     destroy_named: false,
+                    in_use_named: false,
                     started: None,
                     finished: None,
                     ata_password: None,

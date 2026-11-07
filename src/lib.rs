@@ -28,6 +28,7 @@ pub mod gpt;
 pub mod hba;
 pub mod history;
 pub mod hotplug;
+pub mod inuse;
 pub mod inventory;
 pub mod iomfw;
 pub mod kubeapi;

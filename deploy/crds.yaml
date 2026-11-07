@@ -79,6 +79,18 @@ spec:
                   x-kubernetes-preserve-unknown-fields: true
                   description: "The drive's last format, persisted across restarts (#108): state, phase, toBlockSize, protection, progressPct, etaSeconds, startedUnix, progressAtUnix, finishedUnix, refused (formats the drive refused, with why), blockSizeAfter + protTypeAfter (READ CAPACITY after it), error."
                 owner: { type: string, enum: [free, stormblock, stormraid] }
+                inUse: { type: boolean, description: "The drive is in use (#123): every destroying step and the designations that contradict its use refuse it." }
+                use: { type: string, enum: [system, raid_member, data, slab_member, mounted, free], description: "What for: the node's system slab, a stormraid member, a data slab, otherwise held by the engine (fleet, whole-drive slab), a mounted partition, or free." }
+                slabs:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      partition: { type: integer, nullable: true }
+                      name: { type: string }
+                      role: { type: string, enum: [system, data, unknown] }
+                dependsOn: { type: array, items: { type: string }, description: "What stops working if it is destroyed: the node's root, its data half, a RAID set, the engine's volumes on it." }
+                inUseReason: { type: string, nullable: true, description: "The sentence a refusal carries." }
                 enclosure: { type: string, nullable: true }
                 bay: { type: integer, nullable: true }
                 sasAddress: { type: string, nullable: true }
@@ -152,6 +164,10 @@ spec:
                   type: array
                   items: { type: string }
                   description: Drives whose current contents (a stormblock slab, a stormraid set, a filesystem) may be destroyed, by stable id, WWN or serial — never a /dev name. An owner has to let go first (leave the fleet, delete the RaidSet).
+                iKnowInUse:
+                  type: array
+                  items: { type: string }
+                  description: Drives in use (the system drive, a drive with slabs, a RAID member — status.inUse) a destroying step may still take, by stable id, WWN or serial. Needed besides destroy, which alone never destroys a drive in use (#123). Consoles do not offer it for the system drive. A fleet drive or a mounted one is refused whatever is named.
                 dryRun:
                   type: boolean
                   description: Report the plan (which drives would run, which are refused and why) and do nothing.

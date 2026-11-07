@@ -282,6 +282,8 @@ pub struct Context {
     /// Other namespaces on the same NVMe controller.
     pub nvme_siblings: usize,
     pub stormblock: bool,
+    /// The request named the drive in `i_know_in_use` (#123).
+    pub in_use_named: bool,
 }
 
 /// May `steps` run on `d`? The reason when not.
@@ -305,6 +307,14 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
         return Err("has mounted partitions".into());
     }
     let destroys = steps.iter().any(Step::destroys);
+    // A drive in use (#123) is never destroyed on `destroy` alone: the
+    // record's use, or what the fresh read finds (a slab, a RAID member).
+    if destroys && !cx.in_use_named {
+        let in_use = crate::inuse::of(d).reason.or_else(|| crate::inuse::fresh_reason(&d.name, cx.holds.as_deref()));
+        if let Some(why) = in_use {
+            return Err(format!("in use: {why} — a drive in use is not destroyed (\"destroy\" alone is not enough)"));
+        }
+    }
     let held = cx.holds.clone().or_else(|| d.in_use_by.clone());
     if destroys && !destroy_named {
         if let Some(what) = held {
@@ -417,6 +427,10 @@ pub struct DriveJob {
     #[serde(default)]
     pub done: Vec<String>,
     pub destroy_named: bool,
+    /// Also named in `i_know_in_use` (#123): a destroying step may run on
+    /// a drive in use (the system drive, a slab, a RAID member).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_use_named: bool,
     pub started: Option<SystemTime>,
     pub finished: Option<SystemTime>,
     /// The one-time ATA user password a security erase set (#36), kept until
@@ -434,6 +448,8 @@ pub struct Job {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub destroy: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub i_know_in_use: Vec<String>,
     pub drives: Vec<DriveJob>,
     #[serde(default)]
     pub cancel: bool,
@@ -740,6 +756,13 @@ pub struct Request {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub destroy: Vec<String>,
+    /// Drives in use (#123: the system drive, a drive with slabs, a RAID
+    /// member) a destroying step may still take, by stable id, WWN or
+    /// serial, as `destroy`. A separate, typed acknowledgment: `destroy`
+    /// alone never destroys a drive in use. The console never sends it for
+    /// the system drive.
+    #[serde(default, alias = "iKnowInUse")]
+    pub i_know_in_use: Vec<String>,
     #[serde(default, alias = "dryRun")]
     pub dry_run: bool,
 }
@@ -762,7 +785,7 @@ pub async fn context(state: &Arc<AppState>, d: &Drive) -> Context {
     } else {
         0
     };
-    Context { holds, mounted: crate::discovery::is_mounted(&d.name), nvme_siblings: siblings, stormblock: state.stormblock.enabled() }
+    Context { holds, mounted: crate::discovery::is_mounted(&d.name), nvme_siblings: siblings, stormblock: state.stormblock.enabled(), in_use_named: false }
 }
 
 /// Resolve the selection to drives. Unknown handles and shelves are errors.
@@ -838,7 +861,9 @@ pub async fn submit_tagged(
     let mut djs = vec![];
     for d in &drives {
         let named = named_for_destroy(d, &req.destroy);
-        let cx = context(state, d).await;
+        let in_use_named = named_for_destroy(d, &req.i_know_in_use);
+        let mut cx = context(state, d).await;
+        cx.in_use_named = in_use_named;
         let verdict = guard(d, &req.steps, named, &cx);
         djs.push(DriveJob {
             drive: d.id,
@@ -853,6 +878,7 @@ pub async fn submit_tagged(
             error: verdict.err(),
             done: vec![],
             destroy_named: named,
+            in_use_named,
             started: None,
             finished: None,
             ata_password: None,
@@ -906,6 +932,7 @@ pub async fn submit_tagged(
         select: req.select,
         steps: req.steps.clone(),
         destroy: req.destroy,
+        i_know_in_use: req.i_know_in_use,
         drives: djs,
         cancel: false,
         requester,
@@ -991,11 +1018,11 @@ async fn set_activity(state: &Arc<AppState>, id: DriveId, a: Activity) {
 
 /// Take one drive through the job's steps, from where it stands.
 async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
-    let (steps, drive_id, destroy_named) = {
+    let (steps, drive_id, destroy_named, in_use_named) = {
         let jobs = state.worker.jobs.lock().unwrap();
         let Some(j) = jobs.get(&job) else { return };
         let d = &j.drives[idx];
-        (j.steps.clone(), d.drive, d.destroy_named)
+        (j.steps.clone(), d.drive, d.destroy_named, d.in_use_named)
     };
     let op = crate::kubeauth::Access { resource: "driveoperations", verb: "create", name: None };
     let cfg = state.config.worker.clone();
@@ -1047,7 +1074,8 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
             fail(&state, &job, idx, drive_id, "the drive is no longer in the inventory".into()).await;
             return;
         };
-        let cx = context(&state, &drive).await;
+        let mut cx = context(&state, &drive).await;
+        cx.in_use_named = in_use_named;
         if let Err(why) = guard(&drive, &steps[step_idx..], destroy_named, &cx) {
             fail(&state, &job, idx, drive_id, format!("before {}: {why}", step.name())).await;
             return;
@@ -1699,6 +1727,43 @@ mod tests {
         assert!(guard(&nv, &[FMT], false, &sib).is_ok());
     }
 
+    /// forge1's layout (#123), out of the fleet as the R230's system disk
+    /// was: sda takes no destroying step even named in `destroy`; only the
+    /// separate `i_know_in_use` lets one through. sdb–sdd are allowed.
+    #[test]
+    fn forge1_in_use_drive_is_not_destroyed_on_destroy_alone() {
+        let mut f = crate::inuse::tests::forge1();
+        let mut sda = f.remove(0);
+        // In the fleet: never, whatever is named.
+        let know = Context { in_use_named: true, ..cx() };
+        assert!(guard(&sda, &[FMT], true, &know).unwrap_err().contains("fleet"));
+        sda.membership = Membership::Out;
+        let destroying = [
+            FMT,
+            Step::Sanitize { method: SanitizeMethod::Crypto },
+            Step::Partition { role: Role::System },
+            Step::Test { kind: crate::drivetest::TestKind::DestructiveSample },
+        ];
+        for s in &destroying {
+            let e = guard(&sda, std::slice::from_ref(s), true, &cx()).unwrap_err();
+            assert!(e.contains("sda holds this node's system slab (partition 2 'stormblock'); the node runs from it"), "{s:?}: {e}");
+            assert!(guard(&sda, std::slice::from_ref(s), false, &know).unwrap_err().contains("destroy"), "both are needed");
+            assert!(guard(&sda, std::slice::from_ref(s), true, &know).is_ok(), "{s:?}");
+        }
+        let smoke = [Step::Test { kind: crate::drivetest::TestKind::Smoke }];
+        assert!(guard(&sda, &smoke, false, &cx()).is_ok(), "reading it is fine");
+        for d in &f {
+            assert!(guard(d, &destroying[..1], false, &cx()).is_ok(), "{}", d.name);
+        }
+        // The fresh read counts before the record knows.
+        let fresh = Context { holds: Some("stormblock slab in partition 2 'stormblock'".into()), ..cx() };
+        assert!(guard(&f[0], &[FMT], true, &fresh).unwrap_err().contains("in use"));
+        let r: Request = serde_json::from_value(serde_json::json!({
+            "select": {"drives": ["sda"]}, "steps": [{"op": "format", "block_size": 4096}], "iKnowInUse": ["S1"]
+        })).unwrap();
+        assert_eq!(r.i_know_in_use, vec!["S1"]);
+    }
+
     #[test]
     fn a_system_drive_is_destroyed_only_when_named_and_never_takes_data() {
         let sys = drive(|d| d.designation = Designation::System);
@@ -1745,6 +1810,7 @@ mod tests {
             error: None,
             done: vec![],
             destroy_named: false,
+                    in_use_named: false,
             started: None,
             finished: None,
             ata_password: None,

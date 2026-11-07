@@ -827,6 +827,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                     d.in_use_by = primary.in_use_by.clone();
                     d.contents = primary.contents.clone();
                     d.slab_parts = primary.slabs.clone();
+                    d.mounted = primary.mounted;
                 }
                 d.last_seen = now;
                 if d.activity == Activity::Missing {
@@ -905,6 +906,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         in_use_by: primary.in_use_by.clone(),
                         contents: primary.contents.clone(),
                         slab_parts: primary.slabs.clone(),
+                        mounted: primary.mounted,
                         engine_finding: None,
                         enrolable: false,
                         wear_projection: None,
@@ -1372,6 +1374,7 @@ mod tests {
             in_use_by: None,
             contents: None,
             slabs: vec![],
+            mounted: false,
         };
         // sdq and sda are the same physical drive through two IOMs.
         let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);

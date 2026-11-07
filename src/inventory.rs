@@ -181,6 +181,7 @@ mod tests {
             in_use_by: None,
             contents: None,
             slab_parts: vec![],
+            mounted: false,
             engine_finding: None,
             enrolable: false,
             wear_projection: None,

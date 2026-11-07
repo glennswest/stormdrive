@@ -252,10 +252,16 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     if let Some(n) = d.health.io_errors_not_ours.or(d.health.io_errors).filter(|n| *n > 0) {
         metrics.push(Metric::new("io errs", n.to_string()).tone("muted"));
     }
-    // Why join/format/destructive are greyed out on an out-of-fleet drive:
-    // somebody's data is on it (the node's own system disk).
-    if let Some(who) = &d.in_use_by {
-        metrics.push(Metric::new("in use", who.clone()).tone("accent"));
+    // Why format/destructive are greyed out (#123): the drive's use, as a
+    // word (`system`, `data`, `raid_member`, `slab_member`, `mounted`), and
+    // what depends on it.
+    let u = d.in_use();
+    if u.in_use {
+        let word = serde_json::to_value(u.use_).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        metrics.push(Metric::new("use", word).tone(if u.use_ == crate::inuse::Use::System { "warn" } else { "accent" }));
+        if let Some(r) = &u.reason {
+            metrics.push(Metric::new("in use", r.clone()).tone("accent"));
+        }
     }
     if d.paths.len() > 1 {
         metrics.push(Metric::new("paths", d.paths.len().to_string()).tone("accent"));
@@ -386,7 +392,7 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
         "Mark failed",
         "POST",
         format!("{base}/designation/failed"),
-        d.designation != Designation::Failed,
+        d.designation != Designation::Failed && d.designation_blocker(Designation::Failed).is_none(),
         true,
     ));
     actions.push(act(
@@ -746,6 +752,7 @@ mod tests {
             in_use_by: None,
             contents: None,
             slab_parts: vec![],
+            mounted: false,
             engine_finding: None,
             enrolable: false,
             wear_projection: None,

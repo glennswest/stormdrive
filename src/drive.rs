@@ -518,6 +518,10 @@ pub struct Drive {
     /// offset, read in discovery (#58).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slab_parts: Vec<crate::contents::SlabPart>,
+    /// A partition of it is mounted (#123). Only seen with
+    /// `discovery.manage_mounted`: otherwise such a drive is not managed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mounted: bool,
     /// What a SCSI drive can be formatted to: block lengths, PI types,
     /// rotation, current format (#85, `pi.rs`). None until probed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -757,16 +761,45 @@ impl Drive {
         }
     }
 
+    /// Why this drive cannot take designation `to` now. `system` on a
+    /// fleet drive or one holding data, RAID or a mount is refused: the
+    /// install would lay the system half over it (#66, #123). `failed` on
+    /// the drive the node runs from: it would drain the system half under
+    /// the node (#123). `none`, `reserved` and `spare` stay allowed, in the
+    /// fleet and out (Phase 1b).
     pub fn designation_blocker(&self, to: Designation) -> Option<String> {
-        if to == Designation::System && self.designation != Designation::System && self.membership == Membership::Fleet {
-            return Some("in the fleet: its data would be laid over by the install — leave (drain) first".into());
+        if to == self.designation {
+            return None;
         }
-        None
+        let u = crate::inuse::of(self);
+        let why = || u.reason.clone().unwrap_or_default();
+        match to {
+            Designation::System if self.membership == Membership::Fleet => {
+                Some("in the fleet: its data would be laid over by the install — leave (drain) first".into())
+            }
+            Designation::System if u.in_use && u.use_ != crate::inuse::Use::System => {
+                Some(format!("in use: {} — the install would lay the system half over it", why()))
+            }
+            Designation::Failed if u.use_ == crate::inuse::Use::System => Some(format!(
+                "in use: {} — marking it failed would drain the system half under the node; its health verdict drains it if it is failing",
+                why()
+            )),
+            _ => None,
+        }
+    }
+
+    /// The drive's use (#123): in use or free, what for, its slabs and what
+    /// depends on them.
+    pub fn in_use(&self) -> crate::inuse::InUse {
+        crate::inuse::of(self)
     }
 
     /// Destructive tests are only allowed on drives that are out of the
     /// fleet and present.
     pub fn destructive_test_blocker(&self) -> Option<String> {
+        if let Some(why) = crate::inuse::of(self).reason {
+            return Some(format!("in use: {why}"));
+        }
         if self.membership == Membership::Fleet {
             return Some("in the fleet — destructive tests need an out-of-fleet drive".into());
         }
@@ -885,6 +918,9 @@ impl Drive {
     /// most destructive thing this daemon does: out of the fleet, idle,
     /// present, and not the operator's reserved drive.
     pub fn format_blocker(&self) -> Option<String> {
+        if let Some(why) = crate::inuse::of(self).reason {
+            return Some(format!("in use: {why}"));
+        }
         if self.membership == Membership::Fleet {
             return Some("in the fleet — leave (drain) first".into());
         }
@@ -971,6 +1007,7 @@ mod tests {
             in_use_by: None,
             contents: None,
             slab_parts: vec![],
+            mounted: false,
             engine_finding: None,
             enrolable: false,
             wear_projection: None,
@@ -1227,6 +1264,36 @@ mod tests {
         assert!(d.firmware_blocker(false).is_none(), "firmware is what this node needs");
         assert!(d.serves_data(), "…one data-serving drive at a time");
         assert!(!base_drive().serves_data());
+    }
+
+    /// forge1's layout (#123): sda, the system drive, refuses every
+    /// destructive verb and the designations that contradict its use, with
+    /// the reason naming the use; sdb–sdd are allowed.
+    #[test]
+    fn forge1_the_system_drive_is_refused_the_blank_ones_are_not() {
+        let f = crate::inuse::tests::forge1();
+        let sda = &f[0];
+        let want = "sda holds this node's system slab (partition 2 'stormblock'); the node runs from it";
+        for why in [sda.format_blocker(), sda.destructive_test_blocker()] {
+            assert_eq!(why.unwrap(), format!("in use: {want}"));
+        }
+        assert!(sda.designation_blocker(Designation::Failed).unwrap().contains(want));
+        assert!(sda.designation_blocker(Designation::System).unwrap().contains("leave"));
+        assert!(sda.designation_blocker(Designation::Reserved).is_none());
+        assert!(sda.designation_blocker(Designation::Spare).is_none());
+        assert!(sda.designation_blocker(Designation::None).is_none());
+        for d in &f[1..] {
+            assert!(d.format_blocker().is_none(), "{}", d.name);
+            assert!(d.destructive_test_blocker().is_none(), "{}", d.name);
+            for to in [Designation::System, Designation::Failed, Designation::Spare, Designation::Reserved] {
+                assert!(d.designation_blocker(to).is_none(), "{} → {to:?}", d.name);
+            }
+        }
+        // A data drive out of the fleet: not the install's to lay over.
+        let mut data = base_drive();
+        data.slab_parts = vec![crate::contents::SlabPart { partition: Some(1), name: "d".into(), role: "data".into(), offset_bytes: 1 << 20 }];
+        assert!(data.designation_blocker(Designation::System).unwrap().contains("data slab"));
+        assert!(data.designation_blocker(Designation::Failed).is_none(), "a data drive may be marked failed: it drains");
     }
 
     #[test]

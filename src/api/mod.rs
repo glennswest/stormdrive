@@ -489,6 +489,7 @@ async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
         }
         v["needs_reformat"] = json!(d.needs_reformat());
         v["owner"] = json!(d.owner());
+        put_in_use(&mut v, d);
         v["prep"] = prep_of(&s, d);
         drives.push(v);
     }
@@ -505,8 +506,20 @@ async fn get_drive(
         .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
     let mut v = serde_json::to_value(d).map_err(|e| ApiError::internal(e.to_string()))?;
     v["owner"] = json!(d.owner());
+    put_in_use(&mut v, d);
     v["prep"] = prep_of(&s, d);
     Ok(Json(v))
+}
+
+/// The drive's use on its JSON (#123): `in_use`, `use`, `slabs`,
+/// `depends_on`, `in_use_reason`.
+pub(crate) fn put_in_use(v: &mut serde_json::Value, d: &crate::drive::Drive) {
+    let u = d.in_use();
+    v["in_use"] = json!(u.in_use);
+    v["use"] = json!(u.use_);
+    v["slabs"] = json!(u.slabs);
+    v["depends_on"] = json!(u.depends_on);
+    v["in_use_reason"] = json!(u.reason);
 }
 
 /// Where a drive is on its way into the fleet (#5), with the progress of
@@ -563,6 +576,7 @@ async fn enroll_drive(
         select: crate::worker::Select { drives: vec![d.id.0.to_string()], ..Default::default() },
         steps: vec![crate::worker::Step::Partition { role }, crate::worker::Step::Enroll { tier, role }],
         destroy: vec![],
+        i_know_in_use: vec![],
         dry_run: false,
     };
     match crate::worker::submit(&s, req, who.map(|w| w.0)).await {

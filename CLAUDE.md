@@ -655,9 +655,9 @@ is one structured answer, and an override that is not just `destroy`. Design
   in `destroy`, unless also named in `i_know_in_use` (DriveOperation
   `iKnowInUse`) — the console never sends it for the system drive; the fresh
   probe before each step counts too (a slab or RAID superblock found = in use)
-- designate: `spare` refused on any drive in use, `system` on one used for
-  data/RAID/mounted, `failed` on the system drive (it would drain the half the
-  node runs from); `none` / `reserved` stay allowed
+- designate: `system` refused on a drive used for data/RAID/mounted, `failed`
+  on the system drive (it would drain the half the node runs from); `none`,
+  `reserved`, `spare` stay allowed in the fleet and out (Phase 1b's rule)
 - test on forge1's layout: sda refused everywhere, sdb–sdd allowed
 Steps:
 - [ ] inuse.rs + Drive.mounted + outputs · [ ] guards + worker override + CRD

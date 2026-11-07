@@ -36,6 +36,8 @@ pub struct Observed {
     pub contents: Option<String>,
     /// The stormblock slabs on it, with their role and offset (#58).
     pub slabs: Vec<crate::contents::SlabPart>,
+    /// A partition of it is mounted (#123; seen only with `manage_mounted`).
+    pub mounted: bool,
     /// SCSI: block lengths and PI the drive offers (#85).
     pub supports: Option<crate::pi::Supports>,
     /// The rate its link negotiated, in Mb/s (#105).
@@ -429,6 +431,7 @@ mod linux {
                     in_use_by: p.in_use_by.clone(),
                     contents: p.contents.clone(),
                     slabs: p.slabs.clone(),
+                    mounted: super::mounted_in(mounts, &name),
                     supports: p.supports.clone(),
                     name,
                 });
@@ -527,6 +530,7 @@ mod linux {
                 in_use_by,
                 contents,
                 slabs,
+                mounted: super::mounted_in(mounts, &name),
                 supports,
                 name,
             });
