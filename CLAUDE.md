@@ -633,7 +633,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #125: thermal management — readings, limits, alerts, cooling, hot drives (P1, owner, 2026-11-07) — in progress
+### #125: thermal management — readings, limits, alerts, cooling, hot drives (P1, owner, 2026-11-07) — DONE (v0.41.0)
 
 Owner: "We also need thermal management on drives and all components."
 Design (the issue's; my calls said on it; not ours: BMC fan control +
@@ -668,7 +668,11 @@ Steps:
 - [x] outputs, docs, changelog · [x] issues: stormblock#564, stormipmi#98,
       stormconsole#318 (Replace is stormconsole#317)
 - [x] build VM on f6953b2: clippy -D warnings --locked, 333 unit + harnesses
-      (#128 was a missed Sample field) · [ ] short `thermal` on v0.41.0, golden
+      (#128 was a missed Sample field) · [x] v0.41.0 (b35c9b0): build VM clippy
+      clean, 333 unit + harnesses, short `thermal` passes vs the real daemon (the
+      VM has no hwmon: 0 components); golden requested
+- Live: a node's `/api/v1/thermal` lists its CPU/DIMM/NIC/drive components with
+  their own limits; the engine half is stormblock#564
 
 ### #123: a drive in use says so, and destructive verbs refuse it (P0, owner, 2026-11-07) — DONE (v0.40.0)
 
