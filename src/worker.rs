@@ -1863,12 +1863,15 @@ mod tests {
         let mut reserved = base.clone();
         reserved.designation = Designation::Reserved;
         assert_eq!(guard(&reserved, std::slice::from_ref(&smoke), false, &cx()), Ok(()));
-        // In use: reading is fine; the destructive sample needs `destroy`.
+        // In use: reading is fine; the destructive sample needs `destroy`
+        // and, the drive being in use, `i_know_in_use` too (#123).
         let mut held = base.clone();
         held.in_use_by = Some("stormblock (partition 2)".into());
         assert_eq!(guard(&held, std::slice::from_ref(&smoke), false, &cx()), Ok(()));
         assert!(guard(&held, std::slice::from_ref(&destr), false, &cx()).unwrap_err().contains("destroy"));
-        assert_eq!(guard(&held, std::slice::from_ref(&destr), true, &cx()), Ok(()));
+        assert!(guard(&held, std::slice::from_ref(&destr), true, &cx()).unwrap_err().contains("in use"));
+        let know = Context { in_use_named: true, ..cx() };
+        assert_eq!(guard(&held, std::slice::from_ref(&destr), true, &know), Ok(()));
         // Nothing to read on a 520-byte drive until it is formatted.
         let mut odd = base.clone();
         odd.block_size = 520;
