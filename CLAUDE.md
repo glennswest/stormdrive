@@ -631,6 +631,41 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #125: thermal management — readings, limits, alerts, cooling, hot drives (P1, owner, 2026-11-07) — in progress
+
+Owner: "We also need thermal management on drives and all components."
+Design (the issue's; my calls said on it; not ours: BMC fan control +
+inlet/exhaust + iDRAC third-party-card cooling → stormipmi, Thermal page →
+stormconsole#317, slowing background I/O + placement → stormblock):
+- `src/thermal.rs` (pure core + Linux hwmon read): every `thermal.interval_secs`
+  (30) a pass over every hwmon chip (CPU coretemp/k10temp, DIMM jc42/spd5118,
+  NIC hwmon under a net device, HBA, chipset/board, PSU, fans' RPM; a drive's
+  own hwmon — nvme, drivetemp — goes to that drive), every drive (its latest
+  reading) and every shelf's SES temperature sensors and fans
+- limits: the device's own first (hwmon `_max`/`_crit`, NVMe WCTEMP/CCTEMP via
+  hwmon, SAS LOG SENSE 0x0D reference temperature, SES thresholds), else a
+  live setting (`PUT /api/v1/thermal/limits`, kept in
+  `<data_dir>/thermal-limits.json`, per class or per component, never above a
+  device's own critical), else the class default
+- levels ok | near | warning | critical with hysteresis; an event + log line
+  on warning and again on critical (and back); history in system-data
+  `history/thermal/<YYYY-MM>.jsonl` (a component's line on change ≥ 1 °C or a
+  level change, else every heartbeat); in-memory trend for the API
+- cooling request for the BMC (`GET /api/v1/thermal` `cooling`: auto | raise |
+  max, why): raise when anything is near warning, max at critical, auto once
+  cool — stormipmi acts on it
+- a hot drive: `Drive.thermal` {level, temp, limits, since, throttle,
+  exclude_placement, replace_proposed}; pushed to the engine
+  `PUT /api/v1/drives/{id}/thermal` (404 → retried every 10 min, like
+  overcommit); critical for `replace_after_mins` (30) → replace proposed (event)
+- drive health keeps warning on temperature, now on the drive's own limits
+- outputs: `/api/v1/thermal`, `/metrics`, feed, kube Drive status
+Steps:
+- [ ] thermal.rs core + tests · [ ] drive limits (hwmon, 0x0D) · [ ] hwmon scan
+- [ ] loop, events, history, limits API · [ ] engine push, replace proposal
+- [ ] outputs, docs, changelog · [ ] issues: stormipmi, stormblock, console contract
+- [ ] build VM, release, golden
+
 ### #123: a drive in use says so, and destructive verbs refuse it (P0, owner, 2026-11-07) — DONE (v0.40.0)
 
 Owner, forge1's console: "also there no indication a drive is in use!" forge1's
