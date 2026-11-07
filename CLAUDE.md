@@ -633,6 +633,46 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #132: the PERC from the node — controller state, set good / JBOD, personality HBA (P0, owner, 2026-11-08) — in progress
+
+forge1: H730 Mini in RAID mode, sdb–sdd **Failed, 0 KB** after their formats
+were cut; HII and iDRAC refuse every operation. Dell's fix is from the OS
+(`perccli /c0/eX/sY set good force`, `perccli /c0 set personality=HBA`).
+Owner: "hba is mandatory". Design (the issue's; my calls said on it):
+- **Rust MFI where the call is public** (`src/raidctl.rs` + megaraid.rs):
+  reads `MR_DCMD_CTRL_GET_INFO` 0x01010000 (product name 0x540, serial 0x590,
+  package version 0x640, ld_present_count, enableJBOD), `PD_GET_INFO` for
+  every disk (fw_state @184, seq @2, errors, slot); set state
+  `MFI_DCMD_PD_STATE_SET` 0x02030100, mbox device id + seq + new state (FreeBSD
+  mfiutil `good` / `syspd`, BSD): `good` (UNCONFIGURED_GOOD 0x00) and `jbod`
+  (SYSTEM 0x40: the drive shows to Linux without a personality change).
+  Read back after; a refused change names the MFI status
+- **personality: perccli** — no public DCMD (Linux/FreeBSD headers have only
+  the `supportPersonalityChange` bits). `[controllers] perccli` path (default
+  search list); `/call show J` matches /cN by PCI address, `/cN set
+  personality=HBA J`; absent → 501 `tool_missing` saying so. A reboot applies
+  it: `pending_mode` kept. Refused while the controller has virtual disks.
+  Shipping the binary in the golden (pinned, sha256, licence: Dell EULA) is a
+  platform + compliance step → issues there
+- mode: perccli's when present, else inferred — RAID when VDs exist or a disk
+  is in a state only RAID mode has (UGood, UBad, hot spare, offline, failed,
+  rebuild, online, copyback); basis said. Finding `raid_mode` (HBA mandatory)
+  on /controllers, an event on change, feed, metrics
+- a Missing inventory drive the controller lists (SAS address, else shelf
+  key + bay) gets `controller_state {controller, device_id, enclosure, slot,
+  state, code}`: shown "failed (controller)", not just missing
+- API: `GET /api/v1/controllers[/{c}]`, `POST /api/v1/controllers/{c}/personality
+  {"mode":"HBA"}`, `POST /api/v1/drives/{id}/controller-state {"state":"good"|"jbod",
+  "force"}`, `POST /api/v1/controllers/{c}/drives/{device_id}/state` (a PD with
+  no inventory record); gated as drive operations, events; refused for the
+  system drive (inuse `use: system`) and any in-use / fleet drive; `force`
+  required from Failed (as perccli)
+Steps:
+- [ ] raidctl.rs parsers + plan + tests (fake firmware, fake perccli)
+- [ ] monitor + inventory join + API + feed + metrics
+- [ ] docs, changelog, v0.43.0; build VM; issues: perccli in the golden,
+      licence; console contract stormconsole#325
+
 ### #131: an interrupted format (3/31/00, no block node) reads Missing and can't be formatted (P0, 2026-11-07) — DONE (v0.42.1)
 
 forge1 sdb–sdd, powered off mid-format (512 + PI, #130's fallback), answer
