@@ -3,10 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-07
-- **feat:** thermal management (#125). `src/thermal.rs` runs a pass every 30 s over every hwmon chip (CPU, DIMM, NIC, HBA, GPU, chipset, board, PSU, inlet/exhaust, fans), every drive (fresh from its own hwmon, else the health sample) and every shelf's SES sensors and fans. Limits are the device's own first (hwmon max/crit = NVMe WCTEMP/CCTEMP, SAS reference temperature, SES thresholds), then live settings (`PUT /api/v1/thermal/limits`, which can only lower a device's limits), then class defaults. Levels ok/near/warning/critical have hysteresis, and warning, critical and recovery are `thermal` events. The cooling request for the BMC (auto/raise/max) is a `cooling` event when it changes. History goes to `history/thermal/` in system-data. New: `GET /api/v1/thermal`, `/thermal/{id}` (trend), `/thermal/limits`, `/thermal/history`; `stormdrive_thermal_*` metrics; `[thermal]` config
-- **feat:** a hot drive (#125): `thermal` on the drive (API, Drive status, feed) with `throttle_background` at warning, `exclude_new_placement` at critical, and `replace_proposed` after 30 min at critical. It is pushed to the engine (`PUT /api/v1/drives/{id}/thermal`, stormblock#564). A drive at warning or over is not offered, auto-added or enrolled by a policy
-- **feat:** a drive's own temperature limits (#125): `health.temp_limits` from hwmon (NVMe WCTEMP/CCTEMP, drivetemp) or LOG SENSE 0x0D's reference temperature. The health verdict judges the temperature against them before `monitor.temp_warn_c`/`temp_crit_c`
+## [v0.41.0] — 2026-11-07
+
+### Added
+- thermal management (#125). `src/thermal.rs` runs a pass every 30 s over every hwmon chip (CPU, DIMM, NIC, HBA, GPU, chipset, board, PSU, inlet/exhaust, fans), every drive (fresh from its own hwmon, else the health sample) and every shelf's SES sensors and fans. Limits are the device's own first (hwmon max/crit = NVMe WCTEMP/CCTEMP, SAS reference temperature, SES thresholds), then live settings (`PUT /api/v1/thermal/limits`, which can only lower a device's limits), then class defaults. Levels ok/near/warning/critical have hysteresis, and warning, critical and recovery are `thermal` events. The cooling request for the BMC (auto/raise/max) is a `cooling` event when it changes. History goes to `history/thermal/` in system-data. New: `GET /api/v1/thermal`, `/thermal/{id}` (trend), `/thermal/limits`, `/thermal/history`; `stormdrive_thermal_*` metrics; `[thermal]` config
+- a hot drive (#125): `thermal` on the drive (API, Drive status, feed) with `throttle_background` at warning, `exclude_new_placement` at critical, and `replace_proposed` after 30 min at critical. It is pushed to the engine (`PUT /api/v1/drives/{id}/thermal`, stormblock#564). A drive at warning or over is not offered, auto-added or enrolled by a policy
+- a drive's own temperature limits (#125): `health.temp_limits` from hwmon (NVMe WCTEMP/CCTEMP, drivetemp) or LOG SENSE 0x0D's reference temperature. The health verdict judges the temperature against them before `monitor.temp_warn_c`/`temp_crit_c`
 
 ## [v0.40.0] — 2026-11-07
 

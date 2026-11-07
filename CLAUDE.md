@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.40.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.41.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -667,7 +667,7 @@ Steps:
 - [x] loop, events, history, limits API · [x] engine push, replace proposal
 - [x] outputs, docs, changelog · [x] issues: stormblock#564, stormipmi#98,
       stormconsole#318 (Replace is stormconsole#317)
-- [x] build VM on 7ce8a1f-ish: clippy -D warnings --locked, 333 unit + harnesses
+- [x] build VM on f6953b2: clippy -D warnings --locked, 333 unit + harnesses
       (#128 was a missed Sample field) · [ ] short `thermal` on v0.41.0, golden
 
 ### #123: a drive in use says so, and destructive verbs refuse it (P0, owner, 2026-11-07) — DONE (v0.40.0)
