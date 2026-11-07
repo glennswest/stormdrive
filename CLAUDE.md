@@ -631,6 +631,38 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #123: a drive in use says so, and destructive verbs refuse it (P0, owner, 2026-11-07) — in progress
+
+Owner, forge1's console: "also there no indication a drive is in use!" forge1's
+live `/api/v1/drives` (0.39.0) does carry it for sda — `in_use_by`, `owner:
+stormblock`, `slab_parts` system/data/data, `contents` with the ESP — the
+report read keys that do not exist (`in_use`, `role`, `slabs`). What is missing
+is one structured answer, and an override that is not just `destroy`. Design
+(the issue's, my calls said on it):
+- `src/inuse.rs` (pure) → on every drive (`/api/v1/drives`, `/drives/{id}`, kube
+  Drive status, feed): `in_use`, `use` = system | data | slab_member |
+  raid_member | mounted | free (first that holds: a system-role slab; a
+  stormraid superblock; a data slab; in the fleet or a whole-drive slab; a
+  mounted partition), `slabs` {partition, name, role}, `depends_on` (the node's
+  root / its data half, the engine's volumes on it, a RAID set), `reason`
+  ("sda holds this node's system slab (partition 2 'stormblock'); the node runs
+  from it")
+- `Drive.mounted` from discovery (only with `manage_mounted`; otherwise such a
+  drive is not managed at all)
+- refusals name the use: REST format / shelf / batch format, destructive test
+  (no override, as before); worker destroying steps (format, sanitize, security
+  erase, partition, destructive sample) refuse an in-use drive even when named
+  in `destroy`, unless also named in `i_know_in_use` (DriveOperation
+  `iKnowInUse`) — the console never sends it for the system drive; the fresh
+  probe before each step counts too (a slab or RAID superblock found = in use)
+- designate: `spare` refused on any drive in use, `system` on one used for
+  data/RAID/mounted, `failed` on the system drive (it would drain the half the
+  node runs from); `none` / `reserved` stay allowed
+- test on forge1's layout: sda refused everywhere, sdb–sdd allowed
+Steps:
+- [ ] inuse.rs + Drive.mounted + outputs · [ ] guards + worker override + CRD
+- [ ] tests (forge1 layout), docs, changelog; build VM; v0.40.0; golden
+
 ### #122: forge1's BP14G+ read as two shelves (P1, owner, 2026-11-07) — DONE (v0.39.1)
 
 Owner: "why are the drives split over two shelfs?" forge1 (0.39.0) live
