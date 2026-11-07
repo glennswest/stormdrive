@@ -77,6 +77,18 @@ dir = "/system-data"   # the system-data volume as mounted for stormdrive; absen
 heartbeat_secs = 3600       # a drive record when a counter changes, else this often (monitor interval = every sample)
 keep_months = 24            # history/drives/<drive>/<YYYY-MM>.jsonl older than this are removed
 
+[thermal]                   # #125: every component's temperature, limits, alerts, cooling request, hot drives
+enabled = true
+interval_secs = 30          # a pass over every hwmon chip, every drive and every shelf sensor
+near_c = 5.0                # within this of a warning limit = near: the cooling request rises
+hysteresis_c = 2.0          # a level is left only this far under where it was entered
+replace_after_mins = 30     # a drive critical this long is proposed for replacement
+heartbeat_secs = 600        # history/thermal/<YYYY-MM>.jsonl: a reading when it moves 1 °C or its level changes, else this often
+trend_samples = 120         # readings kept in memory per component for GET /api/v1/thermal/{id} (an hour at 30 s)
+# [thermal.classes.cpu]     # class defaults under the device's own limits; live settings: PUT /api/v1/thermal/limits
+# warn_c = 85.0
+# crit_c = 95.0
+
 [kubernetes]                # the apiserver (#45): reviews bearers, holds Drive + DriveOperation objects
 api_url = ""                # https://<apiserver>:6443; empty = $STORMDRIVE_KUBE_API, then in-cluster; none = writes need admin_token
 ca_file = ""                # empty = $STORMDRIVE_KUBE_CA, then the service account's ca.crt

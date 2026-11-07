@@ -545,6 +545,41 @@ impl StormBlockClient {
         Ok(true)
     }
 
+    /// PUT /api/v1/drives/{id}/thermal — how hot the drive is against its
+    /// limits and what that asks of the engine (#125, stormblock#564): slow
+    /// its background I/O, place nothing new on it, replace it. `Ok(false)`:
+    /// the engine has no such route yet (404/405).
+    pub async fn set_thermal(
+        &self,
+        path: &str,
+        t: &crate::thermal::DriveThermal,
+        uuid: Uuid,
+        wwn: Option<&str>,
+        serial: &str,
+    ) -> anyhow::Result<bool> {
+        let source = if t.limits.crit_source == crate::thermal::LimitSource::Device { t.limits.crit_source } else { t.limits.warn_source };
+        let body = serde_json::json!({
+            "level": t.level,
+            "temperature_c": t.temp_c,
+            "warn_c": t.limits.warn_c,
+            "crit_c": t.limits.crit_c,
+            "limit_source": source,
+            "throttle_background": t.throttle_background,
+            "exclude_new_placement": t.exclude_new_placement,
+            "replace_proposed": t.replace_proposed,
+            "since_unix": t.since_unix,
+            "drive": { "uuid": uuid.to_string(), "wwn": wwn, "serial": serial, "path": path },
+        });
+        let resp = self
+            .send(self.http().put(self.drive_url(path, "/thermal")).json(&body), Idempotent::Yes)
+            .await?;
+        if matches!(resp.status(), reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED) {
+            return Ok(false);
+        }
+        resp.error_for_status()?;
+        Ok(true)
+    }
+
     /// DELETE /api/v1/drives/{id} — id may be a UUID or a path. Destructive
     /// on the engine (stormblock#274): the admin token or a storage-admin bearer.
     pub async fn delete_drive(&self, id_or_path: &str, force: bool) -> anyhow::Result<()> {

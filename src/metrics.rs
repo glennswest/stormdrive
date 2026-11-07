@@ -313,6 +313,45 @@ fn shelf(o: &mut Out, key: &str, s: &crate::ses::ShelfReport) {
     }
 }
 
+/// The thermal families (#125), appended to the page: every component's
+/// reading, limits and level, every fan, the cooling request.
+pub fn render_thermal(t: &crate::thermal::Tracker) -> String {
+    use crate::thermal::{CoolingLevel, Level};
+    let mut o = Out::default();
+    for c in t.components.values() {
+        let l = [("component", c.id.clone()), ("class", c.class.as_str().into()), ("label", c.label.clone())];
+        if let Some(v) = c.temp_c {
+            o.gauge("stormdrive_thermal_temperature_celsius", "A component's temperature, °C.", &l, v);
+        }
+        o.gauge("stormdrive_thermal_warning_celsius", "A component's warning limit, °C (its own, a setting, or the class default).", &l, c.limits.warn_c);
+        o.gauge("stormdrive_thermal_critical_celsius", "A component's critical limit, °C.", &l, c.limits.crit_c);
+        let lv = match c.level {
+            Level::Unknown => -1.0,
+            Level::Ok => 0.0,
+            Level::Near => 1.0,
+            Level::Warning => 2.0,
+            Level::Critical => 3.0,
+        };
+        o.gauge("stormdrive_thermal_level", "-1 no reading, 0 ok, 1 near warning, 2 warning, 3 critical.", &l, lv);
+    }
+    for f in &t.fans {
+        let l = [("fan", f.id.clone()), ("label", f.label.clone())];
+        if let Some(r) = f.rpm {
+            o.gauge("stormdrive_thermal_fan_rpm", "A fan's speed.", &l, r as f64);
+        }
+        o.gauge("stormdrive_thermal_fan_ok", "0 when the fan is stopped, under its minimum or flagged.", &l, f.problem.is_none() as u8 as f64);
+    }
+    if let Some(c) = &t.cooling {
+        let v = match c.request {
+            CoolingLevel::Auto => 0.0,
+            CoolingLevel::Raise => 1.0,
+            CoolingLevel::Max => 2.0,
+        };
+        o.gauge("stormdrive_thermal_cooling_request", "What the node asks its BMC for: 0 auto, 1 raise, 2 max.", &[], v);
+    }
+    o.finish()
+}
+
 fn poller(o: &mut Out, p: &PollStats) {
     o.gauge("stormdrive_poll_drives", "Drives the health poller samples.", &[], p.drives as f64);
     o.gauge("stormdrive_poll_in_flight", "Health reads running now.", &[], p.in_flight as f64);

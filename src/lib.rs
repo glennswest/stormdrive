@@ -47,6 +47,7 @@ pub mod shelfview;
 pub mod smart;
 pub mod stormblock;
 pub mod system;
+pub mod thermal;
 pub mod tls;
 pub mod topology;
 pub mod transport;

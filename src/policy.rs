@@ -228,6 +228,10 @@ pub fn verdict(p: &PolicySpec, d: &Drive, in_job: bool) -> Verdict {
     if health >= HealthStatus::Failing {
         return Verdict::Skip(format!("health is {health:?}"));
     }
+    // Hot (#125): nothing new goes on it until it is under its warning limit.
+    if d.thermal.as_ref().is_some_and(|t| t.throttle_background) {
+        return Verdict::Skip("running over its warning temperature".into());
+    }
     let reformat = d.needs_reformat();
     if reformat && p.reformat.is_none() {
         return Verdict::Skip(format!("{}-byte sectors and the policy has no reformat", d.block_size));

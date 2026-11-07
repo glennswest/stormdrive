@@ -546,6 +546,38 @@ impl History {
         ok
     }
 
+    /// The node's thermal history (#125): `history/thermal/<YYYY-MM>.jsonl`.
+    pub fn thermal_dir(&self) -> PathBuf {
+        self.root.join("history/thermal")
+    }
+
+    /// One line of the thermal history, when system-data is there.
+    pub fn append_thermal(&self, line: &crate::thermal::HistoryLine) -> anyhow::Result<bool> {
+        if !self.available() {
+            return Ok(false);
+        }
+        append_jsonl(&self.thermal_dir(), line.unix, line, self.keep_months)?;
+        Ok(true)
+    }
+
+    /// The newest `limit` lines of the thermal history, oldest first.
+    pub fn read_thermal(&self, limit: usize) -> Vec<crate::thermal::HistoryLine> {
+        let mut files = months(&self.thermal_dir());
+        files.sort();
+        let mut out: Vec<crate::thermal::HistoryLine> = Vec::new();
+        for f in files.iter().rev() {
+            let Ok(s) = std::fs::read_to_string(f) else { continue };
+            let mut lines: Vec<_> = s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+            lines.append(&mut out);
+            out = lines;
+            if out.len() >= limit {
+                break;
+            }
+        }
+        let skip = out.len().saturating_sub(limit);
+        out.split_off(skip)
+    }
+
     pub fn drive_dir(&self, key: &str) -> PathBuf {
         self.root.join("history/drives").join(key)
     }
@@ -709,11 +741,17 @@ pub fn identity(d: &Drive) -> Identity {
 /// Append one JSON line to `<dir>/<YYYY-MM>.jsonl` with a single write,
 /// synced; prune old months when a new month starts.
 fn append_line(dir: &Path, e: &Entry, keep_months: u32) -> anyhow::Result<()> {
+    append_jsonl(dir, e.unix, e, keep_months)
+}
+
+/// Append one value as a JSON line to `<dir>/<YYYY-MM of unix>.jsonl`, in a
+/// single synced write; prune old months when a new month starts.
+pub fn append_jsonl<T: Serialize>(dir: &Path, unix: u64, value: &T, keep_months: u32) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let m = month(e.unix);
+    let m = month(unix);
     let file = dir.join(format!("{m}.jsonl"));
     let new_month = !file.exists();
-    let mut line = serde_json::to_vec(e)?;
+    let mut line = serde_json::to_vec(value)?;
     line.push(b'\n');
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file)?;
     f.write_all(&line)?;

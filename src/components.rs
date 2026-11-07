@@ -228,8 +228,25 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
         metrics.push(Metric::new("wwid", w.clone()).tone("muted"));
     }
     if let Some(t) = d.health.temperature_c {
-        // Its own tone: only the health below reads in error colour (#107).
-        metrics.push(Metric::new("temp", t.to_string()).unit("°C").tone("muted"));
+        // Its own tone: only the health below reads in error colour (#107);
+        // against the drive's real limits once the thermal pass has it (#125).
+        let temp = d.thermal.as_ref().and_then(|th| th.temp_c).map_or(t.to_string(), |v| format!("{v:.0}"));
+        let tone = match d.thermal.as_ref().map(|th| th.level) {
+            Some(crate::thermal::Level::Critical) => "error",
+            Some(crate::thermal::Level::Warning) => "warn",
+            _ => "muted",
+        };
+        metrics.push(Metric::new("temp", temp).unit("°C").tone(tone));
+        if let Some(th) = d.thermal.as_ref().filter(|th| th.throttle_background) {
+            let what = if th.replace_proposed {
+                "replace: critical for too long"
+            } else if th.exclude_new_placement {
+                "hot: no new placements"
+            } else {
+                "hot: background I/O slowed"
+            };
+            metrics.push(Metric::new("thermal", what.to_string()).tone(if th.exclude_new_placement { "error" } else { "warn" }));
+        }
     }
     if let Some(w) = d.health.wear_pct {
         let m = Metric::new("wear", w.to_string()).unit("%");
@@ -773,6 +790,8 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             pushed_overcommit: None,
+            thermal: None,
+            pushed_thermal: None,
             replaces: None,
             drain: None,
             usage: None,

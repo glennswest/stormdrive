@@ -48,6 +48,8 @@ pub struct FleetState {
     auto_add_attempted: std::collections::HashMap<DriveId, Instant>,
     /// The engine answered 404/405 to the overcommit push: not before then.
     overcommit_unsupported_until: Option<Instant>,
+    /// The same for the thermal push (#125, stormblock#564).
+    thermal_unsupported_until: Option<Instant>,
 }
 
 /// Everything, in the order that matters: labels first (a drain places by
@@ -58,6 +60,7 @@ pub async fn tick(state: &Arc<AppState>, fs: &mut FleetState) {
     }
     sync_labels(state).await;
     sync_overcommit(state, fs).await;
+    sync_thermal(state, fs).await;
     if state.config.stormblock.push_health {
         push_health(state).await;
     }
@@ -128,6 +131,53 @@ async fn sync_overcommit(state: &Arc<AppState>, fs: &mut FleetState) {
             }
             Err(e) => tracing::debug!(drive = %name, "overcommit not pushed: {e:#}"),
         }
+    }
+}
+
+/// Push each data-holding drive's thermal state (#125) when it changed:
+/// at warning the engine slows its background I/O, at critical it places
+/// nothing new on it (stormblock#564). A drive that is cool and was never
+/// pushed is not sent (nothing to undo).
+async fn sync_thermal(state: &Arc<AppState>, fs: &mut FleetState) {
+    if fs.thermal_unsupported_until.is_some_and(|t| Instant::now() < t) {
+        return;
+    }
+    type Job = (DriveId, String, String, crate::thermal::DriveThermal, Option<String>, String);
+    let due: Vec<Job> = {
+        let inv = state.inventory.read().await;
+        inv.drives
+            .values()
+            .filter(|d| d.activity != Activity::Missing)
+            .filter(|d| d.membership == Membership::Fleet || d.usage.as_ref().is_some_and(|u| !u.slabs.is_empty()))
+            .filter_map(|d| d.thermal.clone().map(|t| (d, t)))
+            .filter(|(d, t)| thermal_push_due(d.pushed_thermal.as_deref(), t))
+            .map(|(d, t)| (d.id, d.name.clone(), d.stormblock_path(), t, d.wwid.clone(), d.serial.clone()))
+            .collect()
+    };
+    for (id, name, path, t, wwn, serial) in due {
+        match state.stormblock.set_thermal(&path, &t, id.0, wwn.as_deref(), &serial).await {
+            Ok(true) => {
+                if let Some(d) = state.inventory.write().await.drives.get_mut(&id) {
+                    d.pushed_thermal = Some(t.engine_word());
+                }
+                tracing::info!(drive = %name, level = t.level.as_str(), throttle = t.throttle_background, exclude = t.exclude_new_placement, "thermal state pushed to stormblock");
+            }
+            Ok(false) => {
+                tracing::debug!("stormblock has no thermal route yet (stormblock#564)");
+                fs.thermal_unsupported_until = Some(Instant::now() + OVERCOMMIT_RETRY);
+                return;
+            }
+            Err(e) => tracing::debug!(drive = %name, "thermal state not pushed: {e:#}"),
+        }
+    }
+}
+
+/// A thermal push is due when what the engine is told changed; a drive
+/// never pushed is sent only once it asks something of the engine.
+pub fn thermal_push_due(pushed: Option<&str>, t: &crate::thermal::DriveThermal) -> bool {
+    match pushed {
+        Some(p) => p != t.engine_word(),
+        None => t.throttle_background || t.exclude_new_placement || t.replace_proposed,
     }
 }
 
@@ -624,6 +674,8 @@ async fn auto_add(state: &Arc<AppState>, fs: &mut FleetState) {
             .filter(|d| d.fleet_join_blocker().is_none())
             .filter(|d| d.designation == Designation::None)
             .filter(|d| d.health.status() != HealthStatus::Unknown)
+            // Hot (#125): not into the fleet while over its warning limit.
+            .filter(|d| !d.thermal.as_ref().is_some_and(|t| t.throttle_background))
             .map(|d| (d.id, d.name.clone(), d.path.clone(), d.stormblock_labels(), d.kind))
             .collect()
     };

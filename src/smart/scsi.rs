@@ -140,6 +140,15 @@ pub fn parse_temperature(raw: &[u8]) -> Option<i32> {
     d.get(1).filter(|t| **t != 0xFF).map(|t| i32::from(*t))
 }
 
+/// Temperature (0x0D), parameter 1: the reference temperature, the most the
+/// drive is rated to run at continuously (SPC-4), as its limits (#125):
+/// critical there, warning 5 °C under.
+pub fn parse_reference_temperature(raw: &[u8]) -> Option<crate::smart::TempLimits> {
+    let (_, d) = log_params(raw, 0x0D).into_iter().find(|(c, _)| *c == 1)?;
+    let t = d.get(1).filter(|t| **t != 0xFF && **t != 0).map(|t| i32::from(*t))?;
+    Some(crate::smart::TempLimits { warn_c: Some(t - 5), crit_c: Some(t), source: "log_sense_0x0d".into() })
+}
+
 /// An error counter page (0x02 write, 0x03 read, 0x05 verify): parameters
 /// 0003h (total corrected), 0005h (bytes processed), 0006h (total
 /// uncorrected), each a big-endian counter of its own length.
@@ -310,31 +319,8 @@ mod linux {
             .filter(|s| !s.is_empty())
     }
 
-    /// drivetemp and SAS hwmon entries land under device/hwmon* — sometimes
-    /// nested one level (device/hwmon/hwmonN).
-    fn find_hwmon_temp(dev: &Path) -> Option<i32> {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        for e in std::fs::read_dir(dev).ok()?.flatten() {
-            let n = e.file_name().to_string_lossy().to_string();
-            if n.starts_with("hwmon") {
-                candidates.push(e.path());
-                if let Ok(inner) = std::fs::read_dir(e.path()) {
-                    for i in inner.flatten() {
-                        if i.file_name().to_string_lossy().starts_with("hwmon") {
-                            candidates.push(i.path());
-                        }
-                    }
-                }
-            }
-        }
-        for c in candidates {
-            if let Some(v) = read_trim(&c.join("temp1_input")) {
-                if let Ok(milli) = v.parse::<i64>() {
-                    return Some((milli / 1000) as i32);
-                }
-            }
-        }
-        None
+    fn hwmon_limits(l: crate::thermal::DeviceLimits) -> crate::smart::TempLimits {
+        crate::smart::TempLimits { warn_c: l.warn_c.map(|v| v.round() as i32), crit_c: l.crit_c.map(|v| v.round() as i32), source: "hwmon".into() }
     }
 
     /// LOG SENSE of one page; None when the drive does not have it.
@@ -375,8 +361,13 @@ mod linux {
             }
             s.temperature_c = s.temperature_c.or(ie.temperature_c);
         }
-        if s.temperature_c.is_none() {
-            s.temperature_c = log_sense(&dev, 0x0D).and_then(|r| parse_temperature(&r));
+        // The temperature page also carries the drive's reference
+        // temperature: its limit (#125).
+        if let Some(r) = log_sense(&dev, 0x0D) {
+            s.temperature_c = s.temperature_c.or_else(|| parse_temperature(&r));
+            if s.temp_limits.is_none() {
+                s.temp_limits = parse_reference_temperature(&r);
+            }
         }
         if ssd {
             if let Some(w) = log_sense(&dev, 0x11).and_then(|r| parse_ssd_endurance(&r)) {
@@ -414,8 +405,11 @@ mod linux {
                 messages.push(format!("{name}: kernel device state is {s:?}"));
             }
         }
+        // drivetemp's (or a SAS hwmon's) reading and the drive's limits.
+        let hw = crate::thermal::drive_hwmon(Path::new("/sys"), name);
         let mut s = Sample {
-            temperature_c: find_hwmon_temp(&dev),
+            temperature_c: hw.and_then(|(t, _)| t).map(|t| t.round() as i32),
+            temp_limits: hw.map(|(_, l)| hwmon_limits(l)).filter(|l| l.warn_c.is_some() || l.crit_c.is_some()),
             kernel_ok,
             messages,
             ..Default::default()
@@ -511,6 +505,9 @@ mod tests {
         // Temperature: parameter 0 byte 1; 0xFF unknown.
         assert_eq!(parse_temperature(&page(0x0D, &[(0, &[0, 35]), (1, &[0, 65])])), Some(35));
         assert_eq!(parse_temperature(&page(0x0D, &[(0, &[0, 0xFF])])), None);
+        let l = parse_reference_temperature(&page(0x0D, &[(0, &[0, 35]), (1, &[0, 65])])).unwrap();
+        assert_eq!((l.warn_c, l.crit_c), (Some(60), Some(65)));
+        assert_eq!(parse_reference_temperature(&page(0x0D, &[(0, &[0, 35])])), None);
         // Solid State Media: parameter 1 byte 3.
         assert_eq!(parse_ssd_endurance(&page(0x11, &[(1, &[0, 0, 0, 7])])), Some(7));
         assert_eq!(parse_ssd_endurance(&page(0x11, &[(2, &[0, 0, 0, 7])])), None);

@@ -140,7 +140,20 @@ pub fn collect(path: &str, name: &str) -> Sample {
     #[cfg(target_os = "linux")]
     {
         match linux::fetch_smart_page(path) {
-            Ok(page) => decode_smart_page(&page),
+            Ok(page) => {
+                let mut s = decode_smart_page(&page);
+                // WCTEMP / CCTEMP as the kernel's hwmon gives them (#125).
+                if let Some((_, l)) = crate::thermal::drive_hwmon(std::path::Path::new("/sys"), name) {
+                    if l.warn_c.is_some() || l.crit_c.is_some() {
+                        s.temp_limits = Some(crate::smart::TempLimits {
+                            warn_c: l.warn_c.map(|v| v.round() as i32),
+                            crit_c: l.crit_c.map(|v| v.round() as i32),
+                            source: "hwmon".into(),
+                        });
+                    }
+                }
+                s
+            }
             Err(e) => Sample {
                 kernel_ok: false,
                 messages: vec![format!("{name}: SMART log page read failed: {e}")],

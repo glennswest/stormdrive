@@ -19,6 +19,7 @@ pub struct Config {
     pub worker: WorkerConfig,
     pub kubernetes: KubernetesConfig,
     pub history: HistoryConfig,
+    pub thermal: ThermalConfig,
 }
 
 impl Default for Config {
@@ -35,6 +36,40 @@ impl Default for Config {
             worker: WorkerConfig::default(),
             kubernetes: KubernetesConfig::default(),
             history: HistoryConfig::default(),
+            thermal: ThermalConfig::default(),
+        }
+    }
+}
+
+/// Thermal management (#125): readings, limits, alerts, the cooling
+/// request, hot drives. A drive's class default is `monitor.temp_warn_c` /
+/// `temp_crit_c`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThermalConfig {
+    pub enabled: bool,
+    pub interval_secs: u64,
+    pub near_c: f64,
+    pub hysteresis_c: f64,
+    pub replace_after_mins: u64,
+    pub heartbeat_secs: u64,
+    pub trend_samples: usize,
+    /// Class defaults (`cpu`, `dimm`, `nic`, …) in place of the built-in
+    /// ones; the device's own limits and the live settings still come first.
+    pub classes: BTreeMap<String, crate::thermal::LimitSetting>,
+}
+
+impl Default for ThermalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 30,
+            near_c: 5.0,
+            hysteresis_c: 2.0,
+            replace_after_mins: 30,
+            heartbeat_secs: 600,
+            trend_samples: 120,
+            classes: BTreeMap::new(),
         }
     }
 }
@@ -369,6 +404,14 @@ impl Config {
         if self.history.keep_months == 0 {
             anyhow::bail!("history.keep_months must be >= 1");
         }
+        if self.thermal.interval_secs == 0 || self.thermal.heartbeat_secs == 0 || self.thermal.trend_samples == 0 {
+            anyhow::bail!("thermal.interval_secs, heartbeat_secs and trend_samples must be non-zero");
+        }
+        if !(self.thermal.near_c >= 0.0 && self.thermal.hysteresis_c >= 0.0) {
+            anyhow::bail!("thermal.near_c and thermal.hysteresis_c must be >= 0");
+        }
+        let classes = crate::thermal::Settings { classes: self.thermal.classes.clone(), ..Default::default() };
+        classes.validate().map_err(|e| anyhow::anyhow!("thermal.classes: {e}"))?;
         if self.monitor.hysteresis == 0 {
             anyhow::bail!("monitor.hysteresis must be >= 1");
         }

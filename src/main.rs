@@ -80,7 +80,8 @@ async fn main() -> anyhow::Result<()> {
     let node_name = config.node_name();
     let data_dir = config.data_dir.clone();
     let (worker, jobs_note) = stormdrive::worker::Worker::load(data_dir.as_deref());
-    for note in [inventory_note, events_note, jobs_note].into_iter().flatten() {
+    let (thermal, thermal_note) = stormdrive::thermal::Runtime::load(data_dir.as_deref());
+    for note in [inventory_note, events_note, jobs_note, thermal_note].into_iter().flatten() {
         events.push(None, stormdrive::events::Severity::Warning, "state_file", note);
     }
     // #46: destructive engine verbs fall back to stormdrive's own Kubernetes
@@ -130,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         history: Arc::new(history),
         assets: RwLock::new(None),
         system_drives: Arc::new(stormdrive::system::SystemDrives::new(&state_history_dir)),
+        thermal: RwLock::new(thermal),
     });
 
     // What was in flight when we stopped — worker jobs, and drives a
@@ -139,6 +141,8 @@ async fn main() -> anyhow::Result<()> {
     // Drive events and operation results into each drive's kept log (#68).
     tokio::spawn(stormdrive::history::follow(state.clone()));
     tokio::spawn(stormdrive::monitor::run(state.clone()));
+    // Every component's temperature, limits and cooling (#125).
+    tokio::spawn(stormdrive::thermal::run(state.clone()));
     // Drive objects and DriveOperations in the apiserver (#45).
     if let (Some(k), true) = (&kube, state.config.kubernetes.controller) {
         tokio::spawn(stormdrive::controller::run(state.clone(), k.clone()));

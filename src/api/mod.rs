@@ -68,6 +68,8 @@ pub struct AppState {
     pub assets: RwLock<Option<crate::assets::Assets>>,
     /// The system-designated drives in system-data, for the install (#66).
     pub system_drives: Arc<crate::system::SystemDrives>,
+    /// Every component's temperature, limits and level; live limits (#125).
+    pub thermal: RwLock<crate::thermal::Runtime>,
 }
 
 impl AppState {
@@ -201,6 +203,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/history", get(history_status))
         .route("/api/v1/system-drives", get(system_drives))
         .route("/api/v1/assets", get(get_assets))
+        .route("/api/v1/thermal", get(thermal_all))
+        .route("/api/v1/thermal/limits", get(thermal_limits).put(set_thermal_limits))
+        .route("/api/v1/thermal/history", get(thermal_history))
+        .route("/api/v1/thermal/{id}", get(thermal_one))
         .route("/api/v1/drives/{id}/locate", post(set_locate))
         // Parameter-less action routes: a stormview renderer invokes
         // method+path with no body, so every action needs a body-free form.
@@ -456,7 +462,9 @@ async fn metrics(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let page = {
         let inv = s.inventory.read().await;
         let shelves = s.shelves.read().await;
-        crate::metrics::render(crate::VERSION, &s.node_name, inv.drives.values(), &shelves, &s.poller.stats())
+        let mut page = crate::metrics::render(crate::VERSION, &s.node_name, inv.drives.values(), &shelves, &s.poller.stats());
+        page.push_str(&crate::metrics::render_thermal(&s.thermal.read().await.tracker));
+        page
     };
     ([(axum::http::header::CONTENT_TYPE, crate::metrics::CONTENT_TYPE)], page)
 }
@@ -804,6 +812,91 @@ async fn get_assets(State(s): State<Arc<AppState>>) -> Result<Json<serde_json::V
         Some(a) => Ok(Json(json!(a))),
         None => Err(ApiError::not_found("no assets record this boot (see /api/v1/history)".to_string())),
     }
+}
+
+/// `GET /api/v1/thermal` — every component's temperature, limits and level,
+/// every fan, and the cooling request for the BMC (#125).
+async fn thermal_all(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let rt = s.thermal.read().await;
+    let mut v = rt.tracker.snapshot();
+    v["enabled"] = json!(s.config.thermal.enabled);
+    v["interval_secs"] = json!(s.config.thermal.interval_secs);
+    Json(v)
+}
+
+/// `GET /api/v1/thermal/{id}` — one component with its recent readings.
+async fn thermal_one(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
+    let rt = s.thermal.read().await;
+    let c = rt.tracker.components.get(&id).ok_or_else(|| ApiError::not_found(format!("no thermal component {id:?} (see /api/v1/thermal)")))?;
+    let trend: Vec<serde_json::Value> = rt.tracker.trend(&id).into_iter().map(|(t, c)| json!([t, c])).collect();
+    let mut v = json!(c);
+    v["trend"] = json!(trend);
+    Ok(Json(v))
+}
+
+/// `GET /api/v1/thermal/limits` — the live settings, the configured class
+/// defaults and the built-in ones.
+async fn thermal_limits(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let rt = s.thermal.read().await;
+    let builtin: std::collections::BTreeMap<&str, serde_json::Value> = crate::thermal::Class::ALL
+        .iter()
+        .map(|c| {
+            let (w, cr) = if *c == crate::thermal::Class::Drive {
+                (f64::from(s.config.monitor.temp_warn_c), f64::from(s.config.monitor.temp_crit_c))
+            } else {
+                c.default_limits()
+            };
+            (c.as_str(), json!({"warn_c": w, "crit_c": cr}))
+        })
+        .collect();
+    Json(json!({
+        "live": rt.settings,
+        "configured_classes": s.config.thermal.classes,
+        "builtin_classes": builtin,
+        "rule": "the device's own limits first; a setting fills what it does not give and may lower what it does, never raise it; else the class default",
+    }))
+}
+
+/// `PUT /api/v1/thermal/limits` — replace the live settings (a write: the
+/// storage-admin gate). Kept in `<data_dir>/thermal-limits.json`; the next
+/// pass uses them.
+async fn set_thermal_limits(
+    State(s): State<Arc<AppState>>,
+    who: Option<axum::Extension<crate::kubeauth::Requester>>,
+    Json(body): Json<crate::thermal::Settings>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    body.validate().map_err(ApiError::bad_request)?;
+    let changed = {
+        let mut rt = s.thermal.write().await;
+        let changed = rt.settings != body;
+        rt.settings = body.clone();
+        rt.save().map_err(|e| ApiError::bad_request(format!("thermal limits not saved: {e:#}")))?;
+        changed
+    };
+    if changed {
+        let who = who.map_or("unknown".to_string(), |w| w.0.who.clone());
+        s.events.write().await.push(
+            None,
+            Severity::Info,
+            "thermal",
+            format!("thermal limits set by {who}: {} class setting(s), {} component setting(s)", body.classes.len(), body.components.len()),
+        );
+    }
+    Ok(Json(json!({ "live": body })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ThermalHistoryQuery {
+    limit: Option<usize>,
+}
+
+/// `GET /api/v1/thermal/history?limit=N` — the newest lines of the kept
+/// thermal history (system-data), oldest first.
+async fn thermal_history(State(s): State<Arc<AppState>>, Query(q): Query<ThermalHistoryQuery>) -> Json<serde_json::Value> {
+    let h = s.history.clone();
+    let limit = q.limit.unwrap_or(120).clamp(1, 5000);
+    let lines = tokio::task::spawn_blocking(move || h.read_thermal(limit)).await.unwrap_or_default();
+    Json(json!({ "dir": s.history.thermal_dir(), "lines": lines }))
 }
 
 #[derive(Deserialize)]

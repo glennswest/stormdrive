@@ -435,6 +435,9 @@ pub const ACK_WATCHED: [&str; 9] = [
 pub struct HealthReport {
     pub status: Option<HealthStatus>,
     pub temperature_c: Option<i32>,
+    /// The drive's own temperature limits, when it gives them (#125).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp_limits: Option<crate::smart::TempLimits>,
     pub power_on_hours: Option<u64>,
     /// The drive's own media-error count (NVMe log 0x02, ATA 187).
     pub media_errors: u64,
@@ -584,6 +587,14 @@ pub struct Drive {
     /// it once more, in case the engine forgot it.
     #[serde(skip)]
     pub pushed_overcommit: Option<Overcommit>,
+    /// How hot the drive is against its limits, and what that asks of the
+    /// engine (#125): slow background I/O at warning, no new placements at
+    /// critical, a replacement when it stays critical.
+    #[serde(default)]
+    pub thermal: Option<crate::thermal::DriveThermal>,
+    /// What the engine last accepted of `thermal`, so it is pushed on change.
+    #[serde(skip)]
+    pub pushed_thermal: Option<String>,
     /// A drain in progress or finished, as stormblock last reported it.
     #[serde(default)]
     pub drain: Option<DrainRecord>,
@@ -844,6 +855,10 @@ impl Drive {
         if self.needs_reformat() {
             return Some(format!("{}-byte sectors: reformat first", self.block_size));
         }
+        // Hot (#125): no new data on it while it is over its warning limit.
+        if let Some(t) = self.thermal.as_ref().filter(|t| t.throttle_background) {
+            return Some(format!("running hot ({}, warning {:.0} °C)", t.temp_c.map_or("no reading".into(), |v| format!("{v:.0} °C")), t.limits.warn_c));
+        }
         if self.capacity_bytes < min_bytes {
             return Some(format!("smaller than {min_bytes} bytes"));
         }
@@ -1024,6 +1039,8 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             pushed_overcommit: None,
+            thermal: None,
+            pushed_thermal: None,
             replaces: None,
             drain: None,
             usage: None,

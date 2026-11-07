@@ -13,6 +13,8 @@ pub struct Sample {
     /// sent itself that failed (#107).
     pub io_errors_not_ours: Option<u64>,
     pub temperature_c: Option<i32>,
+    /// The drive's own temperature limits (#125), when it gives them.
+    pub temp_limits: Option<TempLimits>,
     pub power_on_hours: Option<u64>,
     /// Errors the drive itself counts against its media: NVMe log 0x02,
     /// ATA attribute 187 (reported uncorrectable). 0 when it reports none.
@@ -36,6 +38,19 @@ pub struct Sample {
     /// A SATA drive's whole SMART attribute table (#64): kept in the drive
     /// history, not served with health.
     pub ata_attributes: Vec<AtaAttribute>,
+}
+
+/// A drive's own temperature limits (#125): NVMe WCTEMP/CCTEMP and
+/// drivetemp's SCT limits through hwmon, a SAS drive's LOG SENSE 0x0D
+/// reference temperature (its critical; warning 5 °C under).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TempLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warn_c: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crit_c: Option<i32>,
+    /// `hwmon` or `log_sense_0x0d`.
+    pub source: String,
 }
 
 /// One ATA SMART attribute as the drive reports it (#64).

@@ -198,6 +198,8 @@ mod tests {
             pushed_labels: Vec::new(),
             pushed_health: None,
             pushed_overcommit: None,
+            thermal: None,
+            pushed_thermal: None,
             replaces: None,
             drain: None,
             usage: None,

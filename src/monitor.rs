@@ -112,10 +112,13 @@ pub fn evaluate_acked(
         }
     }
     if let Some(t) = s.temperature_c {
-        if t >= cfg.temp_crit_c {
-            worsen(&mut status, &mut why, HealthStatus::Warning, format!("temperature {t}°C ≥ critical {}°C", cfg.temp_crit_c));
-        } else if t >= cfg.temp_warn_c {
-            worsen(&mut status, &mut why, HealthStatus::Warning, format!("temperature {t}°C ≥ warn {}°C", cfg.temp_warn_c));
+        // The drive's own limits first (#125), else the configured ones.
+        let (w, c) = drive_temp_limits(cfg, s.temp_limits.as_ref());
+        let t = f64::from(t);
+        if t >= c {
+            worsen(&mut status, &mut why, HealthStatus::Warning, format!("temperature {t:.0}°C ≥ critical {c:.0}°C"));
+        } else if t >= w {
+            worsen(&mut status, &mut why, HealthStatus::Warning, format!("temperature {t:.0}°C ≥ warn {w:.0}°C"));
         }
     }
     if let Some(prev) = prev_media_errors {
@@ -129,6 +132,17 @@ pub fn evaluate_acked(
         }
     }
     (status, why)
+}
+
+/// A drive's (warning, critical) °C: its own (#125), else
+/// `monitor.temp_warn_c`/`temp_crit_c`.
+pub fn drive_temp_limits(cfg: &MonitorConfig, own: Option<&crate::smart::TempLimits>) -> (f64, f64) {
+    let dev = crate::thermal::DeviceLimits {
+        warn_c: own.and_then(|l| l.warn_c).map(f64::from),
+        crit_c: own.and_then(|l| l.crit_c).map(f64::from),
+    };
+    let l = crate::thermal::resolve(dev, None, (f64::from(cfg.temp_warn_c), f64::from(cfg.temp_crit_c)));
+    (l.warn_c, l.crit_c)
 }
 
 /// Hysteresis state per drive: a candidate worse status must repeat
@@ -494,6 +508,7 @@ async fn apply_outcome(
         d.health = HealthReport {
             status: Some(effective),
             temperature_c: sample.temperature_c,
+            temp_limits: sample.temp_limits.clone(),
             power_on_hours: sample.power_on_hours,
             media_errors: sample.media_errors,
             io_errors: sample.io_errors,
@@ -923,6 +938,8 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         pushed_labels: Vec::new(),
                         pushed_health: None,
                         pushed_overcommit: None,
+                        thermal: None,
+                        pushed_thermal: None,
                         replaces,
                         drain: None,
                         usage: None,
@@ -1237,6 +1254,24 @@ mod tests {
         let (st, why) = evaluate(&cfg, &smart(predicted), None);
         assert_eq!(st, HealthStatus::Failing);
         assert!(why.iter().any(|w| w.contains("5Dh")), "{why:?}");
+    }
+
+    #[test]
+    fn a_drives_own_temperature_limits_decide() {
+        let c = cfg();
+        // An NVMe drive rated to 75 °C is not warm at 60.
+        let mut s = good_sample();
+        s.temperature_c = Some(60);
+        s.temp_limits = Some(crate::smart::TempLimits { warn_c: Some(75), crit_c: Some(80), source: "hwmon".into() });
+        assert_eq!(evaluate(&c, &s, None).0, HealthStatus::Good);
+        s.temperature_c = Some(76);
+        let (st, why) = evaluate(&c, &s, None);
+        assert_eq!(st, HealthStatus::Warning);
+        assert!(why.iter().any(|w| w == "temperature 76°C ≥ warn 75°C"), "{why:?}");
+        // A SAS drive's reference temperature 60: critical there.
+        s.temperature_c = Some(60);
+        s.temp_limits = Some(crate::smart::TempLimits { warn_c: Some(55), crit_c: Some(60), source: "log_sense_0x0d".into() });
+        assert!(evaluate(&c, &s, None).1.iter().any(|w| w == "temperature 60°C ≥ critical 60°C"));
     }
 
     #[test]
