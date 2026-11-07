@@ -107,6 +107,8 @@ src/
   iomfw.rs        shelf IOM firmware: SES Download Microcode page 0x0E (#35)
   drivetest.rs    smoke / read_scan / destructive_sample
   wear.rs         wear-out projection from the wear trend (#23)
+  thermal.rs      every component's temperature (hwmon, drives, SES), limits,
+                  levels, alerts, cooling request, hot drives, history (#125)
   policy.rs       DrivePolicy: match nodes + drives → worker steps (#50)
   metrics.rs      Prometheus /metrics from cached state (#18)
   tls.rs          :9092 TLS from the stormcert pair; plain = health only (#19)
@@ -136,8 +138,8 @@ tests/            suites.rs (the three suites against this daemon on every
                   engine_tls.rs (engine client over https, #101)
 ```
 
-Not in the tree (design only, see docs/architecture.md): a sequencer, a
-thermal actuator.
+Not in the tree (design only, see docs/architecture.md): a sequencer. The
+thermal actuator is the BMC's (stormipmi#98), acting on our cooling request.
 
 **Ports:** stormdrive listens on **:9092** (stormblock has :9090, stormd
 :9080).
@@ -661,10 +663,12 @@ stormconsole#317, slowing background I/O + placement → stormblock):
 - drive health keeps warning on temperature, now on the drive's own limits
 - outputs: `/api/v1/thermal`, `/metrics`, feed, kube Drive status
 Steps:
-- [ ] thermal.rs core + tests · [ ] drive limits (hwmon, 0x0D) · [ ] hwmon scan
-- [ ] loop, events, history, limits API · [ ] engine push, replace proposal
-- [ ] outputs, docs, changelog · [ ] issues: stormipmi, stormblock, console contract
-- [ ] build VM, release, golden
+- [x] thermal.rs core + tests · [x] drive limits (hwmon, 0x0D) · [x] hwmon scan
+- [x] loop, events, history, limits API · [x] engine push, replace proposal
+- [x] outputs, docs, changelog · [x] issues: stormblock#564, stormipmi#98,
+      stormconsole#318 (Replace is stormconsole#317)
+- [x] build VM on 7ce8a1f-ish: clippy -D warnings --locked, 333 unit + harnesses
+      (#128 was a missed Sample field) · [ ] short `thermal` on v0.41.0, golden
 
 ### #123: a drive in use says so, and destructive verbs refuse it (P0, owner, 2026-11-07) — DONE (v0.40.0)
 

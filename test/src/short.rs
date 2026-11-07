@@ -32,6 +32,7 @@ pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("events", events(api)).await;
     r.run("hbas", hbas(api)).await;
     r.run("metrics", metrics(api)).await;
+    r.run("thermal", thermal(api)).await;
     Ok(())
 }
 
@@ -144,6 +145,58 @@ async fn drive_slabs(api: &Api) -> Outcome {
         out.push_str(&format!("; reported: {}", findings.join("; ")));
     }
     Ok(out)
+}
+
+/// Thermal (#125): a pass has run; every component has limits with warning
+/// under critical and the level its reading earns; every present drive with
+/// a temperature is a component; the cooling request is one of three; one
+/// component answers with its trend. Reads only.
+async fn thermal(api: &Api) -> Outcome {
+    api.need((0, 41, 0), "thermal management (#125)")?;
+    let mut t = serde_json::Value::Null;
+    for _ in 0..45 {
+        t = api.get("api/v1/thermal").await?.json("GET /api/v1/thermal")?;
+        if t["passes"].as_u64().unwrap_or(0) > 0 || t["enabled"] == false {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    if t["enabled"] == false {
+        return Err(Why::Skip("[thermal] enabled = false".into()));
+    }
+    ensure(t["passes"].as_u64().unwrap_or(0) > 0, "no thermal pass in 45 s")?;
+    let req = t["cooling"]["request"].as_str().unwrap_or("");
+    ensure(["auto", "raise", "max"].contains(&req), format!("cooling request {:?}", t["cooling"]))?;
+    let comps = t["components"].as_array().ok_or_else(|| Why::Fail("components is not a list".into()))?;
+    let mut ids = HashSet::new();
+    for c in comps {
+        let id = s(c, "id");
+        ensure(ids.insert(id.to_string()), format!("{id} listed twice"))?;
+        let (w, cr) = (c["limits"]["warn_c"].as_f64().unwrap_or(f64::NAN), c["limits"]["crit_c"].as_f64().unwrap_or(f64::NAN));
+        ensure(w < cr, format!("{id}: warning {w} not under critical {cr}"))?;
+        let level = s(c, "level");
+        ensure(["unknown", "ok", "near", "warning", "critical"].contains(&level), format!("{id}: level {level:?}"))?;
+        match c["temp_c"].as_f64() {
+            None => ensure(level == "unknown", format!("{id}: no reading but {level}"))?,
+            Some(v) if v >= cr => ensure(level == "critical", format!("{id}: {v} °C ≥ critical {cr} but {level}"))?,
+            Some(v) if v >= w => ensure(level == "warning" || level == "critical", format!("{id}: {v} °C ≥ warning {w} but {level}"))?,
+            Some(_) => {}
+        }
+    }
+    let mut drives = 0;
+    for d in crate::drives(api).await?.iter().filter(|d| present(d) && d["health"]["temperature_c"].is_number()) {
+        let id = format!("drive:{}", s(d, "id"));
+        ensure(ids.contains(&id), format!("{}: has a temperature but is no thermal component", s(d, "name")))?;
+        drives += 1;
+    }
+    if let Some(first) = comps.first() {
+        let one = api.get(&format!("api/v1/thermal/{}", s(first, "id"))).await?.json("GET /api/v1/thermal/{id}")?;
+        ensure(one["trend"].is_array(), "a component has no trend")?;
+    }
+    let limits = api.get("api/v1/thermal/limits").await?.json("GET /api/v1/thermal/limits")?;
+    ensure(limits["builtin_classes"]["cpu"]["crit_c"].is_number(), "limits: no built-in class defaults")?;
+    let fans = t["fans"].as_array().map(Vec::len).unwrap_or_default();
+    Ok(format!("{} components ({drives} drives), {fans} fans, cooling {req}", comps.len()))
 }
 
 /// Drive history and hardware assets in system-data (#64): when the volume

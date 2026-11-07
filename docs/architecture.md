@@ -778,20 +778,58 @@ health-gated, abort-on-regression.
   drive (`firmware_update`). A data-serving drive waits for its volumes to
   be redundant before the reset and after (#24, above).
 
-### Thermal
-There is no `thermal.rs`. What exists:
+### Thermal (`thermal.rs`, #125)
 
-- **Drive temperatures** come from the health sample and go through the
-  threshold engine (`temp_warn_c`, `temp_crit_c` → `warning`) and the event
-  stream.
-- **Shelf temperatures, fans and PSUs** come from the SES status page. A
-  shelf element that goes bad or recovers is a `shelf` event.
-- The summary card shows the hottest drive or shelf sensor.
+One pass every `thermal.interval_secs` (30 s), on its own task:
 
-**Design — not built:** actuation (SES cooling-element control via SG_IO). It
-is deliberately last and gated behind explicit config, because the review
-found no precedent in the ecosystem and fan policy is chassis-specific. The
-scope is your decision (#32).
+1. **Read** (blocking, at most 20 s): every chip under `/sys/class/hwmon`
+   (`name`, `temp<N>_{input,label,max,crit}`, `fan<N>_{input,label,min,
+   alarm,fault}`), each drive's own hwmon (under its block device or its
+   NVMe controller), and each shelf's SES temperature and cooling elements
+   from the last shelf scan. A drive with no hwmon uses its last health
+   sample: hwmon/drivetemp, LOG SENSE 0x2F/0x0D, ATA 194 or NVMe log 0x02.
+2. **Class.** The chip name, the sensor label and what the chip hangs off
+   decide the class. `nvme` and `drivetemp` go with their drive, a chip on a
+   network device is a NIC, one on a SCSI host is an HBA, a label with
+   inlet/ambient or exhaust/outlet is inlet or exhaust. Component ids are
+   stable across hwmonN renumbering: `hwmon:<chip>.<device>:temp<N>`,
+   `drive:<uuid>`, `shelf:<key>:temp<N>`.
+3. **Limits** (`resolve`, pure):
+   - **Device first.** Implausible values (≤ 0, > 150 °C) are dropped. A
+     device that gives only its critical limit gets a warning 5 °C under it.
+   - **Setting next.** A setting (component, then class, live over
+     `[thermal.classes]`) fills a gap and may only lower a device's limit.
+   - **Class default last.**
+4. **Level** (`level`, pure). Each level is entered at its limit and left
+   `hysteresis_c` under it. `Alert::worth_telling` fires on entering warning
+   or critical and on leaving them. Each alert is an event of kind
+   `thermal` (critical = error) and a log line.
+5. **Cooling** (`cooling`, pure): `max` when anything is critical; `raise`
+   when anything is near or at warning or a fan is stopped, under its
+   minimum or flagged; else `auto`. A `cooling` event goes out on change.
+   The BMC is stormipmi's; it reads the request from `GET /api/v1/thermal`
+   (stormipmi#98).
+6. **Drives** (`DriveThermal`). `throttle_background` at ≥ warning,
+   `exclude_new_placement` at critical, `replace_proposed` once critical
+   for `replace_after_mins`. It is set on the drive and pushed to the engine
+   by the fleet loop (`PUT /api/v1/drives/{id}/thermal`, stormblock#564),
+   only when it changes, and only for fleet or slab-holding drives; a 404
+   waits 10 min. Offers, auto-add and DrivePolicies skip a drive at
+   warning or over. The drive health verdict uses the drive's own limits
+   (`monitor::drive_temp_limits`).
+7. **History.** `history/thermal/<YYYY-MM>.jsonl` (system-data) gets one
+   line per pass with the components that moved ≥ 1 °C or changed level,
+   or that hit the heartbeat, and fans that moved ≥ 10 %. The in-memory
+   trend holds `trend_samples` per component.
+
+The live settings are a REST write (storage-admin), as the rest of the
+drive settings are until #98 moves writes to the CRDs.
+
+**Not here:**
+- the BMC's sensors and fan control: stormipmi (#95, #98). With them come
+  inlet/exhaust from the BMC and forge1's high fan zone.
+- shelf fan actuation through SES: #90, still to be decided.
+- the console's Thermal page: stormconsole#318.
 
 ### Drive history and assets in system-data (`history.rs`, `assets.rs`, #64)
 

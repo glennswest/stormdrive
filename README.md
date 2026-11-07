@@ -162,6 +162,49 @@ are listed under [Not yet](#not-yet).
     It lives in `data_dir`, so a reinstall that replaces `data_dir` starts it
     again; the drive's own counters (ATA SMART, NVMe log) are on the drive
     and survive both, and the drive history below keeps them.
+- **Thermal** (`src/thermal.rs`, #125). Every `thermal.interval_secs` (30 s)
+  a pass reads every component the node can see:
+  - **Drives.** Each drive's own hwmon chip (NVMe, drivetemp) is read fresh.
+    A drive without one uses the health sampler's latest reading.
+  - **Other hwmon chips.** CPU (coretemp, k10temp), DIMMs (jc42, spd5118),
+    NICs (any chip on a network device), HBAs, GPUs, chipset, board, PSUs, a
+    sensor labelled inlet or exhaust, and every fan's RPM.
+  - **Shelves.** Each shelf's SES temperature sensors and fans.
+
+  Limits:
+  - **The device's own come first.** hwmon `_max`/`_crit` (which for NVMe is
+    its WCTEMP/CCTEMP), a SAS drive's LOG SENSE 0x0D reference temperature
+    (critical there, warning 5 °C under), a shelf sensor's SES thresholds.
+  - **Settings next.** A live setting (`PUT /api/v1/thermal/limits`, kept in
+    `<data_dir>/thermal-limits.json`) or `[thermal.classes]` fills what the
+    device doesn't give. It may lower the device's own limit, never raise it.
+  - **Class defaults last.** Drives: `monitor.temp_warn_c`/`temp_crit_c`;
+    CPU 85/95; inlet 35/42; the full table is at `GET /api/v1/thermal/limits`.
+
+  Each component has a level: `ok`, `near` (within `near_c` of warning),
+  `warning` or `critical`. A level is left only `hysteresis_c` under where
+  it was entered. Going into warning, going into critical and coming back
+  each make a `thermal` event and a log line.
+
+  **Cooling request.** The node asks its BMC for `auto | raise | max`
+  (`raise` when anything is near warning or a fan has stopped, `max` at
+  critical), with the reasons, as a `cooling` event when it changes.
+  stormipmi acts on it (stormipmi#98).
+
+  **Hot drives.** A drive's `thermal` says what its heat asks of the
+  engine: `throttle_background` at warning (slow scrub, rebuild and
+  flow-over first), `exclude_new_placement` at critical, and
+  `replace_proposed` after `replace_after_mins` at critical (an event, and
+  the cue for the console's Replace, stormconsole#317). This is pushed to the
+  engine (`PUT /api/v1/drives/{id}/thermal`, stormblock#564; retried every
+  10 min while the engine has no such route). A drive over its warning
+  limit is not offered, auto-added or enrolled by a DrivePolicy. The drive's
+  health verdict also judges its temperature against its own limits.
+
+  **History.** `history/thermal/<YYYY-MM>.jsonl` in system-data gets a
+  component's reading when it moves 1 °C or its level changes, else every
+  `heartbeat_secs`. An in-memory trend of `trend_samples` readings per
+  component is served too.
 - **Drive history and hardware assets in system-data** (#64, stormcos#456):
   the node's kept volume in the data half, which every install keeps
   (stormblock#355 makes it; stormcos mounts it into stormdrive at
@@ -596,7 +639,9 @@ are read from `src/config.rs`, and
 all. The daemon refuses to start on an unparseable `listen_addr`, a zero
 interval (`discovery`, `monitor`, `kubernetes`), a zero
 `max_concurrent`/`sample_timeout_secs`, `hysteresis = 0`,
-`history.keep_months = 0`, a zero `worker.max_per_hba` or
+`history.keep_months = 0`, a zero `thermal.interval_secs`, `heartbeat_secs`
+or `trend_samples`, an unknown class or a warning not under critical in
+`thermal.classes`, a zero `worker.max_per_hba` or
 `worker.enroll_per_domain`, an `api.admin_gate` other than `enforce`/`audit`,
 or only one of `api.tls_cert_file`/`tls_key_file` set.
 
@@ -652,6 +697,14 @@ or only one of `api.tls_cert_file`/`tls_key_file` set.
 | `history.dir` | `/system-data` | the system-data volume as mounted for stormdrive (#64); absent = no history or assets, never created |
 | `history.heartbeat_secs` | `3600` | a drive record when a counter changes, else this often (`monitor.interval_secs` = every sample) |
 | `history.keep_months` | `24` | months of drive history kept |
+| `thermal.enabled` | `true` | the thermal pass (#125) |
+| `thermal.interval_secs` | `30` | between passes over every hwmon chip, drive and shelf sensor |
+| `thermal.near_c` | `5.0` | within this of a warning limit is `near`, and the cooling request rises |
+| `thermal.hysteresis_c` | `2.0` | a level is left only this far under where it was entered |
+| `thermal.replace_after_mins` | `30` | a drive critical this long is proposed for replacement |
+| `thermal.heartbeat_secs` | `600` | thermal history: a reading on a 1 °C move or a level change, else this often |
+| `thermal.trend_samples` | `120` | readings kept in memory per component |
+| `thermal.classes.<class>` | none | `{warn_c, crit_c}` class defaults in place of the built-in ones (under the device's own limits and the live settings) |
 
 Qualified for `auto_add`: out of the fleet, designation `none`, idle, a
 health verdict that is known and not Failing/Failed, not `in_use_by`, and
@@ -886,6 +939,10 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET /api/v1/drives/{id}/health` | health report + trend |
 | `GET /api/v1/drives/{id}/history?limit=` | from system-data: `summary`, `log` (events and actions, #68) and `records` (health counters, #64), oldest first, the newest `limit` (100) of each |
 | `GET /api/v1/history` | the system-data directory, whether history is written, records and findings this run, this boot's assets file (#64) |
+| `GET /api/v1/thermal` | every component (`id`, `class`, `label`, `temp_c`, `limits {warn_c, crit_c, warn_source, crit_source}`, `device_limits`, `level`, `since_unix`, `max_c`, `drive_id`/`shelf`), every fan (`rpm`, `min_rpm`, `problem`), `cooling {request, why, since_unix}`, `levels`, `closest_to_warning` (#125) |
+| `GET /api/v1/thermal/{id}` | one component with its `trend` (`[[unix, °C], …]`) |
+| `GET·PUT /api/v1/thermal/limits` | the live settings `{classes: {<class>: {warn_c?, crit_c?}}, components: {<id>: {…}}}` (PUT replaces them; a write), with the configured and built-in class defaults |
+| `GET /api/v1/thermal/history?limit=` | the newest lines of `history/thermal/` in system-data (120), oldest first |
 | `GET /api/v1/assets` | this boot's hardware record and what changed since the previous boot (#64); 404 before it is taken |
 | `GET /api/v1/drives/{id}/slabs` | slabs on the disk, the engine's slabs on it, the engine's slab report and the finding (#58) |
 | `GET /api/v1/drives/{id}/supports[?want=4096+type1]` | probe now (INQUIRY PROTECT, VPD 0x00/0x86/0xB1/0xB4, MODE SENSE, READ CAPACITY(16); reads only): block lengths and PI types the drive offers, its current format, and `plannedFormat` (`fallback: true` when it is not 4096+PI1; `fallbacks` when the drive's refusal has a next step) (#85, #82, #108) |
@@ -955,6 +1012,9 @@ one fits. Every drive series carries `device`, `serial`, `model`,
 | `stormdrive_drive_volumes`, `_volumes_degraded` | volumes with legs on the drive, and those whose slabs here are draining/quarantined/failed/missing (#26); absent until the engine reports placement |
 | `stormdrive_enclosure_info`, `_ok`, `_last_scan_timestamp_seconds` | per shelf |
 | `stormdrive_enclosure_element_ok`, `_temperature_celsius`, `_fan_rpm`, `_volts`, `_amps` `{type,index}` | per installed SES element |
+| `stormdrive_thermal_temperature_celsius`, `_warning_celsius`, `_critical_celsius`, `_level` `{component,class,label}` | every thermal component (#125); level −1 no reading, 0 ok, 1 near, 2 warning, 3 critical |
+| `stormdrive_thermal_fan_rpm`, `_fan_ok` `{fan,label}` | every hwmon and SES fan |
+| `stormdrive_thermal_cooling_request` | 0 auto, 1 raise, 2 max |
 | `stormdrive_poll_*`, `stormdrive_discovery_seconds`, `stormdrive_build_info{version,node}` | the daemon |
 
 A missing drive keeps `smartctl_device`, `stormdrive_drive_info` and its
@@ -1116,8 +1176,10 @@ Design only; the code does not do them:
 - a node-wide sequencer for every disruptive operation (the firmware
   redundancy gate itself is #24, built)
 - waiting on your decision: the drive worker's scheduling default (#37)
+- the BMC's fans and readings (inlet, exhaust, CPU from the BMC): stormipmi
+  acts on the cooling request (stormipmi#98, #95); shelf fan control stays
+  report-only until #90 is decided
 - waiting on your decision:
-  - thermal actuation (#32)
   - drive crypto: SED, crypto erase (#33)
   - burn-in before a drive joins the fleet (#34)
   - where vendor firmware images come from (#29)
