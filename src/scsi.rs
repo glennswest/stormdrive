@@ -125,6 +125,13 @@ impl Sense {
         self.key == 0x6
     }
 
+    /// 31/00 MEDIUM FORMAT CORRUPTED (any key; drives say it as MEDIUM
+    /// ERROR or NOT READY): a format that did not finish (#131). Another
+    /// format is the cure.
+    pub fn is_medium_format_corrupted(&self) -> bool {
+        self.asc == 0x31 && self.ascq == 0x00
+    }
+
     /// Progress as a percentage, when the device reported one.
     pub fn progress_pct(&self) -> Option<u8> {
         self.progress.map(|p| ((p as u32 * 100) / 65536) as u8)
@@ -797,6 +804,19 @@ pub fn sg_path_for_block(name: &str) -> Option<String> {
     sg_path_in(&format!("/sys/block/{name}/device/scsi_generic"))
 }
 
+/// Why a SCSI disk the kernel gave no block node needs a format (#131),
+/// from its answer to READ CAPACITY(16) over sg: an interrupted format
+/// (31/00), or whatever else it said.
+pub fn no_block_node_reason(cap: &Result<Capacity>) -> String {
+    match cap {
+        Err(Error::Sense(s)) if s.is_medium_format_corrupted() => {
+            format!("medium format corrupted ({:x}/{:02x}/{:02x}): an interrupted format; format it again", s.key, s.asc, s.ascq)
+        }
+        Err(e) => format!("no block device; read capacity over sg: {e}; a format may bring it back"),
+        Ok(c) => format!("no block device; the drive reports {}-byte blocks over sg", c.block_len),
+    }
+}
+
 /// The /dev/sgN node for a SCSI device directory (…/scsi_generic/sgN).
 pub fn sg_path_in(scsi_generic_dir: &str) -> Option<String> {
     let entries = std::fs::read_dir(scsi_generic_dir).ok()?;
@@ -812,6 +832,15 @@ pub fn sg_path_in(scsi_generic_dir: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interrupted_format_is_named() {
+        let r = no_block_node_reason(&Err(Error::Sense(Sense::new(3, 0x31, 0))));
+        assert_eq!(r, "medium format corrupted (3/31/00): an interrupted format; format it again");
+        assert!(Sense::new(2, 0x31, 0).is_medium_format_corrupted());
+        assert!(!Sense::new(3, 0x31, 1).is_medium_format_corrupted(), "31/01 is a format that failed, not one cut off");
+        assert!(no_block_node_reason(&Err(Error::Sense(Sense::new(2, 4, 4)))).starts_with("no block device"));
+    }
 
     #[test]
     fn not_good_counts_by_opcode_and_page() {

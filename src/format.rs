@@ -200,6 +200,7 @@ trait Unit {
     fn mode_select10(&self, data: &[u8]) -> scsi::Result<()>;
     fn mode_select6(&self, data: &[u8]) -> scsi::Result<()>;
     fn format_unit_pi(&self, immed: bool, fmtpinfo: u8) -> scsi::Result<()>;
+    fn read_capacity16(&self) -> scsi::Result<scsi::Capacity>;
 }
 
 impl Unit for Device {
@@ -214,6 +215,24 @@ impl Unit for Device {
     }
     fn format_unit_pi(&self, immed: bool, fmtpinfo: u8) -> scsi::Result<()> {
         Device::format_unit_pi(self, immed, fmtpinfo)
+    }
+    fn read_capacity16(&self) -> scsi::Result<scsi::Capacity> {
+        Device::read_capacity16(self)
+    }
+}
+
+/// The block length a format starts from (and puts back on a refusal):
+/// READ CAPACITY's. A drive whose last format was cut off answers 31/00
+/// MEDIUM FORMAT CORRUPTED instead (#131) — a format is what it needs, so
+/// that is no reason to stop: the length on record stands in.
+fn current_length(dev: &impl Unit, recorded: u32) -> Result<u32, String> {
+    match dev.read_capacity16() {
+        Ok(c) => Ok(c.block_len),
+        Err(ScsiError::Sense(s)) if s.is_medium_format_corrupted() => {
+            tracing::info!("read capacity: {s} (an interrupted format); starting from the recorded {recorded}-byte length");
+            Ok(if recorded > 0 { recorded } else { 512 })
+        }
+        Err(e) => Err(format!("read capacity: {e}")),
     }
 }
 
@@ -335,14 +354,14 @@ fn run_blocking(drive: &Drive, (to, prot): (u32, Protection), alternatives: &[cr
     // Clear a pending unit attention so it does not fail the first real
     // command.
     let _ = dev.test_unit_ready();
-    let cap = dev.read_capacity16().map_err(|e| format!("read capacity: {e}"))?;
-    if cap.block_len == to {
+    let current = current_length(&dev, drive.block_size)?;
+    if current == to && drive.format_reason.is_none() {
         tracing::info!(drive = %drive.name, "already {to}-byte; formatting anyway (operator asked)");
     }
 
     // Blocking FORMAT UNIT: the phase reads `format` for as long as it takes.
     handle.set_phase("format");
-    let immediate = match start_exact(&dev, &drive.name, cap.block_len, (to, prot)) {
+    let immediate = match start_exact(&dev, &drive.name, current, (to, prot)) {
         Ok(immediate) => immediate,
         Err(Attempt::Refused(line)) => {
             let mut run = handle.run.lock().unwrap();
@@ -413,6 +432,8 @@ fn run_blocking(drive: &Drive, (to, prot): (u32, Protection), alternatives: &[cr
     Ok(after.block_len)
 }
 
+/// An sg-only disk (#131) has no block node, so no sectors: once it is
+/// formatted it is re-added, and sd makes it a block device.
 #[cfg(target_os = "linux")]
 fn sysfs_sectors(name: &str) -> u64 {
     std::fs::read_to_string(format!("/sys/block/{name}/size"))
@@ -435,9 +456,20 @@ pub fn rescan(name: &str) {
     }
 }
 
+/// The SCSI device directory of a disk: `/sys/block/<name>/device`, or for
+/// one reached through its sg node only (#131) `/sys/class/scsi_generic/<sgN>/device`.
+#[cfg(target_os = "linux")]
+fn scsi_device_dir(name: &str) -> std::path::PathBuf {
+    let block = std::path::PathBuf::from(format!("/sys/block/{name}/device"));
+    if !block.exists() && name.starts_with("sg") {
+        return std::path::PathBuf::from(format!("/sys/class/scsi_generic/{name}/device"));
+    }
+    block
+}
+
 #[cfg(target_os = "linux")]
 fn rescan_block(name: &str) {
-    if let Err(e) = std::fs::write(format!("/sys/block/{name}/device/rescan"), "1") {
+    if let Err(e) = std::fs::write(scsi_device_dir(name).join("rescan"), "1") {
         tracing::debug!(%name, "sd rescan: {e}");
     }
 }
@@ -450,7 +482,7 @@ fn rescan_block(_name: &str) {}
 /// inventory follows it by WWID.
 #[cfg(target_os = "linux")]
 fn readd_block(name: &str) {
-    let dev = std::path::PathBuf::from(format!("/sys/block/{name}/device"));
+    let dev = scsi_device_dir(name);
     let Ok(real) = std::fs::canonicalize(&dev) else { return };
     let Some(hctl) = real.file_name().map(|f| f.to_string_lossy().to_string()) else { return };
     let parts: Vec<&str> = hctl.split(':').collect();
@@ -804,11 +836,20 @@ fn reattach_blocking(drive: &Drive, to: u32, prot: Protection, other_boot: bool,
     handle.set_finished_progress();
     handle.set_phase("rescan");
     for p in &drive.paths {
-        rescan(p.trim_start_matches("/dev/"));
+        rescan_block(p.trim_start_matches("/dev/"));
     }
     std::thread::sleep(Duration::from_secs(3));
     handle.set_phase("verify");
-    let after = dev.read_capacity16().map_err(|e| format!("read capacity after format: {e}"))?;
+    let after = dev.read_capacity16().map_err(|e| format!("read capacity after format: {e}"));
+    // A device still at 0 blocks (or with no block node, #131) is re-added
+    // only now: the delete takes the open sg node with it.
+    for p in &drive.paths {
+        let name = p.trim_start_matches("/dev/");
+        if sysfs_sectors(name) == 0 {
+            readd_block(name);
+        }
+    }
+    let after = after?;
     {
         let mut run = handle.run.lock().unwrap();
         run.prot_type_after = Some(after.prot_type);
@@ -867,6 +908,9 @@ mod tests {
         /// descriptor in MODE SELECT, or a non-zero block count, is 26/00
         /// with the field pointer; MODE SELECT(6) dies at the transport.
         netapp_x378: bool,
+        /// forge1 sdb–sdd (#131): a format cut off by a power-off; READ
+        /// CAPACITY answers 3/31/00 MEDIUM FORMAT CORRUPTED.
+        corrupted: bool,
     }
 
     const X378_BLOCKS: u64 = 19_532_873_728;
@@ -932,6 +976,13 @@ mod tests {
             }
             Ok(())
         }
+        fn read_capacity16(&self) -> scsi::Result<scsi::Capacity> {
+            self.log.borrow_mut().push("read capacity".into());
+            if self.corrupted {
+                return Err(ScsiError::Sense(Sense::new(3, 0x31, 0)));
+            }
+            Ok(scsi::Capacity { last_lba: (1 << 31) - 1, block_len: 512, lbppbe: 3, prot_type: 1 })
+        }
     }
 
     const PI: (u32, Protection) = (4096, Protection::Type1);
@@ -956,6 +1007,29 @@ mod tests {
         let u = FakeUnit::default();
         assert!(run_fake(&u).unwrap());
         assert_eq!(*u.log.borrow(), ["select10 4096", "format immed=true fmtpinfo=2"]);
+    }
+
+    /// #131: forge1 sdb–sdd after a power-off cut their formats short. READ
+    /// CAPACITY answers 3/31/00 (and sd gave them no block node); that is
+    /// the drive that needs a format, so it gets the 4096 + PI1 asked for.
+    #[test]
+    fn an_interrupted_format_is_formatted_at_4096_with_pi() {
+        let u = FakeUnit { corrupted: true, ..Default::default() };
+        let current = current_length(&u, 512).expect("31/00 is no reason to stop");
+        assert_eq!(current, 512, "the recorded length stands in");
+        assert!(start_exact(&u, "sg2", current, PI).unwrap());
+        assert_eq!(*u.log.borrow(), ["read capacity", "select10 4096", "format immed=true fmtpinfo=2"]);
+        // Any other failure still stops the run before a command is sent.
+        struct Gone;
+        impl Unit for Gone {
+            fn mode_sense10(&self, _: u8) -> scsi::Result<scsi::ModeHeader10> { unreachable!() }
+            fn mode_select10(&self, _: &[u8]) -> scsi::Result<()> { unreachable!() }
+            fn mode_select6(&self, _: &[u8]) -> scsi::Result<()> { unreachable!() }
+            fn format_unit_pi(&self, _: bool, _: u8) -> scsi::Result<()> { unreachable!() }
+            fn read_capacity16(&self) -> scsi::Result<scsi::Capacity> { Err(ScsiError::Sense(Sense::new(4, 0x44, 0))) }
+        }
+        assert!(current_length(&Gone, 512).unwrap_err().starts_with("read capacity: "));
+        assert_eq!(current_length(&FakeUnit::default(), 4096).unwrap(), 512, "READ CAPACITY is the truth when it answers");
     }
 
     #[test]

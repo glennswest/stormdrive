@@ -102,7 +102,10 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
             detail.push(format!("{} bay {b}", sh.display()));
         }
     }
-    if d.needs_reformat() {
+    if d.format_reason.is_some() {
+        // #131: an interrupted format, reached through its sg node only.
+        detail.push("needs a format".into());
+    } else if d.needs_reformat() {
         detail.push(format!("{} B sectors · unusable · reformat", d.block_size));
     } else if d.block_size != 512 {
         detail.push(format!("{} B sectors", d.block_size));
@@ -287,7 +290,9 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     if d.paths.len() > 1 {
         metrics.push(Metric::new("paths", d.paths.len().to_string()).tone("accent"));
     }
-    if d.needs_reformat() {
+    if let Some(why) = &d.format_reason {
+        metrics.push(Metric::new("needs a format", why.clone()).tone("warn"));
+    } else if d.needs_reformat() {
         metrics.push(Metric::new("sector", d.block_size.to_string()).unit("B").tone("warn"));
     }
     // Blank, healthy, out of the fleet (#42): one action away from a slab.
@@ -383,7 +388,13 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     }
     actions.push(act(
         "format-4k",
-        if d.needs_reformat() { "Reformat 4K" } else { "Format 4K" },
+        if d.format_reason.is_some() {
+            "Format 4K (needs a format)"
+        } else if d.needs_reformat() {
+            "Reformat 4K"
+        } else {
+            "Format 4K"
+        },
         "POST",
         format!("{base}/format/4096"),
         d.format_blocker().is_none() && present,
@@ -800,6 +811,7 @@ mod tests {
             drain: None,
             usage: None,
             fleet_partition: None,
+            format_reason: None,
         }
     }
 
@@ -835,6 +847,23 @@ mod tests {
         let g = drive_among(&a, &[&sdc, &a]);
         assert!(!g.metrics.iter().any(|m| m.label == "reason" || m.label == "grown defects"));
         assert!(!g.actions.iter().any(|x| x.id == "acknowledge"));
+    }
+
+    /// forge1 sdb (#131): an interrupted format, seen through sg only.
+    #[test]
+    fn an_interrupted_format_offers_a_format() {
+        let mut d = drive();
+        d.name = "sg2".into();
+        d.path = "/dev/sg2".into();
+        d.usable = false;
+        d.format_reason = Some("medium format corrupted (3/31/00): an interrupted format; format it again".into());
+        let c = drive_component(&d);
+        assert!(c.detail.contains("needs a format"), "{}", c.detail);
+        let m = c.metrics.iter().find(|m| m.label == "needs a format").expect("the reason");
+        assert!(m.value.contains("3/31/00"), "{}", m.value);
+        let f = c.actions.iter().find(|a| a.id == "format-4k").unwrap();
+        assert!(f.enabled, "a format is the cure");
+        assert_eq!(f.label, "Format 4K (needs a format)");
     }
 
     #[test]

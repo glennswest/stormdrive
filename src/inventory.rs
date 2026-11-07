@@ -204,6 +204,7 @@ mod tests {
             drain: None,
             usage: None,
             fleet_partition: None,
+            format_reason: None,
         }
     }
 

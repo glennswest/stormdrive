@@ -42,6 +42,9 @@ pub struct Observed {
     pub supports: Option<crate::pi::Supports>,
     /// The rate its link negotiated, in Mb/s (#105).
     pub link_rate_mbps: Option<u32>,
+    /// Seen through its sg node only, with no block node (#131): why it
+    /// needs a format (an interrupted one answers 31/00).
+    pub format_reason: Option<String>,
 }
 
 /// A disk on a USB host (#106): not a drive of the node. It is left out of the
@@ -433,6 +436,7 @@ mod linux {
                     slabs: p.slabs.clone(),
                     mounted: super::mounted_in(mounts, &name),
                     supports: p.supports.clone(),
+                    format_reason: None,
                     name,
                 });
                 continue;
@@ -532,12 +536,108 @@ mod linux {
                 slabs,
                 mounted: super::mounted_in(mounts, &name),
                 supports,
+                format_reason: None,
                 name,
+            });
+        }
+        // #131: a SCSI disk the kernel gave an sg node and no block node —
+        // an interrupted format answers 31/00 and sd makes nothing of it.
+        // It is still the drive (same WWID, so the same id), and a format
+        // through its sg node is the cure.
+        for sg in super::sg_only_disks(sys) {
+            if !name_eligible(cfg, &sg) {
+                continue;
+            }
+            let gen = sys.join("class/scsi_generic").join(&sg);
+            if std::fs::canonicalize(&gen).is_ok_and(|r| is_usb_path(&r)) {
+                continue;
+            }
+            let path = node(&sg);
+            let Ok(d) = crate::scsi::Device::open(&path) else { continue };
+            let _ = d.test_unit_ready(); // a unit attention after power-on
+            if d.inquiry().is_err() {
+                tracing::debug!(%sg, "sg node without a block node does not answer INQUIRY; not a drive");
+                continue;
+            }
+            let cap = d.read_capacity16();
+            let reason = crate::scsi::no_block_node_reason(&cap);
+            // Its own block length, for putting back: READ CAPACITY when it
+            // answers, else the mode block descriptor (it still answers
+            // MODE SENSE mid-corruption), else 512.
+            let mode_len = d
+                .mode_sense10_long(0x01)
+                .ok()
+                .and_then(|h| h.block_descriptor.as_ref().and_then(|bd| crate::pi::descriptor_block_length(bd, h.long_lba)));
+            let (block_size, physical_block_size, capacity_bytes) = match &cap {
+                Ok(c) if c.block_len > 0 => (c.block_len, c.physical_block_len(), c.bytes()),
+                _ => {
+                    let bs = mode_len.filter(|b| *b > 0).unwrap_or(512);
+                    (bs, bs, 0)
+                }
+            };
+            let dev = gen.join("device");
+            let vendor = read_trim(&dev.join("vendor"));
+            let link = if vendor.as_deref() != Some("ATA") { crate::transport::probe(&d) } else { Default::default() };
+            // No queue/rotational without a block node: VPD 0xB1 says, or
+            // the kind is left unknown (a known kind is then kept).
+            let rotation = d.vpd(0xB1).ok().map(|r| crate::pi::parse_rotation(&r));
+            let kind = match rotation {
+                Some((rpm, non_rotating)) if rpm.is_some() || non_rotating == Some(true) => crate::pi::kind_by_rotation(
+                    classify(&gen, &sg, link),
+                    Some(&crate::pi::Supports { rotation_rpm: rpm, non_rotating, ..Default::default() }),
+                ),
+                _ => DriveKind::Unknown,
+            };
+            let contents = match &cap {
+                Ok(c) if c.block_len > 0 => crate::contents::raw_holds(&path, c.block_len),
+                _ => None,
+            };
+            tracing::info!(%sg, "{reason}");
+            out.push(Observed {
+                path: format!("/dev/{sg}"),
+                kind,
+                link_rate_mbps: link.rate_mbps,
+                model: read_trim(&dev.join("model")).unwrap_or_default(),
+                serial: read_trim(&dev.join("serial")).unwrap_or_default(),
+                firmware: read_trim(&dev.join("rev")).unwrap_or_default(),
+                wwid: read_trim(&dev.join("wwid")),
+                vendor,
+                capacity_bytes,
+                block_size,
+                physical_block_size,
+                usable: false,
+                in_use_by: None,
+                contents,
+                slabs: vec![],
+                mounted: false,
+                supports: crate::pi::probe(&path).ok(),
+                format_reason: Some(reason),
+                name: sg,
             });
         }
         cache.retain_names(&seen);
         out
     }
+}
+
+/// The sg nodes of SCSI disks (peripheral type 0) that have no block node
+/// (#131), in a sysfs tree at `sys`: `/sys/class/scsi_generic/sgN/device`
+/// with no `block/` child. A disk that has one is the /sys/block walk's.
+pub fn sg_only_disks(sys: &std::path::Path) -> Vec<String> {
+    let read = |p: std::path::PathBuf| std::fs::read_to_string(p).ok().map(|s| s.trim().to_string());
+    let Ok(entries) = std::fs::read_dir(sys.join("class/scsi_generic")) else { return vec![] };
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let dev = e.path().join("device");
+            let disk = read(dev.join("type")).as_deref() == Some("0");
+            let has_block = std::fs::read_dir(dev.join("block")).is_ok_and(|mut b| b.next().is_some());
+            (name.starts_with("sg") && disk && !has_block).then_some(name)
+        })
+        .collect();
+    out.sort_by_key(|n| (n.len(), n.clone()));
+    out
 }
 
 /// [`scan`] over a sysfs tree at `sys` with device nodes under `dev` (#31,
@@ -634,6 +734,34 @@ mod tests {
         assert!(c.get(&reformatted, t0).is_none());
         c.retain_names(&std::collections::HashSet::new());
         assert!(c.is_empty());
+    }
+
+    /// forge1 (#131): sdb–sdd cut off mid-format answer 3/31/00; sd made
+    /// no block node, their sg nodes are there. sg0 is sda (has one), sg4
+    /// the enclosure (type 13).
+    #[test]
+    fn a_disk_with_an_sg_node_and_no_block_node_is_found() {
+        let root = std::env::temp_dir().join(format!("stormdrive-sgonly-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mk = |sg: &str, ty: &str, block: Option<&str>| {
+            let dev = root.join("class/scsi_generic").join(sg).join("device");
+            std::fs::create_dir_all(&dev).unwrap();
+            std::fs::write(dev.join("type"), format!("{ty}\n")).unwrap();
+            if let Some(b) = block {
+                std::fs::create_dir_all(dev.join("block").join(b)).unwrap();
+            }
+        };
+        mk("sg0", "0", Some("sda"));
+        mk("sg1", "0", None);
+        mk("sg2", "0", None);
+        mk("sg3", "0", None);
+        mk("sg4", "13", None);
+        mk("sg10", "0", None);
+        std::fs::create_dir_all(root.join("class/scsi_generic/sg5/device/block")).unwrap();
+        std::fs::write(root.join("class/scsi_generic/sg5/device/type"), "0").unwrap();
+        assert_eq!(sg_only_disks(&root), vec!["sg1", "sg2", "sg3", "sg5", "sg10"], "an empty block/ is no block node");
+        assert!(sg_only_disks(&root.join("nothing")).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

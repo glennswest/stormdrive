@@ -611,6 +611,11 @@ pub struct Drive {
     /// as a number so a renamed disk (`sdb` → `sdc`) still resolves.
     #[serde(default)]
     pub fleet_partition: Option<u32>,
+    /// Why the drive needs a format when its sectors do not say so (#131):
+    /// the kernel gave it no block node (an interrupted format answers
+    /// 31/00) and it is reached through its sg node only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_reason: Option<String>,
 }
 
 impl Drive {
@@ -882,7 +887,7 @@ impl Drive {
     /// The kernel refuses this sector size; a reformat to 512/4096 is the
     /// only way in.
     pub fn needs_reformat(&self) -> bool {
-        !USABLE_BLOCK_SIZES.contains(&self.block_size) || !self.usable
+        !USABLE_BLOCK_SIZES.contains(&self.block_size) || !self.usable || self.format_reason.is_some()
     }
 
     /// A plain out-of-fleet SATA SSD at `/dev/<name>`, for tests.
@@ -1053,6 +1058,7 @@ mod tests {
             drain: None,
             usage: None,
             fleet_partition: None,
+            format_reason: None,
         }
     }
 
@@ -1197,6 +1203,21 @@ mod tests {
         let mut d = base_drive();
         d.kind = DriveKind::NvmeSsd;
         assert!(d.format_blocker().is_some());
+    }
+
+    /// forge1 sdb–sdd (#131): a format cut off by a power-off. The drive is
+    /// present through its sg node, needs a format, and may be formatted.
+    #[test]
+    fn an_interrupted_format_needs_a_format_and_may_have_one() {
+        let mut d = base_drive();
+        d.name = "sg2".into();
+        d.path = "/dev/sg2".into();
+        d.usable = false;
+        d.format_reason = Some("medium format corrupted (3/31/00): an interrupted format; format it again".into());
+        assert!(d.needs_reformat());
+        assert_eq!(d.format_blocker(), None);
+        d.usable = true;
+        assert!(d.needs_reformat(), "the reason alone says so");
     }
 
     /// An inventory written before the sector-format fields existed loads

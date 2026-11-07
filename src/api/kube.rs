@@ -198,6 +198,7 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "physicalBlockSize": d.physical_block_size,
             "usable": d.usable,
             "needsReformat": d.needs_reformat(),
+            "formatReason": d.format_reason,
             "owner": d.owner(),
             "inUse": d.in_use().in_use,
             "use": d.in_use().use_,
@@ -712,6 +713,7 @@ mod tests {
             drain: None,
             usage: None,
             fleet_partition: None,
+            format_reason: None,
         }
     }
 

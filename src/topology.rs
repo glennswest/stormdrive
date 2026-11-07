@@ -329,7 +329,12 @@ mod linux {
     /// [`locate`] in a sysfs tree at `sys` (#31: the simulated chassis).
     pub fn locate_in(sys: &Path, name: &str, shelves: &Shelves) -> Location {
         let mut loc = Location::default();
-        let base = sys.join("block").join(name);
+        // A disk reached through its sg node only (#131) has the same
+        // SCSI device under /sys/class/scsi_generic/<sgN>.
+        let base = match sys.join("block").join(name) {
+            b if !b.exists() && name.starts_with("sg") => sys.join("class/scsi_generic").join(name),
+            b => b,
+        };
         let real = std::fs::canonicalize(&base).ok();
         if let Some(r) = &real {
             loc.controller = controller_of(sys, r);
