@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.39.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.39.1** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -631,7 +631,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #122: forge1's BP14G+ read as two shelves (P1, owner, 2026-11-07) — in progress
+### #122: forge1's BP14G+ read as two shelves (P1, owner, 2026-11-07) — DONE (v0.39.1)
 
 Owner: "why are the drives split over two shelfs?" forge1 (0.39.0) live
 `/api/v1/shelves`: enclosure 32 (`DP BP14G+`, 5e09406039f0cf00) holds sda
@@ -643,7 +643,8 @@ no enclosure on a controller with exactly one goes into it by slot
 (`through.slot_not_matched`, also found by `place` across shelves); with none or
 several enclosures, the controller's own shelf as before.
 - [x] code + test from forge1's data · [x] docs, changelog
-- [ ] build VM, v0.39.1, golden; live: forge1's /api/v1/shelves one shelf
+- [x] build VM on 1240844 (clippy -D warnings --locked, all tests); v0.39.1; golden requested
+- Live: forge1's /api/v1/shelves reads one shelf once a release carries it
 
 ### #108: 4096 + PI when VPD 0xB4 is absent; format progress kept (P0, owner, 2026-11-05) — DONE (v0.39.0)
 
