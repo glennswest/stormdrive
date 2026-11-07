@@ -222,6 +222,15 @@ path failover is actually needed.
   Join, format and the destructive test refuse an `in_use_by` drive (and
   re-read the disk just before starting); firmware updates are allowed but
   serialised like a fleet drive's.
+- **In use** (`inuse.rs`, #123, derived, not stored): `in_use`, `use`
+  (system | raid_member | data | slab_member | mounted | free, the first that
+  holds), `slabs` by partition, name and role, `depends_on` and a reason,
+  from `slab_parts` (the role is the partition type GUID), `in_use_by`
+  (stormraid), membership, `mounted`, `usage.volumes` and `engine_finding`.
+  The reason is what every refusal says: the REST formats and the
+  destructive test have no override; the worker's destroying steps need the
+  drive named in `i_know_in_use` as well as `destroy`; the designations
+  `system` (over data) and `failed` (on the system drive) are refused.
 - **What else is on it** (#42): the same cached probe runs
   `contents::holds`, the drive worker's destroy guard: any filesystem
   signature, slab or RAID member on the disk or at a GPT partition start.
@@ -583,6 +592,10 @@ kept.
     on the disk and at every GPT partition start. The refusal holds unless
     `destroy` names the drive by id, WWN or serial: stormblock's
     `data_slab_on` rule, applied to identities that don't move.
+  - A drive in use (#123: `inuse::of` on the record, or a slab / RAID
+    superblock in the fresh read) is refused on `destroy` alone; it also
+    has to be named in `i_know_in_use`, which consoles never offer for the
+    system drive.
   - Partition and enroll need a usable 512/4096 geometry, unless a format
     step comes first.
   - Enroll needs stormblock, a healthy drive, and a designation other than

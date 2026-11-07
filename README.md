@@ -66,6 +66,24 @@ are listed under [Not yet](#not-yet).
     (`STRMSLAB`) at LBA 0 or at the start of any GPT partition. A disk with
     one has `in_use_by` set. On stormcos that is the node's system disk,
     which `/proc/mounts` does not show.
+  - **In use** (`src/inuse.rs`, #123): every drive on `/api/v1/drives`,
+    `/api/v1/drives/{id}`, the Drive object and the feed says, structured:
+    `in_use` (bool); `use`, the first that holds of `system` (a slab with
+    stormblock's system type GUID: the node's root), `raid_member` (a
+    stormraid superblock), `data` (a data slab), `slab_member` (in the fleet,
+    or a whole-drive slab), `mounted` (a mounted partition; seen only with
+    `discovery.manage_mounted`), `free`; `slabs` (`partition`, `name`,
+    `role`); `depends_on` (the node's root, its data half, a RAID set, the
+    engine's volumes on it); `in_use_reason`, the sentence every refusal
+    carries — on forge1 "sda holds this node's system slab (partition 2
+    'stormblock'); the node runs from it". Read from the partition table and
+    the engine's report, never from the `contents` text. A drive in use
+    refuses: the REST formats (drive, shelf, batch) and the destructive test
+    (no override); worker destroying steps (format, sanitize, security erase,
+    partition, destructive sample), see the worker's **Safety**; designation
+    `system` on a drive used for data, RAID or a mount, and `failed` on the
+    system drive (that would drain the half the node runs from). `none`,
+    `reserved` and `spare` stay allowed.
   - **Probe cache:** READ CAPACITY and the slab probe run again only when the
     device changes (dev number, size, WWID), or every 10 minutes.
 - **Health** (`src/monitor.rs`, `src/poller.rs`, `src/smart/`). Each drive is
@@ -393,7 +411,12 @@ are listed under [Not yet](#not-yet).
     mounted drive. A drive holding a stormblock slab or a filesystem (ext*,
     xfs, btrfs, vfat, ntfs, swap, LVM2, LUKS, md, on the disk or any GPT
     partition) is refused a destructive step, unless `destroy` names it by
-    stable id, WWN or serial (never by `/dev` name). Guards run at submit
+    stable id, WWN or serial (never by `/dev` name). A drive **in use**
+    (#123: the system drive, a drive with slabs, a RAID member — also when
+    the fresh read before the step finds a slab or RAID superblock) is
+    refused even when named in `destroy`: it needs a second, separate
+    acknowledgment, `i_know_in_use` (DriveOperation `iKnowInUse`), naming it
+    the same way. Consoles never offer it for the system drive. Guards run at submit
     and again before each step. `dry_run` returns the plan (runnable and
     refused drives, with reasons) and changes nothing.
   - **Scheduling:** low-level steps run in parallel, at most
@@ -733,8 +756,9 @@ status}` in the log and `<data_dir>/audit.log`, and an `audit` event in
 **Owner:** every drive reports `owner`: `stormblock` (in the fleet, or a slab
 on it), `stormraid` (a RAID set superblock, `STORMRD1`), else `free`. An owned
 drive refuses format, sanitize and partition until the owner lets go (leave
-the fleet; delete the RaidSet) and the operation names it in `destroy` by
-stable id, WWN or serial.
+the fleet; delete the RaidSet) and the operation names it in `destroy` and in
+`iKnowInUse` by stable id, WWN or serial (#123). `status.inUse`, `use`,
+`slabs`, `dependsOn` and `inUseReason` say why.
 
 ### As Kubernetes objects
 
@@ -877,7 +901,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `POST /api/v1/drives/{id}/enroll[?tier=]` | an offered (`enrolable`) drive → partition + enroll as a data slab (worker job; 409 otherwise) (#42) |
 | `GET·POST /api/v1/drives/{id}/format` | `{"block_size":512\|4096,"protection":"none"\|"type1"}` (default 4096, none) · `run` + the kept `last` record with progress (#108) |
 | `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size","protection"}` |
-| `GET·POST /api/v1/worker/jobs` | drive worker jobs · `{"select":{…},"steps":[…],"destroy"?,"dry_run"?}` |
+| `GET·POST /api/v1/worker/jobs` | drive worker jobs · `{"select":{…},"steps":[…],"destroy"?,"i_know_in_use"?,"dry_run"?}` |
 | `GET /api/v1/worker/jobs/{id}`, `POST …/{id}/cancel`, `POST …/{id}/resume` | one job; stop what hasn't started; continue interrupted drives |
 | `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` |
 | `GET·POST /api/v1/firmware` | all runs · `{"image","drives"?,"model"?,"force"?}` |
