@@ -633,7 +633,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #129: MODE SELECT refused 26/00 on a NetApp X378 (forge1 sdd) (P0, 2026-11-07) — in progress
+### #129: MODE SELECT refused 26/00 on a NetApp X378 (forge1 sdd) (P0, 2026-11-07) — DONE (v0.41.1)
 
 forge1 sdd (NETAPP X378_HLBRE10TA07, 10 TB at 512) refused 4096 + PI1 at
 MODE SELECT(10) with ILLEGAL REQUEST 26/00; the HGSTs beside it took it.
@@ -654,7 +654,10 @@ clamp it). Design (the issue's):
   a >2 TiB drive with 26/00 + field pointer; the HGST path unchanged
 Steps:
 - [x] sense field pointer · [x] parameter list + set_length · [x] tests
-- [x] docs, changelog, v0.41.1 · [ ] build VM, golden; owner retries sdd
+- [x] docs, changelog, v0.41.1 (10cf15a) · [x] build VM: clippy -D warnings
+      --locked, 336 unit + harnesses (the X378 fake and the HGST path) · [x] golden
+- Live: the owner retries sdd from the console (4096 + PI1); a refusal now
+      names the byte (stormraid#69 waits on it)
 
 ### #125: thermal management — readings, limits, alerts, cooling, hot drives (P1, owner, 2026-11-07) — DONE (v0.41.0)
 
