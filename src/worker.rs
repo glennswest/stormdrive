@@ -295,7 +295,11 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
     // single-drive test route allows it — fleet, reserved, mounted drives.
     let read_only = steps.iter().all(Step::read_only);
     if d.membership == Membership::Fleet && !read_only {
-        return Err("in the fleet — leave (drain) first".into());
+        // Name the use when there is more to it than membership (#123).
+        return Err(match crate::inuse::of(d) {
+            u if u.use_ != crate::inuse::Use::SlabMember => format!("in use: {} — in the fleet: leave (drain) first", u.reason.unwrap_or_default()),
+            _ => "in the fleet — leave (drain) first".into(),
+        });
     }
     if d.activity != Activity::Idle {
         return Err(format!("busy: {}", serde_json::to_value(d.activity).unwrap_or_default().as_str().unwrap_or("?")));
@@ -1736,7 +1740,8 @@ mod tests {
         let mut sda = f.remove(0);
         // In the fleet: never, whatever is named.
         let know = Context { in_use_named: true, ..cx() };
-        assert!(guard(&sda, &[FMT], true, &know).unwrap_err().contains("fleet"));
+        let e = guard(&sda, &[FMT], true, &know).unwrap_err();
+        assert!(e.contains("fleet") && e.contains("system slab"), "{e}");
         sda.membership = Membership::Out;
         let destroying = [
             FMT,
