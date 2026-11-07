@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.41.1** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.42.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -632,6 +632,19 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
   short, then medium; close #53 once the drive reads pass
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
+
+### #130: a format runs only what was asked; the target shows while it runs (P0, 2026-11-07) — DONE (v0.42.0)
+
+forge1 sdb/sdc/sdd: asked 4096 + PI1, 4096 refused (#129), the run went on to
+512 + PI1 by itself (#108's run-time fallback). Now (the issue's design):
+`format::start_exact` runs only the format asked for; a refusal puts the old
+length back, sends no FORMAT UNIT and fails with the refusal +
+`alternatives` (pi::alternatives: every other offered format, preference
+order) for the person to choose. `target` on the record / `status.format`,
+feed metric `to`. `plannedFormat.fallbacks` stays as the list shown beforehand.
+- [x] code + tests (4096 refused → no FORMAT UNIT), docs, changelog, v0.42.0
+- [ ] build VM, golden. Console's "refused: format at … instead?" choice →
+      stormconsole issue
 
 ### #129: MODE SELECT refused 26/00 on a NetApp X378 (forge1 sdd) (P0, 2026-11-07) — DONE (v0.41.1)
 

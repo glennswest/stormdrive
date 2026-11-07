@@ -402,14 +402,18 @@ are listed under [Not yet](#not-yet).
   the block length and P_TYPE with READ CAPACITY(16).
   - **The plan** (#108): the first the drive offers of 4096+PI1, 4096, 512+PI1,
     512. A drive with no VPD 0xB4 and a 4K physical block gets 4096+PI1 as a
-    `try` (`plannedFormat.basis`). If it refuses, the run takes 4096, then
-    512+PI1 (`plannedFormat.fallbacks`), with a warning event per refusal. A
-    format asked for that is not the plan stays exact. A drive that refuses all
-    keeps its old block length. A format that reads back other than asked fails,
+    `try` (`plannedFormat.basis`). **A format runs exactly the block size and PI
+    asked for** (#130): if the drive refuses it, its old block length goes back,
+    nothing is formatted, and the run fails with the refusal (and the field the
+    drive points at) and `alternatives`, the formats it may take instead, for
+    the person to choose. `plannedFormat.fallbacks` lists those beforehand; they
+    are never run by themselves. A format that reads back other than asked fails,
     saying what the drive reads; no second format starts by itself.
   - **The record** (`format` on the drive, `status.format` on the Drive object,
     `GET /api/v1/drives/{id}/format` `last`): state, phase, `progress_pct`,
-    `started`, `eta_secs`, `progress_at`, `refused`, `block_size_after`,
+    `started`, `eta_secs`, `progress_at`, `target` (what it formats to, e.g.
+    "4096 with PI type 1"; feed metric `to` while formatting), `refused`,
+    `alternatives`, `block_size_after`,
     `prot_type_after`. It is persisted while the format runs, so it outlives a
     restart of stormdrive or the node. The feed shows `progress` and `left`.
   - Targets: one drive, a list, or every drive on a shelf that needs it.

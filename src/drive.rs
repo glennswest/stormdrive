@@ -658,9 +658,17 @@ pub struct FormatRecord {
     /// Estimated seconds left at that moment, from `started` and the progress.
     #[serde(default)]
     pub eta_secs: Option<u64>,
-    /// Formats the drive refused on the way to this one, with why.
+    /// What it formats to, as words ("4096 with PI type 1"): exactly what
+    /// was asked (#130).
+    #[serde(default)]
+    pub target: String,
+    /// The format the drive refused, with why: then nothing ran (#130).
     #[serde(default)]
     pub refused: Vec<String>,
+    /// After a refusal: formats the drive may take instead, for the person
+    /// to choose. Never run by themselves (#130).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<crate::pi::Choice>,
     /// READ CAPACITY(16) after the format: what was actually set.
     #[serde(default)]
     pub block_size_after: Option<u32>,

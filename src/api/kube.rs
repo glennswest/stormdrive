@@ -138,6 +138,8 @@ pub fn format_run_status(d: &Drive) -> Value {
             "fromBlockSize": f.from_block_size,
             "toBlockSize": f.to_block_size,
             "protection": f.protection,
+            "target": if f.target.is_empty() { crate::pi::target(f.to_block_size, f.protection) } else { f.target.clone() },
+            "alternatives": f.alternatives,
             "progressPct": f.progress_pct,
             "etaSeconds": f.eta_secs,
             "startedUnix": unix(f.started),
@@ -640,6 +642,7 @@ mod format_tests {
         assert_eq!((f["progressPct"].as_u64(), f["etaSeconds"].as_u64(), f["startedUnix"].as_u64()), (Some(25), Some(21600), Some(1000)));
         assert_eq!(f["toBlockSize"], 4096);
         assert_eq!(f["protection"], "none");
+        assert_eq!(f["target"], "4096 with no PI", "what it formats to, while it runs (#130)");
         assert_eq!(f["refused"].as_array().unwrap().len(), 1);
     }
 

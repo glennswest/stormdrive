@@ -217,6 +217,10 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     }
     // A running format: the drive's own progress and the time left (#108).
     if phase == "formatting" {
+        // What it formats to (#130): exactly what was asked.
+        if let Some(f) = &d.format {
+            metrics.push(Metric::new("to", crate::pi::target(f.to_block_size, f.protection)).tone("accent"));
+        }
         if let Some(pct) = prep["pct"].as_u64() {
             metrics.push(Metric::new("progress", format!("{pct}%")).tone("accent"));
         }

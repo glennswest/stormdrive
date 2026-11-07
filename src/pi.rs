@@ -115,8 +115,9 @@ pub struct Planned {
     /// (owner, #82).
     #[serde(default)]
     pub fallback: bool,
-    /// What the run formats instead if the drive refuses this one, in order
-    /// (#108). Only on a `try` plan; empty = a refusal ends it.
+    /// What the drive may take if it refuses this one, in order (#108).
+    /// Only on a `try` plan. A choice to offer the person; the run never
+    /// formats one of them by itself (#130).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallbacks: Vec<Choice>,
 }
@@ -259,6 +260,21 @@ pub fn fallbacks(s: &Supports, length: u32, prot: Protection) -> Vec<Choice> {
         .filter(|c| *c != (length, prot) && s.offers(c.0, c.1).is_some())
         .map(|(block_size, protection)| Choice { block_size, protection })
         .collect()
+}
+
+/// After `(length, prot)` was refused: every other format the drive may
+/// take, in the preference order, for the person to choose (#130).
+pub fn alternatives(s: &Supports, length: u32, prot: Protection) -> Vec<Choice> {
+    PREFERENCE
+        .into_iter()
+        .filter(|c| *c != (length, prot) && s.offers(c.0, c.1).is_some())
+        .map(|(block_size, protection)| Choice { block_size, protection })
+        .collect()
+}
+
+/// A format in words: "4096 with PI type 1".
+pub fn target(length: u32, prot: Protection) -> String {
+    format!("{length} with {}", prot.word())
 }
 
 /// The format for a drive: `want` when it offers it, else the preference.
@@ -439,6 +455,20 @@ mod tests {
         let e = plan(&no_pi, Some((4096, Protection::Type1))).unwrap_err();
         assert!(e.contains("VPD 0xB4"), "{e}");
         assert!(plan(&no_pi, Some((512, Protection::Type1))).is_err(), "no PROTECT → no PI");
+    }
+
+    #[test]
+    fn after_a_refusal_every_other_offered_format_is_a_choice() {
+        let hgst = Supports { protect: true, pi_types: vec![1, 2], current_block_size: 512, current_prot_type: 1, physical_block_size: 4096, ..Default::default() };
+        assert_eq!(
+            alternatives(&hgst, 4096, Protection::Type1),
+            vec![
+                Choice { block_size: 4096, protection: Protection::None },
+                Choice { block_size: 512, protection: Protection::Type1 },
+                Choice { block_size: 512, protection: Protection::None },
+            ]
+        );
+        assert_eq!(target(4096, Protection::Type1), "4096 with PI type 1");
     }
 
     /// forge1's HGST H7210A521SUN010T: no VPD 0xB4, physical 4096, PI 1 + 2,

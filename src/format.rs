@@ -9,10 +9,11 @@
 //! 3. FORMAT UNIT, FMTDATA + IMMED, FMTPINFO for protection information
 //!    (#85: type 1 = 10b, PFU 000b). If IMMED is refused, the blocking
 //!    form with a day-long timeout.
-//!    A drive that refuses (ILLEGAL REQUEST on MODE SELECT or FORMAT UNIT)
-//!    is given the next of `pi::fallbacks`, when this is its `try` plan
-//!    (#108), each refusal kept with why. None left: the old block length
-//!    goes back, and nothing was formatted.
+//!    Only the block size and PI asked for (#130): a drive that refuses it
+//!    (ILLEGAL REQUEST on MODE SELECT or FORMAT UNIT) gets its old block
+//!    length back and nothing is formatted. The refusal is kept with why,
+//!    and the formats it may take instead (`alternatives`) are offered for
+//!    the person to choose, never run by themselves.
 //! 4. REQUEST SENSE every 30 s, for the NOT READY 04/04 progress indication
 //!    (it answers GOOD, so a 20 h format adds nothing to the drive's
 //!    `io errs`); TEST UNIT READY when that does not say the format is
@@ -64,8 +65,11 @@ pub struct FormatRun {
     pub progress_at: Option<SystemTime>,
     /// Estimated seconds left at that moment.
     pub eta_secs: Option<u64>,
-    /// Formats the drive refused before this one, with why.
+    /// The format the drive refused, with why (#130: then nothing ran).
     pub refused: Vec<String>,
+    /// After a refusal: what the drive may take instead, for the person to
+    /// choose (#130). Never started by stormdrive.
+    pub alternatives: Vec<crate::pi::Choice>,
     /// READ CAPACITY block length after the format.
     pub block_size_after: Option<u32>,
     pub started: SystemTime,
@@ -291,38 +295,36 @@ fn begin(dev: &impl Unit, name: &str, to: u32, prot: Protection) -> Attempt {
     }
 }
 
-/// `first`, then each fallback while the drive refuses. Returns the format
-/// it took and whether it runs on, or why none was; every refusal goes to
-/// `refused`. When the drive refused them all its block length goes back.
-fn start_first_taken(
-    dev: &impl Unit,
-    name: &str,
-    current: u32,
-    first: (u32, Protection),
-    fallbacks: &[(u32, Protection)],
-    mut refused: impl FnMut(String),
-) -> Result<(u32, Protection, bool), String> {
-    let mut whys = vec![];
-    for (to, prot) in std::iter::once(first).chain(fallbacks.iter().copied()) {
-        match begin(dev, name, to, prot) {
-            Attempt::Started { immediate } => return Ok((to, prot, immediate)),
-            Attempt::Failed(why) => return Err(why),
-            Attempt::Refused(why) => {
-                let line = format!("{to} with {}: {why}", prot.word());
-                tracing::warn!(drive = %name, "{line}");
-                refused(line.clone());
-                whys.push(line);
+/// Exactly the format asked for (#130): no fallback of our own. A refusal
+/// puts the drive's old block length back and starts nothing; the line
+/// says what was refused and why. Ok = whether it runs on (IMMED).
+fn start_exact(dev: &impl Unit, name: &str, current: u32, (to, prot): (u32, Protection)) -> Result<bool, Attempt> {
+    match begin(dev, name, to, prot) {
+        Attempt::Started { immediate } => Ok(immediate),
+        Attempt::Refused(why) => {
+            let line = format!("{to} with {}: {why}", prot.word());
+            tracing::warn!(drive = %name, "refused {line}");
+            if let Err(Attempt::Refused(e) | Attempt::Failed(e)) = set_length(dev, name, current) {
+                tracing::warn!(drive = %name, "putting block length {current} back: {e}");
             }
+            Err(Attempt::Refused(line))
         }
+        failed => Err(failed),
     }
-    if let Err(Attempt::Refused(e) | Attempt::Failed(e)) = set_length(dev, name, current) {
-        tracing::warn!(drive = %name, "putting block length {current} back: {e}");
-    }
-    Err(format!("the drive refused every format, nothing was formatted: {}", whys.join("; ")))
 }
 
-fn run_blocking(drive: &Drive, first: (u32, Protection), fallbacks: &[(u32, Protection)], handle: &FormatHandle) -> Result<u32, String> {
-    let (to, _) = first;
+/// The error of a refused format: nothing ran, and what the person may
+/// choose instead.
+fn refused_error(line: &str, alternatives: &[crate::pi::Choice]) -> String {
+    let mut e = format!("the drive refused {line}; nothing was formatted");
+    if !alternatives.is_empty() {
+        let alts: Vec<String> = alternatives.iter().map(|c| format!("{} with {}", c.block_size, c.protection.word())).collect();
+        e.push_str(&format!(". It may take instead: {} (format again choosing one)", alts.join(", ")));
+    }
+    e
+}
+
+fn run_blocking(drive: &Drive, (to, prot): (u32, Protection), alternatives: &[crate::pi::Choice], handle: &FormatHandle) -> Result<u32, String> {
     if let Some(why) = reset_hold() {
         return Err(format!("not started: {why}; no new format starts until stormdrive restarts"));
     }
@@ -340,17 +342,18 @@ fn run_blocking(drive: &Drive, first: (u32, Protection), fallbacks: &[(u32, Prot
 
     // Blocking FORMAT UNIT: the phase reads `format` for as long as it takes.
     handle.set_phase("format");
-    let (to, prot, immediate) = start_first_taken(&dev, &drive.name, cap.block_len, first, fallbacks, |line| {
-        handle.run.lock().unwrap().refused.push(line);
-    })?;
-    {
-        // A refusal moved the target: this is what the verify, a restart and
-        // the record now mean.
-        let mut run = handle.run.lock().unwrap();
-        run.to_block_size = to;
-        run.protection = prot;
-        run.immediate = immediate;
-    }
+    let immediate = match start_exact(&dev, &drive.name, cap.block_len, (to, prot)) {
+        Ok(immediate) => immediate,
+        Err(Attempt::Refused(line)) => {
+            let mut run = handle.run.lock().unwrap();
+            run.refused.push(line.clone());
+            run.alternatives = alternatives.to_vec();
+            return Err(refused_error(&line, alternatives));
+        }
+        Err(Attempt::Failed(e)) => return Err(e),
+        Err(Attempt::Started { .. }) => unreachable!("start_exact returns Ok for a started format"),
+    };
+    handle.run.lock().unwrap().immediate = immediate;
 
     if immediate {
         handle.set_phase("formatting");
@@ -495,6 +498,7 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection
             progress_at: None,
             eta_secs: None,
             refused: vec![],
+            alternatives: vec![],
             block_size_after: None,
             started: SystemTime::now(),
             finished: None,
@@ -506,11 +510,9 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection
         }),
     });
     state.formats.write().await.insert(drive.id, handle.clone());
-    let chain: Vec<(u32, Protection)> = drive
-        .supports
-        .as_ref()
-        .map(|s| crate::pi::fallbacks(s, to, prot).into_iter().map(|c| (c.block_size, c.protection)).collect())
-        .unwrap_or_default();
+    // Offered if the drive refuses; never run by themselves (#130).
+    let alternatives: Vec<crate::pi::Choice> =
+        drive.supports.as_ref().map(|s| crate::pi::alternatives(s, to, prot)).unwrap_or_default();
     {
         let mut inv = state.inventory.write().await;
         if let Some(d) = inv.drives.get_mut(&drive.id) {
@@ -519,6 +521,7 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection
                 from_block_size: drive.block_size,
                 to_block_size: to,
                 protection: prot,
+                target: crate::pi::target(to, prot),
                 state: "running".into(),
                 started: Some(SystemTime::now()),
                 phase: "queued".into(),
@@ -545,7 +548,7 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection
     tokio::spawn(async move {
         let h3 = h2.clone();
         let d2 = drive.clone();
-        let task = tokio::task::spawn_blocking(move || run_blocking(&d2, (to, prot), &chain, &h3));
+        let task = tokio::task::spawn_blocking(move || run_blocking(&d2, (to, prot), &alternatives, &h3));
         let result = follow(&state, &h2, &drive, task).await;
         finish(&state, &h2, &drive, result).await;
     });
@@ -565,6 +568,8 @@ fn copy_to_record(run: &FormatRun, f: &mut FormatRecord) {
     f.progress_at = run.progress_at;
     f.eta_secs = run.eta_secs;
     f.refused = run.refused.clone();
+    f.alternatives = run.alternatives.clone();
+    f.target = crate::pi::target(run.to_block_size, run.protection);
     f.block_size_after = run.block_size_after;
     f.prot_type_after = run.prot_type_after;
 }
@@ -752,6 +757,7 @@ pub async fn reattach(state: Arc<AppState>, drive: Drive) -> Arc<FormatHandle> {
             progress_at: rec.progress_at,
             eta_secs: rec.eta_secs,
             refused: rec.refused.clone(),
+            alternatives: rec.alternatives.clone(),
             block_size_after: None,
             started: rec.started.unwrap_or_else(SystemTime::now),
             finished: None,
@@ -929,95 +935,90 @@ mod tests {
     }
 
     const PI: (u32, Protection) = (4096, Protection::Type1);
-    const CHAIN: [(u32, Protection); 2] = [(4096, Protection::None), (512, Protection::Type1)];
 
-    type Taken = Result<(u32, Protection, bool), String>;
+    fn run_fake(u: &FakeUnit) -> Result<bool, Attempt> {
+        start_exact(u, "sdz", 512, PI)
+    }
 
-    fn run_fake(u: &FakeUnit) -> (Taken, Vec<String>) {
-        let mut refused = vec![];
-        let r = start_first_taken(u, "sdz", 512, PI, &CHAIN, |l| refused.push(l));
-        (r, refused)
+    fn refused(r: Result<bool, Attempt>) -> String {
+        match r {
+            Err(Attempt::Refused(line)) => line,
+            other => panic!("not a refusal: {other:?}"),
+        }
+    }
+
+    fn formats_sent(u: &FakeUnit) -> Vec<String> {
+        u.log.borrow().iter().filter(|l| l.starts_with("format")).cloned().collect()
     }
 
     #[test]
     fn the_first_format_goes_mode_select_then_format_unit_with_fmtpinfo() {
         let u = FakeUnit::default();
-        let (r, refused) = run_fake(&u);
-        assert_eq!(r.unwrap(), (4096, Protection::Type1, true));
-        assert!(refused.is_empty());
+        assert!(run_fake(&u).unwrap());
         assert_eq!(*u.log.borrow(), ["select10 4096", "format immed=true fmtpinfo=2"]);
     }
 
     #[test]
     fn the_netapp_x378_gets_its_own_long_descriptor_back() {
         let u = FakeUnit { netapp_x378: true, ..Default::default() };
-        let (r, refused) = run_fake(&u);
-        assert_eq!(r.unwrap(), (4096, Protection::Type1, true));
-        assert!(refused.is_empty(), "{refused:?}");
+        assert!(run_fake(&u).unwrap());
         assert_eq!(*u.log.borrow(), ["select10L 4096", "format immed=true fmtpinfo=2"]);
     }
 
     #[test]
-    fn a_refused_mode_select_is_a_refusal_naming_the_field_even_when_6_fails_at_the_transport() {
-        // forge1 sdd before #129: every list it got was refused. Here the
-        // drive refuses 4096 outright: the long and short (10) are its
-        // answer, the (6) dying at the transport does not make it "failed",
-        // so the chain goes on to 512 + PI1.
-        let u = FakeUnit { netapp_x378: true, refuse_select: vec![4096], ..Default::default() };
-        let (r, refused) = run_fake(&u);
-        assert_eq!(r.unwrap(), (512, Protection::Type1, true));
-        assert_eq!(refused.len(), 2);
-        assert!(refused[0].contains("(10, long) illegal request"), "{}", refused[0]);
-        assert!(refused[0].contains("(10) illegal request (key 0x5, asc/ascq 0x26/0x00, field pointer: parameter list byte 7)"), "{}", refused[0]);
-        assert!(refused[0].contains("(6) scsi status 0x02, host 0x07"), "{}", refused[0]);
-    }
-
-    #[test]
-    fn a_refused_pi_format_falls_back_to_4096_saying_why() {
-        let u = FakeUnit { refuse_fmtpinfo: vec![2], ..Default::default() };
-        let (r, refused) = run_fake(&u);
-        assert_eq!(r.unwrap(), (4096, Protection::None, true));
-        assert_eq!(refused.len(), 1);
-        assert!(refused[0].starts_with("4096 with PI type 1: format unit with PI type 1: refused"), "{}", refused[0]);
-        assert_eq!(*u.log.borrow(), ["select10 4096", "format immed=true fmtpinfo=2", "select10 4096", "format immed=true fmtpinfo=0"]);
-    }
-
-    #[test]
-    fn a_refused_4096_ends_at_512_pi1() {
+    fn a_refused_4096_sends_no_format_unit() {
+        // forge1 sdb/sdc/sdd (#130): 4096 refused at MODE SELECT. Before,
+        // the run went on to 512 + PI1 by itself; now nothing is formatted
+        // and the old length goes back.
         let u = FakeUnit { refuse_select: vec![4096], ..Default::default() };
-        let (r, refused) = run_fake(&u);
-        assert_eq!(r.unwrap(), (512, Protection::Type1, true));
-        assert_eq!(refused.len(), 2);
-        assert!(refused[1].starts_with("4096 with no PI: mode select rejected"), "{}", refused[1]);
-        assert_eq!(u.log.borrow().last().unwrap(), "format immed=true fmtpinfo=2");
-        assert!(!u.log.borrow().iter().any(|l| l == "format immed=true fmtpinfo=0"), "no format at 4096 was sent");
-    }
-
-    #[test]
-    fn every_format_refused_formats_nothing_and_puts_the_length_back() {
-        let u = FakeUnit { refuse_fmtpinfo: vec![2], refuse_select: vec![4096], ..Default::default() };
-        let (r, refused) = run_fake(&u);
-        let e = r.unwrap_err();
-        assert!(e.contains("nothing was formatted"), "{e}");
-        assert_eq!(refused.len(), 3);
+        let line = refused(run_fake(&u));
+        assert!(line.starts_with("4096 with PI type 1: mode select rejected"), "{line}");
+        assert!(formats_sent(&u).is_empty(), "no FORMAT UNIT: {:?}", u.log.borrow());
         assert_eq!(u.log.borrow().last().unwrap(), "select10 512", "the old length goes back");
     }
 
     #[test]
-    fn only_a_refusal_falls_back() {
-        let u = FakeUnit { transport_error_on_format: true, ..Default::default() };
-        let (r, refused) = run_fake(&u);
-        assert!(r.is_err());
-        assert!(refused.is_empty());
-        assert_eq!(u.log.borrow().len(), 2, "no second format after an error that is no answer: {:?}", u.log.borrow());
+    fn a_refused_mode_select_names_the_field_even_when_6_fails_at_the_transport() {
+        // The long and short (10) are the drive's answer; the (6) dying at the
+        // transport does not make it "failed".
+        let u = FakeUnit { netapp_x378: true, refuse_select: vec![4096], ..Default::default() };
+        let line = refused(run_fake(&u));
+        assert!(line.contains("(10, long) illegal request"), "{line}");
+        assert!(line.contains("(10) illegal request (key 0x5, asc/ascq 0x26/0x00, field pointer: parameter list byte 7)"), "{line}");
+        assert!(line.contains("(6) scsi status 0x02, host 0x07"), "{line}");
+        assert!(formats_sent(&u).is_empty());
+        assert_eq!(u.log.borrow().last().unwrap(), "select10L 512");
     }
 
     #[test]
-    fn no_fallbacks_means_a_refusal_ends_it() {
+    fn a_refused_pi_format_is_not_run_without_pi() {
         let u = FakeUnit { refuse_fmtpinfo: vec![2], ..Default::default() };
-        let e = start_first_taken(&u, "sdz", 520, PI, &[], |_| {}).unwrap_err();
-        assert!(e.contains("PI type 1"), "{e}");
-        assert_eq!(u.log.borrow().last().unwrap(), "select10 520");
+        let line = refused(run_fake(&u));
+        assert!(line.starts_with("4096 with PI type 1: format unit with PI type 1: refused"), "{line}");
+        assert_eq!(formats_sent(&u), ["format immed=true fmtpinfo=2"], "no format without PI after it");
+        assert_eq!(u.log.borrow().last().unwrap(), "select10 512");
+    }
+
+    #[test]
+    fn a_failure_that_is_no_answer_stops_it() {
+        let u = FakeUnit { transport_error_on_format: true, ..Default::default() };
+        assert!(matches!(run_fake(&u), Err(Attempt::Failed(_))));
+        assert_eq!(u.log.borrow().len(), 2, "no second format: {:?}", u.log.borrow());
+    }
+
+    #[test]
+    fn a_refusal_offers_the_alternatives_as_a_choice() {
+        let alts = [
+            crate::pi::Choice { block_size: 4096, protection: Protection::None },
+            crate::pi::Choice { block_size: 512, protection: Protection::Type1 },
+        ];
+        let e = refused_error("4096 with PI type 1: mode select rejected", &alts);
+        assert_eq!(
+            e,
+            "the drive refused 4096 with PI type 1: mode select rejected; nothing was formatted. \
+             It may take instead: 4096 with no PI, 512 with PI type 1 (format again choosing one)"
+        );
+        assert_eq!(refused_error("x", &[]), "the drive refused x; nothing was formatted");
     }
 
     /// Fixed-format REQUEST SENSE data.
@@ -1080,6 +1081,7 @@ mod tests {
                 progress_at: None,
                 eta_secs: None,
                 refused: vec![],
+                alternatives: vec![],
                 block_size_after: None,
                 started: SystemTime::now() - Duration::from_secs(7200),
                 finished: None,

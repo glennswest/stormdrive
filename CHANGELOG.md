@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.42.0] — 2026-11-07
+
+### Changed
+- a format runs only the block size and PI asked for (#130). forge1's sdb/sdc/sdd were asked for 4096 + PI type 1; 4096 was refused (#129) and the run went on to 512 + PI type 1 by itself while the console read "formatting". Now a refusal (ILLEGAL REQUEST on MODE SELECT or FORMAT UNIT) puts the old block length back, sends no FORMAT UNIT and fails the run with the refusal; `alternatives` on the record (and `status.format.alternatives`) lists what the drive may take instead, for the person to choose. `plannedFormat.fallbacks` keeps listing them beforehand, never run by themselves
+
+### Added
+- what a format is formatting to, while it runs (#130): `target` ("4096 with PI type 1") on the drive's `format` record and `status.format.target`, and the feed metric `to`
+
 ## [v0.41.1] — 2026-11-07
 
 ### Fixed

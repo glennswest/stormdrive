@@ -230,10 +230,11 @@ plan and the safe run. The session never sends a format.
    type 1) counts as offered, and 4096 with or without PI is a `try` when
    READ CAPACITY says the physical block is 4K. A drive with a smaller
    physical block, such as the ST1200MM0098, is never planned at 4096. On a
-   `try`, `plannedFormat.fallbacks` lists what the run formats if the drive
+   `try`, `plannedFormat.fallbacks` lists what the drive may take if it
    refuses (ILLEGAL REQUEST on MODE SELECT or FORMAT UNIT): 4096, then
-   512+PI1. Only the drive's own `try` plan falls back; any other format
-   asked for is exact. The Drive object shows `status.supports`,
+   512+PI1. They are a choice for the person, never run by themselves
+   (#130): every format is exactly what was asked; a refused one formats
+   nothing and its record carries `alternatives`. The Drive object shows `status.supports`,
    `status.currentFormat` and `status.plannedFormat` (or `.error`). A plan
    that is not 4096+PI1, and was not asked for, carries `fallback: true`
    and its reason. The drive also gets a warning event when it is probed:
