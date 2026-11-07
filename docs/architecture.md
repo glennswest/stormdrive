@@ -422,6 +422,12 @@ half that.
   its SAS address, else `internal-<node>-<bdf>[-e<id>]`. A drive's SCSI address
   gives the device id (channel × 128 + target), and that the slot. A RAID
   volume (channel 2, 3) is on the controller's only shelf, with no bay.
+  A disk listed with enclosure 0xffff on a controller with exactly one
+  enclosure is placed in that enclosure by its slot (#122: forge1's H730 lists
+  sdc and sdd so, in the same BP14G+ as sda and sdb), named in
+  `through.no_enclosure_devices`; with none or several it keeps a shelf of the
+  controller's own, as there is nothing to choose by. Slot 0xff: on the shelf,
+  no bay, in `through.slot_not_matched` — never a shelf of its own.
   `internal`: the engine sees no enclosure there, and the owner's rule says so
   (a server's PERC). An external shelf on a PERC would read `internal` as well;
   nothing the controller reports tells them apart, and the engine does the same.

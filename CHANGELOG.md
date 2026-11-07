@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-07
+- **fix:** a drive a PERC lists in no enclosure (enclosure id 0xffff) is placed in the controller's only enclosure by its slot, not on a second, HBA-only shelf. forge1's four drives read as one shelf, `DP BP14G+`, bays 0/3/4/7 (sdc and sdd were on `internal-…-0000-c1-00.0`); `through.no_enclosure_devices` names the drives placed so, and a drive with no slot stays on its shelf with no bay (`through.slot_not_matched`) (#122)
+
 ### 2026-11-04
 - **docs:** refreshed against the code since 2026-10-29 (v0.33.1–v0.39.0): docs/netapp-shelf.md no longer says the format sends FOV=0 or fails on a refused 4096; it describes FMTPINFO and the `try` fallbacks (#108). README, architecture and CLAUDE.md were checked key by key (config, routes, health acknowledge, media, megaraid, transport, state files, TLS engine client) and already match
 

@@ -54,6 +54,17 @@ pub struct Through {
     /// Physical device id → slot.
     #[serde(default)]
     pub device_bays: BTreeMap<u16, u32>,
+    /// Devices the controller lists in no enclosure, placed on this one as
+    /// the controller's only enclosure (#122: forge1's PERC lists two of the
+    /// BP14G+'s four drives with enclosure 0xffff). Their bay is the slot the
+    /// controller gives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_enclosure_devices: Vec<u16>,
+    /// Devices on this shelf whose slot the controller does not give (0xff):
+    /// on the shelf, with no bay — "slot not matched", never a shelf of their
+    /// own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slot_not_matched: Vec<u16>,
     /// Why the controller could not be read: the shelf has no bays then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -139,8 +150,12 @@ pub fn place(shelves: &Shelves, host: &str, addr: (u16, u16)) -> Option<(Shelf, 
     let mine: Vec<&ShelfReport> = shelves.values().filter(|r| r.through.as_ref().is_some_and(|t| t.scsi_host == host)).collect();
     if let Some(id) = device_id(addr.0, addr.1) {
         for r in &mine {
-            if let Some(bay) = r.through.as_ref().and_then(|t| t.device_bays.get(&id)) {
+            let Some(t) = r.through.as_ref() else { continue };
+            if let Some(bay) = t.device_bays.get(&id) {
                 return Some((r.shelf.clone(), Some(*bay)));
+            }
+            if t.slot_not_matched.contains(&id) {
+                return Some((r.shelf.clone(), None));
             }
         }
     }
@@ -171,6 +186,11 @@ struct Controller<'a> {
 
 impl Controller<'_> {
     fn report(&self, enclosure: Option<u16>, shelf: Shelf, device_bays: BTreeMap<u16, u32>, slots: BTreeMap<u32, Vec<String>>, error: Option<String>) -> ShelfReport {
+        self.report_with(enclosure, shelf, Placed { device_bays, slots, ..Default::default() }, error)
+    }
+
+    fn report_with(&self, enclosure: Option<u16>, shelf: Shelf, placed: Placed, error: Option<String>) -> ShelfReport {
+        let Placed { device_bays, slots, no_enclosure_devices, slot_not_matched } = placed;
         let id = local_key(self.node, self.pcie, self.host, enclosure);
         let shelf = Shelf { id: Some(id), position: Some(Position::Internal), ..shelf };
         ShelfReport {
@@ -191,6 +211,8 @@ impl Controller<'_> {
                 pcie_addr: self.pcie.map(str::to_string),
                 enclosure_device_id: enclosure,
                 device_bays,
+                no_enclosure_devices,
+                slot_not_matched,
                 error,
             }),
             collected_at: SystemTime::now(),
@@ -221,9 +243,18 @@ impl Controller<'_> {
             enclosures.insert(Some(p.device_id), shelf);
         }
         let disks: Vec<&Pd> = pds.iter().filter(|p| p.scsi_type == SCSI_TYPE_DISK).collect();
+        let enclosure_of = |d: &Pd| (d.enclosure != NO_ENCLOSURE).then_some(d.enclosure);
+        // A disk the controller lists in no enclosure, on a controller with
+        // exactly one: that enclosure is the backplane it sits in (#122). With
+        // none or several, it stays on a shelf of the controller's own.
+        let listed: Vec<u16> = enclosures.keys().flatten().copied().collect();
+        let only = match listed.as_slice() {
+            [e] => Some(*e),
+            _ => None,
+        };
+        let shelf_of = |d: &Pd| enclosure_of(d).or(only);
         for d in &disks {
-            let e = (d.enclosure != NO_ENCLOSURE).then_some(d.enclosure);
-            enclosures.entry(e).or_default();
+            enclosures.entry(shelf_of(d)).or_default();
         }
         if enclosures.is_empty() {
             enclosures.insert(None, Shelf::default());
@@ -231,16 +262,34 @@ impl Controller<'_> {
         enclosures
             .into_iter()
             .map(|(e, shelf)| {
-                let mut bays = BTreeMap::new();
-                let mut slots = BTreeMap::new();
-                for d in disks.iter().filter(|d| (d.enclosure != NO_ENCLOSURE).then_some(d.enclosure) == e && d.slot != 0xff) {
-                    bays.insert(d.device_id, u32::from(d.slot));
-                    slots.insert(u32::from(d.slot), d.sas_address.iter().cloned().collect());
+                let mut placed = Placed::default();
+                for d in disks.iter().filter(|d| shelf_of(d) == e) {
+                    if e.is_some() && enclosure_of(d).is_none() {
+                        placed.no_enclosure_devices.push(d.device_id);
+                    }
+                    if d.slot == 0xff {
+                        placed.slot_not_matched.push(d.device_id);
+                        continue;
+                    }
+                    placed.device_bays.insert(d.device_id, u32::from(d.slot));
+                    placed.slots.insert(u32::from(d.slot), d.sas_address.iter().cloned().collect());
                 }
-                self.report(e, shelf, bays, slots, None)
+                if !placed.no_enclosure_devices.is_empty() {
+                    tracing::debug!(host = self.host, enclosure = ?e, devices = ?placed.no_enclosure_devices, "listed in no enclosure: placed on the controller's only one");
+                }
+                self.report_with(e, shelf, placed, None)
             })
             .collect()
     }
+}
+
+/// What a controller's list puts on one shelf.
+#[derive(Default)]
+struct Placed {
+    device_bays: BTreeMap<u16, u32>,
+    slots: BTreeMap<u32, Vec<String>>,
+    no_enclosure_devices: Vec<u16>,
+    slot_not_matched: Vec<u16>,
 }
 
 fn into_table(reports: Vec<ShelfReport>) -> Shelves {
@@ -493,8 +542,67 @@ mod tests {
         // Device 130 is channel 1, target 2.
         let (sh, bay) = place(&shelves, "host0", (1, 2)).unwrap();
         assert_eq!((sh.key().as_deref(), bay), (Some("internal-n-host0-e33"), Some(7)));
-        // Three shelves: an unlisted device is on none of them for certain.
-        assert_eq!(place(&shelves, "host0", (0, 3)), None, "slot 0xff is no bay");
+        // Slot 0xff: on its enclosure, no bay ("slot not matched").
+        let (sh, bay) = place(&shelves, "host0", (0, 3)).unwrap();
+        assert_eq!((sh.key().as_deref(), bay), (Some("internal-n-host0-e33"), None), "slot 0xff is no bay, still e33");
+        assert_eq!(shelves["internal-n-host0-e33"].through.as_ref().unwrap().slot_not_matched, vec![3]);
+        // Two enclosures: a drive in none could be in either; it keeps the
+        // controller's own shelf rather than a guess.
+        assert!(shelves.contains_key("internal-n-host0"));
+        // Three shelves: a device nobody lists is on none of them for certain.
+        assert_eq!(place(&shelves, "host0", (0, 9)), None);
+    }
+
+    /// forge1 as it is (#122, 0.39.0 on 2026-11-07): the PERC on host1
+    /// (0000:c1:00.0) lists enclosure 32 (`DP BP14G+`, 5e09406039f0cf00) and
+    /// four drives on device ids = slots 0, 3, 4, 7; sda and sdb in enclosure
+    /// 32, sdc and sdd in enclosure 0xffff. One backplane: one shelf.
+    fn forge1_live(slot_of_sdd: u8) -> Shelves {
+        let c = Controller { node: "storm-94a281", host: "host1", pcie: Some("0000:c1:00.0") };
+        into_table(c.read(&mut |op, mbox, buf| {
+            let reply = match (op, mbox) {
+                (DCMD_PD_LIST, None) => list(&[
+                    entry(32, NO_ENCLOSURE, 0, SCSI_TYPE_ENCLOSURE, 0x5e09406039f0cf00),
+                    entry(0, 32, 0, SCSI_TYPE_DISK, 0x5000cca2680ab8d9),
+                    entry(3, 32, 3, SCSI_TYPE_DISK, 0x5000cca268077301),
+                    entry(4, NO_ENCLOSURE, 4, SCSI_TYPE_DISK, 0x5000cca26801b649),
+                    entry(7, NO_ENCLOSURE, slot_of_sdd, SCSI_TYPE_DISK, 0x5000cca26a819e69),
+                ]),
+                (DCMD_PD_INFO, Some(32)) => pd_info("DP", "BP14G+"),
+                other => return Err(format!("unexpected {other:?}")),
+            };
+            buf[..reply.len()].copy_from_slice(&reply);
+            Ok(())
+        }))
+    }
+
+    #[test]
+    fn forge1s_four_drives_are_one_bp14g_shelf_bays_0_3_4_7() {
+        let shelves = forge1_live(7);
+        assert_eq!(shelves.keys().collect::<Vec<_>>(), vec!["5e09406039f0cf00"], "one shelf, not an HBA-only second one");
+        let r = &shelves["5e09406039f0cf00"];
+        assert_eq!((r.shelf.vendor.as_deref(), r.shelf.model.as_deref()), (Some("DP"), Some("BP14G+")));
+        assert_eq!(r.shelf.id.as_deref(), Some("internal-storm-94a281-0000-c1-00.0-e32"));
+        assert_eq!(r.slots.keys().copied().collect::<Vec<_>>(), vec![0, 3, 4, 7]);
+        assert_eq!(r.slots[&4], vec!["5000cca26801b649".to_string()]);
+        let t = r.through.as_ref().unwrap();
+        assert_eq!(t.no_enclosure_devices, vec![4, 7], "said, not hidden");
+        assert!(t.slot_not_matched.is_empty());
+        for (name, target, bay) in [("sda", 0, 0), ("sdb", 3, 3), ("sdc", 4, 4), ("sdd", 7, 7)] {
+            let (sh, b) = place(&shelves, "host1", (0, target)).unwrap();
+            assert_eq!((sh.key().as_deref(), b), (Some("5e09406039f0cf00"), Some(bay)), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_drive_with_no_slot_stays_on_the_enclosure_slot_not_matched() {
+        let shelves = forge1_live(0xff);
+        assert_eq!(shelves.len(), 1);
+        let r = &shelves["5e09406039f0cf00"];
+        assert_eq!(r.through.as_ref().unwrap().slot_not_matched, vec![7]);
+        assert_eq!(r.slots.keys().copied().collect::<Vec<_>>(), vec![0, 3, 4]);
+        let (sh, b) = place(&shelves, "host1", (0, 7)).unwrap();
+        assert_eq!((sh.key().as_deref(), b), (Some("5e09406039f0cf00"), None));
     }
 
     #[test]

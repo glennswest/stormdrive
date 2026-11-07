@@ -631,6 +631,20 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #122: forge1's BP14G+ read as two shelves (P1, owner, 2026-11-07) — in progress
+
+Owner: "why are the drives split over two shelfs?" forge1 (0.39.0) live
+`/api/v1/shelves`: enclosure 32 (`DP BP14G+`, 5e09406039f0cf00) holds sda
+(bay 0) and sdb (3); sdc (4) and sdd (7) on `internal-storm-94a281-0000-c1-00.0`
+with `enclosure_device_id: null`, i.e. the PERC's PD list gives them enclosure
+0xffff, with their slots. Fix (megaraid.rs `read`, no open decision): a disk in
+no enclosure on a controller with exactly one goes into it by slot
+(`through.no_enclosure_devices`); slot 0xff stays on its shelf with no bay
+(`through.slot_not_matched`, also found by `place` across shelves); with none or
+several enclosures, the controller's own shelf as before.
+- [x] code + test from forge1's data · [x] docs, changelog
+- [ ] build VM, v0.39.1, golden; live: forge1's /api/v1/shelves one shelf
+
 ### #108: 4096 + PI when VPD 0xB4 is absent; format progress kept (P0, owner, 2026-11-05) — DONE (v0.39.0)
 
 Owner, before forge1's drives 2–4 are formatted: "fix the sector sizes … and we

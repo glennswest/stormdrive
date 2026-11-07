@@ -238,6 +238,12 @@ are listed under [Not yet](#not-yet).
     from `/proc/devices`, as smartctl does; that needs the host's `/dev` (the
     golden binds it) and CAP_MKNOD + CAP_SYS_ADMIN. A controller it cannot read
     is still an internal shelf, with no bays, and a warning event says why.
+    A drive the controller lists in no enclosure (enclosure id 0xffff: forge1's
+    PERC does it for two of its BP14G+'s four drives, #122) is on the
+    controller's only enclosure, at the slot the controller gives, and
+    `through.no_enclosure_devices` names it; only with no enclosure or several
+    does it get a shelf of the controller's own. A drive with no slot (0xff)
+    stays on its shelf with no bay (`through.slot_not_matched`).
     Not read that way: other RAID families (smartpqi, hpsa); their drives are
     placed by what sysfs shows
   - **NVMe:** the PCIe slot on the drive's PCIe chain. A numeric slot name

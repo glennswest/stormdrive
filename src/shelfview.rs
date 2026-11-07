@@ -198,7 +198,17 @@ pub fn summarize(rep: &ShelfReport, hba_sas: &BTreeMap<String, String>) -> Summa
     let cabled_connectors = connectors.iter().filter(|c| c.attached_sas_address.is_some()).count();
     let paths = rep.esps.len();
     let note = match (ioms_installed, paths) {
-        _ if rep.through.is_some() => "read through its RAID controller: no SES path".to_string(),
+        _ if rep.through.is_some() => {
+            let t = rep.through.as_ref().expect("checked");
+            let mut n = "read through its RAID controller: no SES path".to_string();
+            if !t.no_enclosure_devices.is_empty() {
+                n.push_str(&format!("; {} drive(s) the controller lists in no enclosure, placed here by slot", t.no_enclosure_devices.len()));
+            }
+            if !t.slot_not_matched.is_empty() {
+                n.push_str(&format!("; {} drive(s) with no slot (slot not matched)", t.slot_not_matched.len()));
+            }
+            n
+        }
         (0, _) => "no IOM reported".to_string(),
         (1, _) => "one IOM installed: single path by hardware".to_string(),
         (n, p) if p >= 2 => format!("{n} IOMs installed, {p} paths seen: multipath"),
