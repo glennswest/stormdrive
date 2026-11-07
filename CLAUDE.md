@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.42.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.42.1** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -632,6 +632,27 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
   short, then medium; close #53 once the drive reads pass
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
+
+### #131: an interrupted format (3/31/00, no block node) reads Missing and can't be formatted (P0, 2026-11-07) — DONE (v0.42.1)
+
+forge1 sdb–sdd, powered off mid-format (512 + PI, #130's fallback), answer
+3/31/00 and sd made no block node: discovery (only /sys/block) lost them →
+`missing`, and `format_blocker` refuses Missing. Design (the issue's):
+- discovery walks `/sys/class/scsi_generic` too (`sg_only_disks`: type 0,
+  no `device/block/` child); INQUIRY must answer; identity from the same
+  sysfs scsi_device attributes (WWID → same DriveId); name/path = the sg
+  node; `format_reason` from READ CAPACITY (`scsi::no_block_node_reason`);
+  block size = READ CAPACITY, else the mode descriptor, else 512; kind from
+  VPD 0xB1 else unknown (merge keeps the known kind); `supports` kept from
+  before when the probe fails (it needs READ CAPACITY)
+- `needs_reformat()` also on `format_reason`; topology resolves an sg name
+  through /sys/class/scsi_generic; feed detail/metric/action; kube status
+- format: `current_length` takes 31/00 (recorded length); rescan/re-add via
+  the sg device dir; reattach verifies before re-adding
+- a name moves (`sdb` → `sg2`, then `sdX` after the format): ask by id/WWN
+- [x] code + tests (sg_only_disks tree, reason, blocker, feed, fake unit
+      3/31/00 → select 4096 + FMTPINFO 2), docs, changelog, v0.42.1
+- [ ] build VM; golden; forge1 formats from the console
 
 ### #130: a format runs only what was asked; the target shows while it runs (P0, 2026-11-07) — DONE (v0.42.0)
 

@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.42.1] — 2026-11-07
+
+### Fixed
+- a drive whose format was cut off is no longer `missing` and can be formatted again (#131). forge1's sdb–sdd, powered off mid-format, answer 3/31/00 MEDIUM FORMAT CORRUPTED and got no block node, so the 4096 + PI1 format was refused "activity is Missing". Discovery now also walks `/sys/class/scsi_generic`: a SCSI disk (type 0) with no block node that answers INQUIRY is the same drive (WWID → same id), named and reached by its sg node, with `needs_reformat: true` and `format_reason` ("medium format corrupted (3/31/00): an interrupted format; format it again"; Drive status `formatReason`, feed metric `needs a format`, action "Format 4K (needs a format)"). A format starting on a drive whose READ CAPACITY answers 31/00 uses the recorded block length instead of stopping; afterwards the device is rescanned and re-added through its sg node, and a re-attached format re-adds only after its verify
+
 ## [v0.42.0] — 2026-11-07
 
 ### Changed

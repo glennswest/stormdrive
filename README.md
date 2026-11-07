@@ -62,6 +62,20 @@ are listed under [Not yet](#not-yet).
     sectors and attaches it with 0 blocks. Discovery still lists it
     (`usable: false`, `needs_reformat`), with `block_size` from READ
     CAPACITY(16).
+  - **A disk with an sg node and no block node** (#131): a format cut off
+    (a power-off) leaves the drive answering 3/31/00 MEDIUM FORMAT
+    CORRUPTED, and sd makes no `/dev/sdX` of it. Discovery also walks
+    `/sys/class/scsi_generic`: a type-0 device with no block node that
+    answers INQUIRY is the same drive (same WWID, same id), named and
+    reached by its sg node (`sg2`, `/dev/sg2`), not `missing`. It reads
+    `needs_reformat: true` with `format_reason` ("medium format corrupted
+    (3/31/00): an interrupted format; format it again"; Drive status
+    `formatReason`; the feed's `needs a format` metric and a "Format 4K
+    (needs a format)" action), and the REST and worker formats take it: a
+    31/00 READ CAPACITY at the start is no reason to stop (the recorded
+    block length stands in). After the format the device is rescanned and
+    re-added through its sg node, so sd attaches it again (under whatever
+    `sdX` is free; the inventory follows it by WWID)
   - **Who holds it** (`src/contents.rs`): it reads a stormblock slab header
     (`STRMSLAB`) at LBA 0 or at the start of any GPT partition. A disk with
     one has `in_use_by` set. On stormcos that is the node's system disk,

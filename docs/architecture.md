@@ -556,7 +556,13 @@ NetApp-formatted drives arrive at 520 (or 528) bytes per sector. Linux
 refuses them — `sd: Unsupported sector size 520` — and the block node
 attaches with 0 blocks, so nothing above the SCSI layer can touch them.
 Discovery keeps them anyway (`usable: false`, `block_size` from READ
-CAPACITY, `needs_reformat`), and the format job turns them into drives:
+CAPACITY, `needs_reformat`), and the format job turns them into drives.
+A drive whose format was cut off answers 31/00 MEDIUM FORMAT CORRUPTED and
+may get no block node at all (#131): discovery finds it through
+`/sys/class/scsi_generic` (type 0, no `block/`, INQUIRY answers) under its
+sg name, with `format_reason`; the format starts from the recorded block
+length when READ CAPACITY answers 31/00, and the device is re-added through
+its sg node afterwards:
 
 1. MODE SENSE(10) with LLBAA=1, then MODE SELECT(10) (PF=1, SP=0) with the
    drive's own block descriptor sent back (#129): long (16 bytes, LONGLBA)
