@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-07
+- **docs:** #132 work plan: forge1's live `/api/v1/controllers` (0.43.0) recorded; the HBA switch waits on perccli in the golden (stormcentral#1310)
+
 ## [v0.43.1] — 2026-11-08
 
 ### Fixed
@@ -837,6 +840,9 @@
 - **feat:** Config `stormblock.auto_format_slab`, `push_health`,
   `drain_on_failing` (all default true; `auto_add` stays off).
 <!-- New unreleased changes go here -->
+
+### 2026-11-07
+- **docs:** #132 work plan: forge1's live `/api/v1/controllers` (0.43.0) recorded; the HBA switch waits on perccli in the golden (stormcentral#1310)
 
 ## [v0.3.0] — 2026-08-26
 

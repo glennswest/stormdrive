@@ -689,6 +689,12 @@ Steps:
   `medium_format_corrupted`, raw size, notSupported, unusable on
   /controllers and in the refusal. Next on forge1: read `unit` for 3/4/7;
   31/00 → HBA in setup (owner, serial), then 4096 + PI from the console
+- 2026-11-07: forge1 (0.43.0) live `/api/v1/controllers` reads on metal: PERC
+  H730 Mini 25.5.4.0006, serial 7CR00GF, 0 VDs, JBOD on, mode raid
+  (inferred), sda jbod, sdb/sdc/sdd devices 3/4/7 unconfigured_bad 0 B seq 2,
+  `raid_mode` + 3 `drive_failed` findings, perccli absent said. 0.43.1's
+  golden (50bbf003d774) not on forge1 yet. Item proposed after
+  stormcentral#1310 (perccli in the golden: the HBA switch)
 
 ### #131: an interrupted format (3/31/00, no block node) reads Missing and can't be formatted (P0, 2026-11-07) — DONE (v0.42.1)
 
