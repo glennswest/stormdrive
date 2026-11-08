@@ -636,7 +636,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #132: the PERC from the node — controller state, set good / JBOD, personality HBA (P0, owner, 2026-11-08) — in progress
+### #132: the PERC from the node — controller state, set good / JBOD, personality HBA (P0, owner, 2026-11-08) — DONE (v0.43.0); HBA switch waits on perccli in the image
 
 forge1: H730 Mini in RAID mode, sdb–sdd **Failed, 0 KB** after their formats
 were cut; HII and iDRAC refuse every operation. Dell's fix is from the OS
@@ -671,10 +671,17 @@ Owner: "hba is mandatory". Design (the issue's; my calls said on it):
   system drive (inuse `use: system`) and any in-use / fleet drive; `force`
   required from Failed (as perccli)
 Steps:
-- [ ] raidctl.rs parsers + plan + tests (fake firmware, fake perccli)
-- [ ] monitor + inventory join + API + feed + metrics
-- [ ] docs, changelog, v0.43.0; build VM; issues: perccli in the golden,
-      licence; console contract stormconsole#325
+- [x] raidctl.rs parsers + plan + tests (fake firmware, fake perccli)
+- [x] monitor + inventory join + API + feed + metrics (92f281f; #133 was
+      the field put in `Observed` literals too, 9f768c3)
+- [x] docs, changelog, v0.43.0 (4a76325); build VM: clippy -D warnings
+      --locked, 350 unit (9 raidctl) + harnesses; image build bfa9bfccd1a7
+- [x] issues: perccli in the golden stormcentral#1310, licence
+      compliance-operations#231; console contract on stormconsole#325
+- Not on metal: the MFI calls have only met a fake firmware (offsets from
+  the headers). Live on forge1: `/api/v1/controllers` reads PERC H730 Mini
+  25.5.4.0006, RAID mode, sdb–sdd failed; the owner sets them good (or JBOD)
+  from the console; HBA once perccli ships (#1310), then reboot, format
 
 ### #131: an interrupted format (3/31/00, no block node) reads Missing and can't be formatted (P0, 2026-11-07) — DONE (v0.42.1)
 
