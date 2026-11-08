@@ -247,6 +247,7 @@ async fn tick(
         // Shelves first: drive location resolution names the shelf from
         // this scan when only a logical id is visible.
         scan_shelves(state).await?;
+        scan_controllers(state).await;
         let hbas = tokio::task::spawn_blocking(crate::hba::scan).await?;
         merge_hbas(state, hbas).await;
         let started = std::time::Instant::now();
@@ -323,6 +324,96 @@ async fn scan_shelves(state: &Arc<AppState>) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// One controller scan at a time, as the shelf scan (#132).
+static CONTROLLER_SCAN_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// MFI reads and up to two perccli calls a controller.
+const CONTROLLER_SCAN_LIMIT: Duration = Duration::from_secs(150);
+
+/// RAID controllers (#132): identity, mode, each disk's firmware state;
+/// joined to the inventory so a drive the controller has Failed says so.
+async fn scan_controllers(state: &Arc<AppState>) {
+    use std::sync::atomic::Ordering;
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            CONTROLLER_SCAN_BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+    if CONTROLLER_SCAN_BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let perccli = state.config.controllers.perccli.clone();
+    let scan = tokio::task::spawn_blocking(move || {
+        let _done = Done;
+        crate::raidctl::scan(perccli.as_deref())
+    });
+    match tokio::time::timeout(CONTROLLER_SCAN_LIMIT, scan).await {
+        Ok(Ok(reports)) => merge_controllers(state, reports).await,
+        Ok(Err(e)) => tracing::warn!("controller scan: {e}"),
+        Err(_) => {
+            let msg = format!("controller scan: no answer in {} s; keeping the last one", CONTROLLER_SCAN_LIMIT.as_secs());
+            state.events.write().await.push(None, Severity::Warning, "controller", msg);
+        }
+    }
+}
+
+/// Join the reports to the inventory, store them, and say what changed:
+/// a finding raised or cleared, a drive's controller state.
+pub async fn merge_controllers(state: &Arc<AppState>, mut reports: Vec<crate::raidctl::ControllerReport>) {
+    let mut events: Vec<(Option<DriveId>, Severity, String)> = Vec::new();
+    {
+        let mut inv = state.inventory.write().await;
+        let mut seen: HashMap<DriveId, crate::raidctl::DriveControllerState> = HashMap::new();
+        for r in &mut reports {
+            let names: Vec<(usize, DriveId, String)> = r
+                .drives
+                .iter()
+                .enumerate()
+                .filter_map(|(i, pd)| crate::raidctl::match_drive(r, pd, inv.drives.values()).map(|d| (i, d.id, d.name.clone())))
+                .collect();
+            for (i, id, name) in names {
+                r.drives[i].drive = Some(id.to_string());
+                r.drives[i].name = Some(name);
+                seen.insert(id, crate::raidctl::DriveControllerState::of(r, &r.drives[i]));
+            }
+            r.findings = crate::raidctl::findings(r);
+        }
+        let read: Vec<&str> = reports.iter().filter(|r| r.error.is_none()).map(|r| r.key.as_str()).collect();
+        for d in inv.drives.values_mut() {
+            let now = seen.remove(&d.id);
+            let keep_old = now.is_none() && d.controller_state.as_ref().is_some_and(|c| !read.contains(&c.controller.as_str()));
+            if keep_old || d.controller_state == now {
+                continue;
+            }
+            let was = d.controller_state.as_ref().map(|c| c.state.clone());
+            if let Some(c) = &now {
+                if was.as_deref() != Some(c.state.as_str()) {
+                    let bad = matches!(c.state_code, crate::raidctl::STATE_FAILED | crate::raidctl::STATE_UNCONFIGURED_BAD | crate::raidctl::STATE_OFFLINE);
+                    events.push((
+                        Some(d.id),
+                        if bad { Severity::Warning } else { Severity::Info },
+                        format!("{}: controller {} slot {} reads {} ({} bytes offered)", d.name, c.controller, c.slot.map_or("?".into(), |s| s.to_string()), c.state, c.size_bytes),
+                    ));
+                }
+            }
+            d.controller_state = now;
+        }
+    }
+    let mut stored = state.controllers.write().await;
+    for r in &reports {
+        let before: Vec<&str> = stored.iter().find(|o| o.key == r.key).map(|o| o.findings.iter().map(|f| f.message.as_str()).collect()).unwrap_or_default();
+        for f in r.findings.iter().filter(|f| !before.contains(&f.message.as_str()) && f.code != "drive_failed") {
+            events.push((None, if f.severity == "warning" { Severity::Warning } else { Severity::Info }, f.message.clone()));
+        }
+    }
+    *stored = reports;
+    drop(stored);
+    let mut log = state.events.write().await;
+    for (id, sev, msg) in events {
+        log.push(id, sev, "controller", msg);
+    }
 }
 
 /// This boot's hardware assets in system-data (#64), after each discovery
@@ -951,6 +1042,7 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         usage: None,
                         fleet_partition: None,
                         format_reason: primary.format_reason.clone(),
+                        controller_state: None,
                     },
                 );
             }
@@ -1418,6 +1510,7 @@ mod tests {
             slabs: vec![],
             mounted: false,
             format_reason: None,
+            controller_state: None,
         };
         // sdq and sda are the same physical drive through two IOMs.
         let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);

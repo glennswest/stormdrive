@@ -437,6 +437,7 @@ mod linux {
                     mounted: super::mounted_in(mounts, &name),
                     supports: p.supports.clone(),
                     format_reason: None,
+                    controller_state: None,
                     name,
                 });
                 continue;
@@ -537,6 +538,7 @@ mod linux {
                 mounted: super::mounted_in(mounts, &name),
                 supports,
                 format_reason: None,
+                controller_state: None,
                 name,
             });
         }
@@ -612,6 +614,7 @@ mod linux {
                 mounted: false,
                 supports: crate::pi::probe(&path).ok(),
                 format_reason: Some(reason),
+                controller_state: None,
                 name: sg,
             });
         }

@@ -110,16 +110,25 @@ pub fn parse_pd_identity(raw: &[u8]) -> (Option<String>, Option<String>) {
 /// The 128-byte frame of a read DCMD (struct megasas_dcmd_frame). The kernel
 /// fills the SGE's address from the packet's iovec; the length stays here.
 pub fn dcmd_frame(opcode: u32, mbox: Option<u16>, len: u32) -> [u8; 128] {
+    let m = mbox.map(u16::to_le_bytes);
+    dcmd_frame_with(opcode, m.as_ref().map_or(&[][..], |b| &b[..]), Some(len))
+}
+
+/// A DCMD frame with a mailbox of up to 12 bytes; `read` = Some(length) for
+/// a command that returns data, None for one that moves none (a state
+/// change: MFI_FRAME_DIR_NONE, no SGE).
+pub fn dcmd_frame_with(opcode: u32, mbox: &[u8], read: Option<u32>) -> [u8; 128] {
     let mut f = [0u8; 128];
     f[0x00] = 0x05; // MFI_CMD_DCMD
-    f[0x07] = 1; // sge_count
-    f[0x10..0x12].copy_from_slice(&0x0010u16.to_le_bytes()); // MFI_FRAME_DIR_READ
-    f[0x14..0x18].copy_from_slice(&len.to_le_bytes());
     f[0x18..0x1c].copy_from_slice(&opcode.to_le_bytes());
-    if let Some(m) = mbox {
-        f[0x1c..0x1e].copy_from_slice(&m.to_le_bytes());
+    let n = mbox.len().min(12);
+    f[0x1c..0x1c + n].copy_from_slice(&mbox[..n]);
+    if let Some(len) = read {
+        f[0x07] = 1; // sge_count
+        f[0x10..0x12].copy_from_slice(&0x0010u16.to_le_bytes()); // MFI_FRAME_DIR_READ
+        f[0x14..0x18].copy_from_slice(&len.to_le_bytes());
+        f[0x2c..0x30].copy_from_slice(&len.to_le_bytes()); // sge length
     }
-    f[0x2c..0x30].copy_from_slice(&len.to_le_bytes()); // sge length
     f
 }
 
@@ -167,7 +176,7 @@ pub fn place(shelves: &Shelves, host: &str, addr: (u16, u16)) -> Option<(Shelf, 
 
 /// A name for a shelf with no address of its own: unique across the cluster
 /// (a Shelf object is cluster-wide) and fit to be an object name.
-fn local_key(node: &str, pcie: Option<&str>, host: &str, enclosure: Option<u16>) -> String {
+pub(crate) fn local_key(node: &str, pcie: Option<&str>, host: &str, enclosure: Option<u16>) -> String {
     let mut k = format!("internal-{node}-{}", pcie.unwrap_or(host));
     if let Some(e) = enclosure {
         k.push_str(&format!("-e{e}"));
@@ -176,7 +185,7 @@ fn local_key(node: &str, pcie: Option<&str>, host: &str, enclosure: Option<u16>)
 }
 
 /// Sends one command (opcode, mailbox) and fills the buffer.
-type Dcmd<'a> = dyn FnMut(u32, Option<u16>, &mut [u8]) -> Result<(), String> + 'a;
+pub(crate) type Dcmd<'a> = dyn FnMut(u32, Option<u16>, &mut [u8]) -> Result<(), String> + 'a;
 
 struct Controller<'a> {
     node: &'a str,
@@ -311,7 +320,7 @@ pub fn scan(node: &str) -> Shelves {
 }
 
 #[cfg(target_os = "linux")]
-mod linux {
+pub(crate) mod linux {
     use super::*;
     use std::fs::File;
     use std::os::unix::ffi::OsStrExt;
@@ -344,32 +353,44 @@ mod linux {
         (3 << 30) | ((std::mem::size_of::<IocPacket>() as libc::c_ulong) << 16) | ((b'M' as libc::c_ulong) << 8) | 1;
 
     fn dcmd(file: &File, host_no: u16, opcode: u32, mbox: Option<u16>, buf: &mut [u8]) -> Result<(), String> {
+        let m = mbox.map(u16::to_le_bytes);
+        dcmd_raw(file, host_no, opcode, m.as_ref().map_or(&[][..], |b| &b[..]), Some(buf)).map_err(|(_, e)| e)
+    }
+
+    /// One DCMD: `buf` Some for a read, None for a command that moves no
+    /// data. The error carries the controller's MFI status when it answered.
+    pub(crate) fn dcmd_raw(file: &File, host_no: u16, opcode: u32, mbox: &[u8], buf: Option<&mut [u8]>) -> Result<(), (Option<u8>, String)> {
         // SAFETY: all-zero is valid for the packet: integers and null iovecs.
         let mut ioc: IocPacket = unsafe { std::mem::zeroed() };
         ioc.host_no = host_no;
         ioc.sgl_off = FRAME_SGL_OFFSET;
-        ioc.sge_count = 1;
-        ioc.frame = dcmd_frame(opcode, mbox, buf.len() as u32);
-        let mut sgl = ioc.sgl;
-        sgl[0] = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
-        ioc.sgl = sgl;
+        match buf {
+            Some(buf) => {
+                ioc.sge_count = 1;
+                ioc.frame = dcmd_frame_with(opcode, mbox, Some(buf.len() as u32));
+                let mut sgl = ioc.sgl;
+                sgl[0] = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
+                ioc.sgl = sgl;
+            }
+            None => ioc.frame = dcmd_frame_with(opcode, mbox, None),
+        }
         // `as _`: glibc and musl type the ioctl request differently.
-        // SAFETY: the packet is the driver's layout, the iovec points at a
-        // buffer of its stated length, alive for the call.
+        // SAFETY: the packet is the driver's layout, the iovec (if any)
+        // points at a buffer of its stated length, alive for the call.
         let rc = unsafe { libc::ioctl(file.as_raw_fd(), MEGASAS_IOC_FIRMWARE as _, &mut ioc as *mut IocPacket) };
         if rc < 0 {
-            return Err(format!("{NODE}: {}", std::io::Error::last_os_error()));
+            return Err((None, format!("{NODE}: {}", std::io::Error::last_os_error())));
         }
         let frame = ioc.frame;
         match frame[2] {
             0 => Ok(()),
-            st => Err(format!("controller status 0x{st:02x} on command 0x{opcode:08x}")),
+            st => Err((Some(st), format!("controller status 0x{st:02x} ({}) on command 0x{opcode:08x}", crate::raidctl::mfi_status_name(st)))),
         }
     }
 
     /// The char device has a dynamic major and no devtmpfs entry: whoever
     /// wants it makes the node, from /proc/devices (as smartctl and storcli).
-    fn open_node() -> Result<File, String> {
+    pub(crate) fn open_node() -> Result<File, String> {
         let devices = std::fs::read_to_string("/proc/devices").map_err(|e| format!("/proc/devices: {e}"))?;
         let major = major_of(&devices).ok_or_else(|| format!("{CHRDEV} not in /proc/devices"))?;
         let path = Path::new(NODE);
@@ -406,7 +427,7 @@ mod linux {
     }
 
     /// Every SCSI host of this driver, with its PCI function.
-    pub(super) fn hosts(sys: &Path) -> Vec<(String, Option<String>)> {
+    pub(crate) fn hosts(sys: &Path) -> Vec<(String, Option<String>)> {
         let Ok(rd) = std::fs::read_dir(sys.join("class/scsi_host")) else { return Vec::new() };
         let mut out: Vec<(String, Option<String>)> = rd
             .flatten()

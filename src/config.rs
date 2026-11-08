@@ -20,6 +20,7 @@ pub struct Config {
     pub kubernetes: KubernetesConfig,
     pub history: HistoryConfig,
     pub thermal: ThermalConfig,
+    pub controllers: ControllersConfig,
 }
 
 impl Default for Config {
@@ -37,8 +38,18 @@ impl Default for Config {
             kubernetes: KubernetesConfig::default(),
             history: HistoryConfig::default(),
             thermal: ThermalConfig::default(),
+            controllers: ControllersConfig::default(),
         }
     }
+}
+
+/// RAID controllers read and changed from the node (#132).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControllersConfig {
+    /// perccli, for the personality change (no public MFI command does it).
+    /// None: the first of `raidctl::PERCCLI_SEARCH` that exists.
+    pub perccli: Option<String>,
 }
 
 /// Thermal management (#125): readings, limits, alerts, the cooling

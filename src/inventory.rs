@@ -205,6 +205,7 @@ mod tests {
             usage: None,
             fleet_partition: None,
             format_reason: None,
+            controller_state: None,
         }
     }
 

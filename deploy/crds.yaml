@@ -74,6 +74,11 @@ spec:
                 blockSize: { type: integer, description: "Logical sector size: 512, 4096, or 520/528 on a drive that needs a reformat." }
                 needsReformat: { type: boolean }
                 formatReason: { type: string, nullable: true, description: "Why it needs a format when its sectors do not say so (#131): no block node, e.g. an interrupted format answering 31/00." }
+                controllerState:
+                  type: object
+                  nullable: true
+                  description: "What its RAID controller says of it (#132): controller, device_id, enclosure, slot, state (failed, unconfigured_good, jbod, …), state_code, size_bytes."
+                  x-kubernetes-preserve-unknown-fields: true
                 format:
                   type: object
                   nullable: true

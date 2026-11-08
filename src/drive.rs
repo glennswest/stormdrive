@@ -616,6 +616,11 @@ pub struct Drive {
     /// 31/00) and it is reached through its sg node only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format_reason: Option<String>,
+    /// What the RAID controller says of the drive (#132): forge1's PERC has
+    /// sdb–sdd Failed, 0 KB, so Linux sees nothing; the drive reads
+    /// "failed (controller)", not just missing. Set every shelf scan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_state: Option<crate::raidctl::DriveControllerState>,
 }
 
 impl Drive {
@@ -1059,6 +1064,7 @@ mod tests {
             usage: None,
             fleet_partition: None,
             format_reason: None,
+            controller_state: None,
         }
     }
 

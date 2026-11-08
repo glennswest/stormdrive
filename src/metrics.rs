@@ -352,6 +352,27 @@ pub fn render_thermal(t: &crate::thermal::Tracker) -> String {
     o.finish()
 }
 
+/// RAID controllers (#132): mode (1 = RAID: HBA is mandatory) and each
+/// disk's controller state.
+pub fn render_controllers(cs: &[crate::raidctl::ControllerReport]) -> String {
+    let mut o = Out::default();
+    for r in cs {
+        let l = [("controller", r.key.clone()), ("model", r.model.clone().unwrap_or_default()), ("mode", r.mode.perccli_word().to_string())];
+        o.gauge("stormdrive_controller_raid_mode", "1 when the RAID controller is in RAID mode (HBA mode is mandatory).", &l, (r.mode == crate::raidctl::Mode::Raid) as u8 as f64);
+        for d in &r.drives {
+            let l = [
+                ("controller", r.key.clone()),
+                ("device_id", d.device_id.to_string()),
+                ("slot", d.slot.map(|s| s.to_string()).unwrap_or_default()),
+                ("state", d.state.clone()),
+                ("device", d.name.clone().unwrap_or_default()),
+            ];
+            o.gauge("stormdrive_controller_drive_state", "A disk's firmware state on its RAID controller (MFI fw_state code), labelled with its name.", &l, f64::from(d.state_code));
+        }
+    }
+    o.finish()
+}
+
 fn poller(o: &mut Out, p: &PollStats) {
     o.gauge("stormdrive_poll_drives", "Drives the health poller samples.", &[], p.drives as f64);
     o.gauge("stormdrive_poll_in_flight", "Health reads running now.", &[], p.in_flight as f64);

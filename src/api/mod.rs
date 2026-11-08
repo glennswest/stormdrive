@@ -70,6 +70,8 @@ pub struct AppState {
     pub system_drives: Arc<crate::system::SystemDrives>,
     /// Every component's temperature, limits and level; live limits (#125).
     pub thermal: RwLock<crate::thermal::Runtime>,
+    /// RAID controllers as last read (#132): mode, disks, findings.
+    pub controllers: RwLock<Vec<crate::raidctl::ControllerReport>>,
 }
 
 impl AppState {
@@ -248,6 +250,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/shelves/{key}/bays/{bay}/power", post(shelf_bay_power))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/hbas", get(list_hbas))
+        .route("/api/v1/controllers", get(list_controllers))
+        .route("/api/v1/controllers/{key}", get(get_controller))
+        .route("/api/v1/controllers/{key}/personality", post(set_controller_personality))
+        .route("/api/v1/controllers/{key}/personality/{mode}", post(personality_by_path))
+        .route("/api/v1/controllers/{key}/drives/{device}/state", post(set_controller_device_state))
+        .route("/api/v1/drives/{id}/controller-state", post(set_drive_controller_state))
+        .route("/api/v1/drives/{id}/controller-state/{state}", post(drive_controller_state_by_path))
         .route("/api/v1/media", get(list_media))
         .route("/api/v1/placement", get(placement))
         .route("/api/v1/placement/{id}", get(placement_one))
@@ -464,6 +473,7 @@ async fn metrics(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         let shelves = s.shelves.read().await;
         let mut page = crate::metrics::render(crate::VERSION, &s.node_name, inv.drives.values(), &shelves, &s.poller.stats());
         page.push_str(&crate::metrics::render_thermal(&s.thermal.read().await.tracker));
+        page.push_str(&crate::metrics::render_controllers(&s.controllers.read().await));
         page
     };
     ([(axum::http::header::CONTENT_TYPE, crate::metrics::CONTENT_TYPE)], page)
@@ -1753,6 +1763,173 @@ async fn shelf_bay_power(
         format!("shelf {}: bay {bay} power {}", r.shelf.display(), if body.on { "on" } else { "off" }),
     );
     Ok(Json(json!({ "key": r.key, "bay": bay, "power": if body.on { "on" } else { "off" } })))
+}
+
+/// RAID controllers (#132): model, firmware, mode (RAID is a finding: HBA is
+/// mandatory), each disk's controller state.
+async fn list_controllers(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let c = s.controllers.read().await;
+    let findings: Vec<&crate::raidctl::Finding> = c.iter().flat_map(|r| &r.findings).collect();
+    Json(json!({ "controllers": &*c, "findings": findings }))
+}
+
+async fn resolve_controller(s: &AppState, handle: &str) -> Result<crate::raidctl::ControllerReport, ApiError> {
+    s.controllers
+        .read()
+        .await
+        .iter()
+        .find(|r| r.key == handle || r.scsi_host == handle || r.pcie_addr.as_deref() == Some(handle) || r.serial.as_deref() == Some(handle))
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("controller {handle:?}")))
+}
+
+async fn get_controller(State(s): State<Arc<AppState>>, Path(key): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
+    Ok(Json(serde_json::to_value(resolve_controller(&s, &key).await?).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct PersonalityBody {
+    mode: String,
+}
+
+/// perccli's personality change (#132): HBA (or JBOD); a reboot applies it.
+/// Refused while the controller has virtual disks, and when perccli is not
+/// on the node (501 `tool_missing`).
+async fn set_controller_personality(
+    State(s): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Json(body): Json<PersonalityBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_controller(&s, &key).await?;
+    let want = crate::raidctl::Mode::parse(&body.mode).ok_or_else(|| ApiError::bad_request(format!("mode {:?}: HBA or JBOD", body.mode)))?;
+    let ours = s.controllers.read().await.len();
+    let perccli = s.config.controllers.perccli.clone();
+    let bin = match crate::raidctl::find_perccli(perccli.as_deref()) {
+        Ok(b) => b,
+        Err(why) => {
+            s.events.write().await.push(None, Severity::Warning, "controller", format!("controller {}: personality {} refused: {why}", r.key, want.perccli_word()));
+            return Err(ApiError { status: StatusCode::NOT_IMPLEMENTED, code: "tool_missing", message: why });
+        }
+    };
+    let mut r2 = r.clone();
+    r2.perccli = Ok(bin.display().to_string());
+    let res = tokio::task::spawn_blocking(move || crate::raidctl::set_personality(&r2, perccli.as_deref(), ours, want))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    match res {
+        Ok(said) => {
+            s.events.write().await.push(
+                None,
+                Severity::Warning,
+                "controller",
+                format!("controller {} ({}): personality {} set ({said}); a reboot applies it", r.key, r.model.as_deref().unwrap_or("?"), want.perccli_word()),
+            );
+            if let Some(c) = s.controllers.write().await.iter_mut().find(|c| c.key == r.key) {
+                c.pending_mode = Some(want);
+                c.findings = crate::raidctl::findings(c);
+            }
+            Ok(Json(json!({ "controller": r.key, "mode": want, "reboot_required": true, "perccli": said })))
+        }
+        Err(e) => {
+            s.events.write().await.push(None, Severity::Warning, "controller", format!("controller {}: personality {} refused: {e}", r.key, want.perccli_word()));
+            Err(ApiError::conflict(e))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ControllerStateBody {
+    state: crate::raidctl::Target,
+    #[serde(default)]
+    force: bool,
+}
+
+/// Put one of the controller's disks in `good` or `jbod` (#132): the drive's
+/// inventory record, if it has one, must be free (never the system drive,
+/// never a fleet or in-use drive); from Failed it needs `force`.
+async fn change_controller_state(
+    s: &Arc<AppState>,
+    r: crate::raidctl::ControllerReport,
+    device: u16,
+    body: ControllerStateBody,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let pd = r.drives.iter().find(|p| p.device_id == device).cloned();
+    let drive = {
+        let inv = s.inventory.read().await;
+        pd.as_ref().and_then(|pd| crate::raidctl::match_drive(&r, pd, inv.drives.values()).cloned())
+    };
+    let label = drive.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| format!("device {device}"));
+    let key = r.key.clone();
+    let d2 = drive.clone();
+    let (target, force) = (body.state, body.force);
+    let res = tokio::task::spawn_blocking(move || crate::raidctl::set_drive_state(&key, device, target, force, d2.as_ref()))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let id = drive.as_ref().map(|d| d.id);
+    let want = serde_json::to_value(target).unwrap_or_default();
+    let want = want.as_str().unwrap_or("?");
+    match res {
+        Ok((after, steps)) => {
+            let did: Vec<&str> = steps.iter().map(|c| crate::raidctl::state_name(*c)).collect();
+            let msg = if steps.is_empty() {
+                format!("{label}: controller {} already reads {}", r.key, after.state)
+            } else {
+                format!("{label}: controller {} {} → {} ({}{}); reads {}", r.key, pd.as_ref().map_or("?", |p| p.state.as_str()), want, did.join(" → "), if force { ", force" } else { "" }, after.state)
+            };
+            s.events.write().await.push(id, Severity::Warning, "controller", msg);
+            if let Some(c) = s.controllers.write().await.iter_mut().find(|c| c.key == r.key) {
+                if let Some(p) = c.drives.iter_mut().find(|p| p.device_id == device) {
+                    let (drive, name) = (p.drive.take(), p.name.take());
+                    *p = crate::raidctl::PdStatus { drive, name, ..after.clone() };
+                }
+                c.findings = crate::raidctl::findings(c);
+            }
+            Ok(Json(json!({ "controller": r.key, "device_id": device, "drive": id.map(|i| i.to_string()), "sent": did, "state": after.state, "size_bytes": after.size_bytes })))
+        }
+        Err(e) => {
+            s.events.write().await.push(id, Severity::Warning, "controller", format!("{label}: controller {} → {want} refused: {e}", r.key));
+            Err(ApiError::conflict(e))
+        }
+    }
+}
+
+async fn set_controller_device_state(
+    State(s): State<Arc<AppState>>,
+    Path((key, device)): Path<(String, u16)>,
+    Json(body): Json<ControllerStateBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let r = resolve_controller(&s, &key).await?;
+    change_controller_state(&s, r, device, body).await
+}
+
+/// The same, by the drive's own handle: its last controller state names the
+/// controller and the device.
+async fn set_drive_controller_state(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<ControllerStateBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    let cs = s.inventory.read().await.drives.get(&did).and_then(|d| d.controller_state.clone());
+    let cs = cs.ok_or_else(|| ApiError::conflict(format!("drive {id}: no RAID controller lists it")))?;
+    let r = resolve_controller(&s, &cs.controller).await?;
+    change_controller_state(&s, r, cs.device_id, body).await
+}
+
+/// The feed's parameter-less actions: `…/personality/hba`.
+async fn personality_by_path(State(s): State<Arc<AppState>>, Path((key, mode)): Path<(String, String)>) -> Result<Json<serde_json::Value>, ApiError> {
+    set_controller_personality(State(s), Path(key), Json(PersonalityBody { mode })).await
+}
+
+/// `…/controller-state/good` | `/jbod` from the feed: force implied (the
+/// action is offered only on a drive the controller has failed or
+/// unconfigured, and it is a danger action the console confirms).
+async fn drive_controller_state_by_path(
+    State(s): State<Arc<AppState>>,
+    Path((id, state)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let state: crate::raidctl::Target = serde_json::from_value(serde_json::Value::String(state.clone())).map_err(|_| ApiError::bad_request(format!("state {state:?}: good or jbod")))?;
+    set_drive_controller_state(State(s), Path(id), Json(ControllerStateBody { state, force: true })).await
 }
 
 /// Why the drive in a bay may not be powered off, if it may not.

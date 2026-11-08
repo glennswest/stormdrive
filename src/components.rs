@@ -110,11 +110,13 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     } else if d.block_size != 512 {
         detail.push(format!("{} B sectors", d.block_size));
     }
-    match d.activity {
-        Activity::Idle => {}
-        Activity::UpdatingFirmware => detail.push("updating firmware".into()),
-        Activity::Sanitizing => detail.push("sanitizing".into()),
-        a => detail.push(format!("{a:?}").to_lowercase()),
+    match (&d.controller_state, d.activity) {
+        // #132: what the RAID controller says, not a bare "missing".
+        (Some(c), _) if c.state_code != crate::raidctl::STATE_JBOD => detail.push(format!("{} (controller)", c.state.replace('_', " "))),
+        (_, Activity::Idle) => {}
+        (_, Activity::UpdatingFirmware) => detail.push("updating firmware".into()),
+        (_, Activity::Sanitizing) => detail.push("sanitizing".into()),
+        (_, a) => detail.push(format!("{a:?}").to_lowercase()),
     }
     if let Some(f) = &d.firmware_update {
         if f.reset_required && f.state == "done" {
@@ -342,7 +344,19 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
         );
     }
 
+    if let Some(c) = &d.controller_state {
+        let bad = matches!(c.state_code, crate::raidctl::STATE_FAILED | crate::raidctl::STATE_UNCONFIGURED_BAD | crate::raidctl::STATE_OFFLINE);
+        metrics.push(Metric::new("controller", c.state.replace('_', " ")).tone(if bad { "error" } else { "muted" }));
+    }
+
     let mut actions = Vec::new();
+    if let Some(c) = d.controller_state.as_ref().filter(|c| c.state_code != crate::raidctl::STATE_JBOD) {
+        // #132: the controller's own verbs (perccli `set good force`, `set jbod`).
+        let free = !crate::inuse::of(d).in_use && d.membership == Membership::Out;
+        let from_bad = matches!(c.state_code, crate::raidctl::STATE_FAILED | crate::raidctl::STATE_UNCONFIGURED_BAD | crate::raidctl::STATE_UNCONFIGURED_GOOD);
+        actions.push(act("controller-good", "Set good", "POST", format!("{base}/controller-state/good"), free && from_bad, true));
+        actions.push(act("controller-jbod", "Set JBOD", "POST", format!("{base}/controller-state/jbod"), free && from_bad, true));
+    }
     if d.health.status() == HealthStatus::Warning {
         actions.push(act("acknowledge", "Acknowledge warning", "POST", format!("{base}/health/acknowledge"), d.ack_blocker().is_none(), false));
     }
@@ -466,7 +480,33 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
 }
 
 /// An HBA: the card, and the firmware it runs — inventory only (#2).
+#[cfg(test)]
 fn hba_component(h: &crate::hba::Hba, drives: &[&Drive]) -> ComponentSummary {
+    hba_with(h, drives, None)
+}
+
+/// The HBA card, with what its RAID controller read says (#132): mode (RAID
+/// is a warning: HBA mandatory), findings, and Switch to HBA.
+fn hba_with(h: &crate::hba::Hba, drives: &[&Drive], ctl: Option<&crate::raidctl::ControllerReport>) -> ComponentSummary {
+    let mut c = hba_plain(h, drives);
+    if let Some(r) = ctl {
+        let mode = r.mode.perccli_word();
+        c.metrics.insert(1, Metric::new("mode", mode).tone(if r.mode == crate::raidctl::Mode::Raid { "warn" } else { "muted" }));
+        if let Some(p) = r.pending_mode {
+            c.metrics.insert(2, Metric::new("after reboot", p.perccli_word()).tone("accent"));
+        }
+        c.detail.push_str(&format!(" · {} mode", mode));
+        if r.findings.iter().any(|f| f.severity == "warning") {
+            c.health = Health::Warn;
+            c.detail.push_str(&format!(" · {}", r.findings.iter().filter(|f| f.severity == "warning").map(|f| f.code.as_str()).collect::<Vec<_>>().join(", ")));
+        }
+        let can = r.mode != crate::raidctl::Mode::Hba && r.pending_mode != Some(crate::raidctl::Mode::Hba) && r.perccli.is_ok() && r.virtual_disks.unwrap_or(0) == 0;
+        c.actions.push(act("personality-hba", "Switch to HBA", "POST", format!("/api/v1/controllers/{}/personality/hba", r.key), can, true));
+    }
+    c
+}
+
+fn hba_plain(h: &crate::hba::Hba, drives: &[&Drive]) -> ComponentSummary {
     let on: Vec<&&Drive> = drives
         .iter()
         .filter(|d| {
@@ -639,8 +679,10 @@ pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
             link: None,
         });
     }
+    let controllers = state.controllers.read().await.clone();
     for h in hbas.values() {
-        out.push(hba_component(h, &drives));
+        let ctl = controllers.iter().find(|r| r.pcie_addr.as_deref() == Some(h.pcie_addr.as_str()));
+        out.push(hba_with(h, &drives, ctl));
     }
 
     // Shelves the SES scan knows but no drive points at yet still show.
@@ -812,6 +854,7 @@ mod tests {
             usage: None,
             fleet_partition: None,
             format_reason: None,
+            controller_state: None,
         }
     }
 

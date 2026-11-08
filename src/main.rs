@@ -132,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         assets: RwLock::new(None),
         system_drives: Arc::new(stormdrive::system::SystemDrives::new(&state_history_dir)),
         thermal: RwLock::new(thermal),
+        controllers: RwLock::new(Vec::new()),
     });
 
     // What was in flight when we stopped — worker jobs, and drives a

@@ -199,6 +199,7 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "usable": d.usable,
             "needsReformat": d.needs_reformat(),
             "formatReason": d.format_reason,
+            "controllerState": d.controller_state,
             "owner": d.owner(),
             "inUse": d.in_use().in_use,
             "use": d.in_use().use_,
@@ -714,6 +715,7 @@ mod tests {
             usage: None,
             fleet_partition: None,
             format_reason: None,
+            controller_state: None,
         }
     }
 

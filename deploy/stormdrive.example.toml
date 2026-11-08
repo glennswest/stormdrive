@@ -89,6 +89,9 @@ trend_samples = 120         # readings kept in memory per component for GET /api
 # warn_c = 85.0
 # crit_c = 95.0
 
+[controllers]               # #132: RAID controllers (megaraid_sas: a PERC) read and changed from the node
+# perccli = "/opt/MegaRAID/perccli/perccli64"   # for the personality change; unset = the first found of /usr/libexec/stormdrive/perccli64, /opt/MegaRAID/perccli/perccli64, /opt/dell/perccli/perccli64, /usr/sbin/perccli64, /usr/bin/perccli64, /usr/sbin/perccli
+
 [kubernetes]                # the apiserver (#45): reviews bearers, holds Drive + DriveOperation objects
 api_url = ""                # https://<apiserver>:6443; empty = $STORMDRIVE_KUBE_API, then in-cluster; none = writes need admin_token
 ca_file = ""                # empty = $STORMDRIVE_KUBE_CA, then the service account's ca.crt
