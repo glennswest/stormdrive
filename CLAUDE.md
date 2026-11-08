@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.43.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.43.1** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -682,6 +682,13 @@ Steps:
   the headers). Live on forge1: `/api/v1/controllers` reads PERC H730 Mini
   25.5.4.0006, RAID mode, sdb–sdd failed; the owner sets them good (or JBOD)
   from the console; HBA once perccli ships (#1310), then reboot, format
+- 2026-11-08 (v0.43.1): forge1 0.43.0 answered set good with 0x0c "device
+  not found" on devices 3/4/7 (unconfigured bad, seq 2). Frame checked vs
+  mfiutil + Linux ioctl: identical (test added). New: TUR through the
+  controller (MFI_CMD_PD_SCSI_IO) on failed/bad/offline disks → `unit`,
+  `medium_format_corrupted`, raw size, notSupported, unusable on
+  /controllers and in the refusal. Next on forge1: read `unit` for 3/4/7;
+  31/00 → HBA in setup (owner, serial), then 4096 + PI from the console
 
 ### #131: an interrupted format (3/31/00, no block node) reads Missing and can't be formatted (P0, 2026-11-07) — DONE (v0.42.1)
 
