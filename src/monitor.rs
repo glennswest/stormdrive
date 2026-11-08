@@ -1510,7 +1510,6 @@ mod tests {
             slabs: vec![],
             mounted: false,
             format_reason: None,
-            controller_state: None,
         };
         // sdq and sda are the same physical drive through two IOMs.
         let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);
