@@ -423,6 +423,25 @@ half that.
   reads `/sys/class/enclosure` only): the two differ for an unbound backplane
   not behind an expander (`front` here, `internal` there) or a `DP BP…` behind
   one.
+- **The RAID controller itself** (#132, `raidctl.rs`): each discovery pass,
+  bounded (150 s, one at a time), reads `MR_DCMD_CTRL_GET_INFO` 0x01010000
+  (struct megasas_ctrl_info: product name @0x540, serial @0x590,
+  ld_present_count @0x5c0, properties.OnOffProperties.enableJBOD @0x620 bit 13,
+  package version @0x640) and `PD_GET_INFO` per disk (MR_PD_INFO: seqNum @2,
+  fwState @184, error counts @168–179, sasAddr @200, coercedSize @248,
+  enclDeviceId @256, slot @259). State change: `MFI_DCMD_PD_STATE_SET`
+  0x02030100, no data, mailbox device id + seqNum + new state (mfiutil
+  `drive_set_state`); `good` = 0x00, `jbod` = 0x40, from Failed via good;
+  each step re-reads the sequence number, the last state is verified. The
+  personality has no public DCMD (megaraid_sas.h has only the
+  `supportPersonalityChange` capability bits): perccli runs it (`/call show
+  J` → our controller by PCI address, `/cN show personality J`, `/cN set
+  personality=HBA J`), bounded, its JSON `Command Status` checked. Mode
+  without perccli: RAID when virtual disks exist or a disk is in any state
+  but JBOD; otherwise `unknown` (RAID with JBOD and HBA read alike). Joined to
+  the inventory (SAS address, else host + slot when the slot is unique):
+  `Drive.controller_state`. Findings → events on change, `/metrics`, the HBA
+  card in the feed (mode, Switch to HBA), drive actions Set good / Set JBOD.
 - **Behind `megaraid_sas`** (#65, `megaraid.rs`): no SES device, no
   `sas_address`, no enclosure class. MFI DCMDs over `MEGASAS_IOC_FIRMWARE`,
   reads only: `0x02010000` (every physical device: device id, enclosure device

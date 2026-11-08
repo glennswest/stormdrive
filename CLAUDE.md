@@ -89,6 +89,9 @@ src/
                   shelf position by the engine's rules (#65)
   megaraid.rs     a RAID controller's enclosures as internal shelves: MFI reads
                   through the driver's char device (#65)
+  raidctl.rs      the RAID controller itself: identity, mode (RAID = finding),
+                  each disk's state, set good / JBOD over MFI, personality via
+                  perccli (#132)
   hba.rs          PCIe SCSI HBA inventory (firmware, BIOS, NVDATA versions)
   scsi.rs         raw SCSI over SG_IO: INQUIRY/VPD, READ CAPACITY(16), MODE SENSE/
                   SELECT, FORMAT UNIT, TUR progress, RECEIVE/SEND DIAGNOSTIC,

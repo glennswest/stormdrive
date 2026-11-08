@@ -321,6 +321,24 @@ are listed under [Not yet](#not-yet).
     stays on its shelf with no bay (`through.slot_not_matched`).
     Not read that way: other RAID families (smartpqi, hpsa); their drives are
     placed by what sysfs shows
+  - **The controller itself** (#132, `src/raidctl.rs`; owner: "hba is
+    mandatory"): every discovery pass reads each `megaraid_sas` controller —
+    model, serial, firmware package, virtual disks, JBOD switch (MFI
+    `0x01010000`) and each disk's firmware state (`failed`,
+    `unconfigured_good`, `jbod`, `online`, …, from `0x02020000`). A drive the
+    controller lists is joined to its inventory record by SAS address, else
+    by host and slot, and carries `controller_state`: forge1's sdb–sdd, which
+    the PERC has **Failed, 0 KB** and Linux no longer sees, read "failed
+    (controller)" instead of a bare `missing`. **RAID mode is a finding**
+    (`raid_mode`, warning event, `stormdrive_controller_raid_mode` 1): by
+    perccli's word when perccli is on the node, else inferred — virtual disks,
+    or a disk in a state only RAID mode has. A drive is set **good** or
+    **JBOD** with the MFI state change (`0x02030100`, FreeBSD mfiutil's
+    `good`/`syspd`), read back after; never the system drive, a fleet or
+    in-use drive; from Failed it needs `force`. The **personality** change
+    (`perccli /cN set personality=HBA`; a reboot applies it) runs perccli:
+    no public MFI command does it, so it is not guessed. Without perccli it
+    answers 501 `tool_missing`; refused while the controller has virtual disks
   - **NVMe:** the PCIe slot on the drive's PCIe chain. A numeric slot name
     is also the bay. Intel VMD domains and native multipath heads are
     followed.
@@ -725,6 +743,7 @@ or only one of `api.tls_cert_file`/`tls_key_file` set.
 | `thermal.heartbeat_secs` | `600` | thermal history: a reading on a 1 °C move or a level change, else this often |
 | `thermal.trend_samples` | `120` | readings kept in memory per component |
 | `thermal.classes.<class>` | none | `{warn_c, crit_c}` class defaults in place of the built-in ones (under the device's own limits and the live settings) |
+| `controllers.perccli` | none | perccli for the RAID personality change (#132); none = the first of `/usr/libexec/stormdrive/perccli64`, `/opt/MegaRAID/perccli/perccli64`, `/opt/dell/perccli/perccli64`, `/usr/sbin/perccli64`, `/usr/bin/perccli64`, `/usr/sbin/perccli` |
 
 Qualified for `auto_add`: out of the fleet, designation `none`, idle, a
 health verdict that is known and not Failing/Failed, not `in_use_by`, and
@@ -992,6 +1011,10 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `POST /api/v1/shelves/{key}/format` | `{"block_size","protection"?,"all"?}` — out-of-fleet drives that need it |
 | `GET /api/v1/topology` | controller → shelf → drive tree, with HBA firmware |
 | `GET /api/v1/hbas` | every PCIe SCSI HBA |
+| `GET /api/v1/controllers`, `GET …/controllers/{key}` | RAID controllers (#132): model, serial, firmware, `virtual_disks`, `jbod_enabled`, `mode` (raid / hba / jbod / unknown) + `mode_basis`, `pending_mode` (after reboot), `drives` (device id, enclosure, slot, `state`, `state_code`, errors, size, the inventory drive), `findings` (`raid_mode`, `drive_failed`, `reboot_pending`), `perccli` (its path, or why none). Key: PCIe address, SCSI host or serial |
+| `POST /api/v1/controllers/{key}/personality` | `{"mode":"HBA"}` (or `/personality/hba`) — perccli `set personality`; a drive operation; 501 `tool_missing` without perccli, 409 with virtual disks; a reboot applies it |
+| `POST /api/v1/drives/{id}/controller-state` | `{"state":"good"\|"jbod","force"?}` (or `/controller-state/{state}`, force implied) — MFI state change on the drive's controller, read back; a drive operation; refused for the system drive, a fleet or in-use drive, from Failed without `force`, for a member of a virtual disk |
+| `POST /api/v1/controllers/{key}/drives/{device_id}/state` | the same for a controller disk with no inventory record |
 | `GET /api/v1/placement`, `GET …/placement/{id}` | where each drive is; `generation`, ETag, `?since=` / `If-None-Match` → 304 |
 | `GET /api/v1/events?since=<seq>` | `{latest_seq, started, persisted, events}`; seq continues across restarts (#25) |
 | `GET /api/v1/components`, `GET /ws/components` | stormview feed (drives, shelves, HBAs); the socket pushes on change, checked every 2 s |
