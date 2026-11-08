@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.43.1] — 2026-11-08
+
+### Fixed
+- a refused controller state change says why (#132). On forge1 (0.43.0) set good on sdb–sdd (device 3/4/7, unconfigured bad, seq 2) answered 0x0c "device not found". The frame was checked against FreeBSD mfiutil's `good` (`drive_set_state` + `mfi_dcmd_command`) and Linux's `megasas_mgmt_fw_ioctl` (frame passed as-is): byte for byte the same, now a test (device 3, seq 2, good). What the error did not show is the drive's own state: a disk the controller holds failed, unconfigured bad or offline is now asked TEST UNIT READY through the controller (`MFI_CMD_PD_SCSI_IO`, smartctl's megaraid pass-through, read-only), and `GET /api/v1/controllers` shows its answer (`unit`, `medium_format_corrupted`) with `raw_size_bytes`, `not_supported`, `unusable`. A refused state change carries all of it: a drive whose cut-off format left 31/00 cannot be brought up by the controller and needs a format, not a state change
+
 ## [v0.43.0] — 2026-11-07
 
 ### Added

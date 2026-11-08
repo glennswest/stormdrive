@@ -132,6 +132,51 @@ pub fn dcmd_frame_with(opcode: u32, mbox: &[u8], read: Option<u32>) -> [u8; 128]
     f
 }
 
+/// MFI_CMD_PD_SCSI_IO: a SCSI command to one physical device by its id (the
+/// pass-through smartctl's `-d megaraid,N` uses), for a drive the controller
+/// does not show Linux.
+pub const MFI_CMD_PD_SCSI_IO: u8 = 0x04;
+/// MFI_STAT_SCSI_DONE_WITH_ERROR: the device answered, not GOOD.
+pub const MFI_STAT_SCSI_DONE_WITH_ERROR: u8 = 0x2d;
+/// struct megasas_pthru_frame: sense_buf_phys_addr_lo (the ioctl's sense_off:
+/// the driver reads the user's sense pointer from here), the CDB, the SGL.
+pub const PTHRU_SENSE_OFFSET: u32 = 0x18;
+pub const PTHRU_CDB_OFFSET: usize = 0x20;
+pub const PTHRU_SGL_OFFSET: u32 = 0x30;
+/// Sense bytes asked for.
+pub const PTHRU_SENSE_LEN: u8 = 32;
+
+/// The frame of a pass-through command that moves no data (TEST UNIT READY):
+/// MFI_FRAME_DIR_NONE, no SGE. None for a device id past the frame's 8-bit
+/// target or a CDB longer than 16 bytes.
+pub fn pthru_frame(device_id: u16, cdb: &[u8]) -> Option<[u8; 128]> {
+    let target = u8::try_from(device_id).ok()?;
+    if cdb.is_empty() || cdb.len() > 16 {
+        return None;
+    }
+    let mut f = [0u8; 128];
+    f[0x00] = MFI_CMD_PD_SCSI_IO;
+    f[0x01] = PTHRU_SENSE_LEN;
+    f[0x02] = 0xff; // cmd_status: the firmware writes it (as smartctl)
+    f[0x04] = target;
+    f[0x06] = cdb.len() as u8;
+    f[PTHRU_CDB_OFFSET..PTHRU_CDB_OFFSET + cdb.len()].copy_from_slice(cdb);
+    Some(f)
+}
+
+/// A pass-through's outcome from the returned frame: Ok(None) = GOOD,
+/// Ok(Some(sense)) = the drive answered CHECK CONDITION with that sense, Err =
+/// the controller's own status. Linux copies back only `cmd_status` (not
+/// `scsi_status`) and the sense bytes, so those two are what is read.
+pub fn pthru_result(frame: &[u8; 128], sense: &[u8]) -> Result<Option<Vec<u8>>, (Option<u8>, String)> {
+    match frame[2] {
+        0 => Ok(None),
+        MFI_STAT_SCSI_DONE_WITH_ERROR if sense.first().is_some_and(|b| b & 0x70 == 0x70) => Ok(Some(sense.to_vec())),
+        MFI_STAT_SCSI_DONE_WITH_ERROR => Err((Some(MFI_STAT_SCSI_DONE_WITH_ERROR), "the drive answered not GOOD, with no sense".into())),
+        st => Err((Some(st), format!("controller status 0x{st:02x} ({}) on a pass-through", crate::raidctl::mfi_status_name(st)))),
+    }
+}
+
 /// Offset of the scatter-gather list in the frame.
 pub const FRAME_SGL_OFFSET: u32 = 0x28;
 
@@ -386,6 +431,31 @@ pub(crate) mod linux {
             0 => Ok(()),
             st => Err((Some(st), format!("controller status 0x{st:02x} ({}) on command 0x{opcode:08x}", crate::raidctl::mfi_status_name(st)))),
         }
+    }
+
+    /// One SCSI command that moves no data, through the controller to the
+    /// physical device `device_id` (MFI_CMD_PD_SCSI_IO), with autosense.
+    pub(crate) fn pd_scsi_nodata(file: &File, host_no: u16, device_id: u16, cdb: &[u8]) -> Result<Option<Vec<u8>>, (Option<u8>, String)> {
+        let frame = pthru_frame(device_id, cdb).ok_or((None, format!("device {device_id}: no pass-through frame for it")))?;
+        let mut sense = [0u8; PTHRU_SENSE_LEN as usize];
+        // SAFETY: all-zero is valid for the packet: integers and null iovecs.
+        let mut ioc: IocPacket = unsafe { std::mem::zeroed() };
+        ioc.host_no = host_no;
+        ioc.sgl_off = PTHRU_SGL_OFFSET;
+        ioc.sense_off = PTHRU_SENSE_OFFSET;
+        ioc.sense_len = u32::from(PTHRU_SENSE_LEN);
+        let mut f = frame;
+        let at = PTHRU_SENSE_OFFSET as usize;
+        f[at..at + 8].copy_from_slice(&(sense.as_mut_ptr() as u64).to_le_bytes());
+        ioc.frame = f;
+        // SAFETY: the packet is the driver's layout; the sense pointer in the
+        // frame names a buffer of sense_len bytes, alive for the call.
+        let rc = unsafe { libc::ioctl(file.as_raw_fd(), MEGASAS_IOC_FIRMWARE as _, &mut ioc as *mut IocPacket) };
+        if rc < 0 {
+            return Err((None, format!("{NODE}: {}", std::io::Error::last_os_error())));
+        }
+        let back = ioc.frame;
+        pthru_result(&back, &sense)
     }
 
     /// The char device has a dynamic major and no devtmpfs entry: whoever

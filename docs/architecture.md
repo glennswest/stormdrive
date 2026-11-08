@@ -433,6 +433,18 @@ half that.
   0x02030100, no data, mailbox device id + seqNum + new state (mfiutil
   `drive_set_state`); `good` = 0x00, `jbod` = 0x40, from Failed via good;
   each step re-reads the sequence number, the last state is verified. The
+  frame is mfiutil's byte for byte (tested for device 3 / seq 2 / good). A
+  disk the controller holds failed, unconfigured bad or offline is also asked
+  TEST UNIT READY through the controller (`MFI_CMD_PD_SCSI_IO` 0x04, struct
+  megasas_pthru_frame: target = device id, CDB @0x20, sense pointer @0x18 as
+  the ioctl's `sense_off`, no data; smartctl's `-d megaraid,N` pass-through;
+  Linux copies back only `cmd_status` — 0x2d = the drive's CHECK CONDITION —
+  and the sense). Its answer is `unit` / `medium_format_corrupted` on the
+  disk, with MR_PD_INFO notSupported @164, rawSize @232 and
+  unusableInCurrentConfig @293, and a refused state change names all of it:
+  forge1's 0x0c "device not found" on drives whose cut-off format left 31/00
+  is the controller failing to bring them up, which a state change cannot
+  cure. The
   personality has no public DCMD (megaraid_sas.h has only the
   `supportPersonalityChange` capability bits): perccli runs it (`/call show
   J` → our controller by PCI address, `/cN show personality J`, `/cN set

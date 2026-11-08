@@ -55,7 +55,10 @@ const PD_SEQ: usize = 2;
 const PD_MEDIA_ERR: usize = 168;
 const PD_OTHER_ERR: usize = 172;
 const PD_PRED_FAIL: usize = 176;
+const PD_NOT_SUPPORTED: usize = 164; // u8
 const PD_FW_STATE: usize = 184;
+const PD_RAW_SIZE: usize = 232; // u64, 512-byte blocks
+const PD_UNUSABLE: usize = 293; // u8 unusableInCurrentConfig
 const PD_SAS_ADDR: usize = 200; // u64[2]
 const PD_COERCED: usize = 248; // u64, 512-byte blocks
 const PD_ENCL_DEVICE: usize = 256;
@@ -107,6 +110,7 @@ pub fn mfi_status_name(st: u8) -> &'static str {
         0x23 => "not found",
         0x25 => "PD clear in progress",
         0x26 => "PD type wrong",
+        0x2d => "SCSI done with error",
         0x32 => "wrong state",
         _ => "see MFI_STAT_*",
     }
@@ -215,6 +219,26 @@ pub struct PdStatus {
     pub predictive_failures: u32,
     /// What the controller offers of it; 0 for forge1's Failed drives.
     pub size_bytes: u64,
+    /// What the drive reports before the controller coerces it; 0 when the
+    /// controller never read its capacity (a drive that does not come ready).
+    #[serde(default)]
+    pub raw_size_bytes: u64,
+    /// MR_PD_INFO notSupported: the controller will not use this drive.
+    #[serde(default)]
+    pub not_supported: bool,
+    /// MR_PD_INFO unusableInCurrentConfig.
+    #[serde(default)]
+    pub unusable: bool,
+    /// The drive's own answer to TEST UNIT READY, sent through the controller
+    /// (MFI pass-through) to a drive the controller holds failed, bad or
+    /// offline: "ready", its sense, or why it could not be asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// That answer was 31/00 MEDIUM FORMAT CORRUPTED: a format was cut off
+    /// (#131). The controller cannot bring such a drive up; a format is the
+    /// cure, not a state change.
+    #[serde(default)]
+    pub medium_format_corrupted: bool,
     /// The inventory drive this is, when one matches (SAS address, else
     /// the controller and slot).
     #[serde(default)]
@@ -244,6 +268,11 @@ pub fn parse_pd_status(pd: &crate::megaraid::Pd, raw: &[u8]) -> Option<PdStatus>
         other_errors: le32(raw, PD_OTHER_ERR)?,
         predictive_failures: le32(raw, PD_PRED_FAIL)?,
         size_bytes: le64(raw, PD_COERCED)?.saturating_mul(512),
+        raw_size_bytes: le64(raw, PD_RAW_SIZE).unwrap_or(0).saturating_mul(512),
+        not_supported: raw.get(PD_NOT_SUPPORTED).is_some_and(|b| *b != 0),
+        unusable: raw.get(PD_UNUSABLE).is_some_and(|b| *b != 0),
+        unit: None,
+        medium_format_corrupted: false,
         drive: None,
         name: None,
     })
@@ -358,6 +387,34 @@ pub trait Mfi {
     fn read(&mut self, opcode: u32, mbox: &[u8], buf: &mut [u8]) -> Result<(), (Option<u8>, String)>;
     /// A DCMD that moves no data.
     fn exec(&mut self, opcode: u32, mbox: &[u8]) -> Result<(), (Option<u8>, String)>;
+    /// A SCSI command that moves no data, to one physical device through the
+    /// controller (MFI_CMD_PD_SCSI_IO): Ok(None) GOOD, Ok(Some(sense)).
+    fn pd_scsi(&mut self, device_id: u16, cdb: &[u8]) -> Result<Option<Vec<u8>>, (Option<u8>, String)> {
+        let _ = (device_id, cdb);
+        Err((None, "no pass-through on this transport".into()))
+    }
+}
+
+/// States in which the controller is not using the drive and the drive's own
+/// answer says why: failed, unconfigured bad, offline.
+fn wants_unit_probe(code: u16) -> bool {
+    matches!(code, STATE_FAILED | STATE_UNCONFIGURED_BAD | STATE_OFFLINE)
+}
+
+/// TEST UNIT READY through the controller (read-only; smartctl's
+/// `-d megaraid,N` sends the same), its answer put on the drive.
+pub fn probe_unit(mfi: &mut dyn Mfi, pd: &mut PdStatus) {
+    match mfi.pd_scsi(pd.device_id, &[0u8; 6]) {
+        Ok(None) => pd.unit = Some("ready".into()),
+        Ok(Some(raw)) => match crate::scsi::parse_sense(&raw) {
+            Some(s) => {
+                pd.medium_format_corrupted = s.is_medium_format_corrupted();
+                pd.unit = Some(if pd.medium_format_corrupted { format!("{s}: medium format corrupted") } else { s.to_string() });
+            }
+            None => pd.unit = Some("not ready, sense not decoded".into()),
+        },
+        Err((_, e)) => pd.unit = Some(format!("not asked: {e}")),
+    }
 }
 
 /// Every disk the controller lists, with its state.
@@ -369,7 +426,14 @@ pub fn read_drives(mfi: &mut dyn Mfi) -> Result<Vec<PdStatus>, String> {
     for p in pds.iter().filter(|p| p.scsi_type == 0x00) {
         let mut info = vec![0u8; 512];
         match mfi.read(crate::megaraid::DCMD_PD_INFO, &p.device_id.to_le_bytes(), &mut info) {
-            Ok(()) => out.extend(parse_pd_status(p, &info)),
+            Ok(()) => {
+                if let Some(mut st) = parse_pd_status(p, &info) {
+                    if wants_unit_probe(st.state_code) {
+                        probe_unit(mfi, &mut st);
+                    }
+                    out.push(st);
+                }
+            }
             Err((_, e)) => tracing::debug!(device = p.device_id, "drive info: {e}"),
         }
     }
@@ -522,6 +586,29 @@ pub fn plan_state(pd: &PdStatus, want: Target, force: bool, drive: Option<&Drive
     })
 }
 
+/// What the controller and the drive said of a drive whose state change was
+/// refused, so the refusal says why rather than only the status (#132: forge1's
+/// sdb–sdd answer 0x0c with the mailbox right).
+pub fn refusal_context(pd: &PdStatus) -> String {
+    let mut m = String::new();
+    if let Some(u) = &pd.unit {
+        m.push_str(&format!("; the drive itself answers: {u}"));
+    }
+    if pd.medium_format_corrupted {
+        m.push_str("; its format was cut off, so the controller cannot bring it up: it needs a format (HBA mode, then 4096 + PI from the console), not a state change");
+    }
+    if pd.raw_size_bytes == 0 && pd.size_bytes == 0 {
+        m.push_str("; the controller has no capacity for it (it never came ready)");
+    }
+    if pd.not_supported {
+        m.push_str("; the controller marks it not supported");
+    }
+    if pd.unusable {
+        m.push_str("; the controller marks it unusable in the current configuration");
+    }
+    m
+}
+
 /// Send the plan, then read the drive back: its state must be the last one.
 pub fn apply_state(mfi: &mut dyn Mfi, pd: &PdStatus, steps: &[u16]) -> Result<PdStatus, String> {
     let mut seq = pd.seq;
@@ -532,8 +619,11 @@ pub fn apply_state(mfi: &mut dyn Mfi, pd: &PdStatus, steps: &[u16]) -> Result<Pd
         parse_pd_status(&entry, &info).ok_or_else(|| "short drive info".to_string())
     };
     for &st in steps {
-        mfi.exec(DCMD_PD_STATE_SET, &state_set_mbox(pd.device_id, seq, st))
-            .map_err(|(_, e)| format!("device {} → {}: {e}", pd.device_id, state_name(st)))?;
+        mfi.exec(DCMD_PD_STATE_SET, &state_set_mbox(pd.device_id, seq, st)).map_err(|(_, e)| {
+            let mut m = format!("device {} → {}: {e}", pd.device_id, state_name(st));
+            m.push_str(&refusal_context(pd));
+            m
+        })?;
         // Each change moves the sequence number; the next one names the new.
         seq = reread(mfi)?.seq;
     }
@@ -802,6 +892,9 @@ mod linux {
         fn exec(&mut self, opcode: u32, mbox: &[u8]) -> Result<(), (Option<u8>, String)> {
             crate::megaraid::linux::dcmd_raw(self.file, self.host_no, opcode, mbox, None)
         }
+        fn pd_scsi(&mut self, device_id: u16, cdb: &[u8]) -> Result<Option<Vec<u8>>, (Option<u8>, String)> {
+            crate::megaraid::linux::pd_scsi_nodata(self.file, self.host_no, device_id, cdb)
+        }
     }
 
     fn host_no(host: &str) -> Result<u16, String> {
@@ -854,6 +947,10 @@ mod tests {
         pub sent: Vec<(u16, u16, u16)>,
         /// state transitions the firmware refuses: (from, to) → MFI status
         pub refuse: Vec<(u16, u16, u8)>,
+        /// device → the sense its TEST UNIT READY answers (absent = GOOD)
+        pub units: BTreeMap<u16, Vec<u8>>,
+        /// pass-through CDBs sent: (device, opcode)
+        pub scsi_sent: Vec<(u16, u8)>,
     }
 
     pub(crate) fn ctrl_info(model: &str, fw: &str, vds: u16, jbod: bool) -> Vec<u8> {
@@ -936,6 +1033,13 @@ mod tests {
             p.3 += 1;
             Ok(())
         }
+        fn pd_scsi(&mut self, device_id: u16, cdb: &[u8]) -> Result<Option<Vec<u8>>, (Option<u8>, String)> {
+            self.scsi_sent.push((device_id, cdb[0]));
+            if !self.pds.contains_key(&device_id) {
+                return Err((Some(0x0c), "device not found".into()));
+            }
+            Ok(self.units.get(&device_id).cloned())
+        }
     }
 
     /// forge1: sda JBOD in slot 0 (the system drive), sdb–sdd Failed in
@@ -946,7 +1050,7 @@ mod tests {
         pds.insert(3, (32, 3, STATE_FAILED, 11, 0x5000_cca2_0000_0003));
         pds.insert(4, (0xffff, 4, STATE_FAILED, 11, 0x5000_cca2_0000_0004));
         pds.insert(7, (0xffff, 7, STATE_FAILED, 11, 0x5000_cca2_0000_0007));
-        Fake { info: ctrl_info("PERC H730 Mini", "25.5.4.0006", 0, true), pds, sent: Vec::new(), refuse: Vec::new() }
+        Fake { info: ctrl_info("PERC H730 Mini", "25.5.4.0006", 0, true), pds, sent: Vec::new(), refuse: Vec::new(), units: BTreeMap::new(), scsi_sent: Vec::new() }
     }
 
     #[test]
@@ -991,6 +1095,11 @@ mod tests {
             other_errors: 0,
             predictive_failures: 0,
             size_bytes: 1,
+            raw_size_bytes: 1,
+            not_supported: false,
+            unusable: false,
+            unit: None,
+            medium_format_corrupted: false,
             drive: None,
             name: None,
         };
@@ -1055,6 +1164,11 @@ mod tests {
             other_errors: 0,
             predictive_failures: 0,
             size_bytes: 1,
+            raw_size_bytes: 1,
+            not_supported: false,
+            unusable: false,
+            unit: None,
+            medium_format_corrupted: false,
             drive: None,
             name: None,
         };
@@ -1081,6 +1195,95 @@ mod tests {
         assert_eq!(match_drive(&r, &r.drives[1], drives.iter()).map(|d| d.name.as_str()), Some("sdb"));
         assert_eq!(match_drive(&r, &r.drives[2], drives.iter()).map(|d| d.name.as_str()), Some("sdc"));
         assert!(match_drive(&r, &r.drives[3], drives.iter()).is_none());
+    }
+
+    /// FreeBSD mfiutil `good` (usr.sbin/mfiutil/mfi_drive.c drive_set_state +
+    /// mfi_cmd.c mfi_dcmd_command), built here the way it builds it: the
+    /// frame for device 3, sequence 2, unconfigured good.
+    fn mfiutil_frame(device_id: u16, seq: u16, new_state: u16) -> [u8; 128] {
+        let mut mbox = [0u8; 6];
+        // mbox_store_pdref
+        mbox[0] = (device_id & 0xff) as u8;
+        mbox[1] = (device_id >> 8) as u8;
+        mbox[2] = (seq & 0xff) as u8;
+        mbox[3] = (seq >> 8) as u8;
+        mbox[4] = (new_state & 0xff) as u8;
+        mbox[5] = (new_state >> 8) as u8;
+        // struct mfi_dcmd_frame, bzero'd: header.cmd = MFI_CMD_DCMD, timeout 0,
+        // flags 0, data_len = bufsize (0), opcode, mbox copied in.
+        let mut f = [0u8; 128];
+        f[0] = 0x05;
+        f[0x18..0x1c].copy_from_slice(&0x0203_0100u32.to_le_bytes());
+        f[0x1c..0x22].copy_from_slice(&mbox);
+        f
+    }
+
+    #[test]
+    fn the_good_frame_is_mfiutils_byte_for_byte() {
+        let ours = crate::megaraid::dcmd_frame_with(DCMD_PD_STATE_SET, &state_set_mbox(3, 2, STATE_UNCONFIGURED_GOOD), None);
+        assert_eq!(ours, mfiutil_frame(3, 2, 0x00));
+        assert_eq!(&ours[0x1c..0x28], &[3, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let ours = crate::megaraid::dcmd_frame_with(DCMD_PD_STATE_SET, &state_set_mbox(7, 0x1234, STATE_JBOD), None);
+        assert_eq!(ours, mfiutil_frame(7, 0x1234, 0x40));
+    }
+
+    #[test]
+    fn a_tur_through_the_controller_is_smartctls_pass_through() {
+        use crate::megaraid::*;
+        let f = pthru_frame(3, &[0u8; 6]).unwrap();
+        assert_eq!(f[0], MFI_CMD_PD_SCSI_IO);
+        assert_eq!(f[1], PTHRU_SENSE_LEN);
+        assert_eq!(f[4], 3, "target = device id");
+        assert_eq!(f[6], 6, "cdb length");
+        assert_eq!(f[7], 0, "no SGE");
+        assert_eq!(u16::from_le_bytes([f[0x10], f[0x11]]), 0, "MFI_FRAME_DIR_NONE");
+        assert_eq!(&f[0x20..0x26], &[0; 6]);
+        assert!(pthru_frame(300, &[0; 6]).is_none(), "8-bit target");
+        let mut back = f;
+        back[2] = 0;
+        assert_eq!(pthru_result(&back, &[0; 32]).unwrap(), None);
+        back[2] = MFI_STAT_SCSI_DONE_WITH_ERROR;
+        let mut sense = [0u8; 32];
+        sense[0] = 0x70;
+        sense[2] = 0x03;
+        sense[12] = 0x31;
+        assert_eq!(pthru_result(&back, &sense).unwrap().unwrap()[12], 0x31);
+        assert!(pthru_result(&back, &[0; 32]).is_err());
+        back[2] = 0x0c;
+        assert!(pthru_result(&back, &sense).unwrap_err().1.contains("device not found"));
+    }
+
+    /// forge1 after the factory reset: sdb–sdd unconfigured bad, seq 2, and the
+    /// firmware answers 0x0c to set good. The drive's own answer (31/00 left
+    /// by the cut format) is read through the controller and goes with the
+    /// refusal.
+    #[test]
+    fn a_refused_good_says_what_the_drive_answers() {
+        let mut f = forge1();
+        for id in [3, 4, 7] {
+            let p = f.pds.get_mut(&id).unwrap();
+            p.2 = STATE_UNCONFIGURED_BAD;
+            p.3 = 2;
+            let mut sense = vec![0u8; 32];
+            sense[0] = 0x70;
+            sense[2] = 0x03;
+            sense[7] = 10;
+            sense[12] = 0x31;
+            f.units.insert(id, sense);
+        }
+        f.refuse.push((STATE_UNCONFIGURED_BAD, STATE_UNCONFIGURED_GOOD, 0x0c));
+        let pds = read_drives(&mut f).unwrap();
+        let sdb = pds.iter().find(|p| p.device_id == 3).unwrap();
+        assert!(sdb.medium_format_corrupted);
+        assert!(sdb.unit.as_deref().unwrap().contains("0x31/0x00"), "{:?}", sdb.unit);
+        assert!(pds.iter().find(|p| p.device_id == 0).unwrap().unit.is_none(), "a JBOD drive is not probed");
+        assert!(!f.scsi_sent.iter().any(|(d, _)| *d == 0));
+        let e = change_state(&mut f, 3, Target::Good, true, None).unwrap_err();
+        assert!(e.contains("device not found"), "{e}");
+        assert!(e.contains("medium format corrupted"), "{e}");
+        assert!(e.contains("needs a format"), "{e}");
+        // The frame sent was mfiutil's: device 3, seq 2, good.
+        assert_eq!(f.sent.last(), Some(&(3, 2, STATE_UNCONFIGURED_GOOD)));
     }
 
     #[test]
