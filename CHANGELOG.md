@@ -3,11 +3,13 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-09
-- **feat:** bay numbering per platform (#134; owner on forge1, R6415 + PERC H730 Mini: "should be 0,1,2,3 mapped to the 0,3,4,7"). `[[bay_map]]` config entries (system model from DMI, controller by model / board name / PCI subsystem or id / driver, optional enclosure model, `slots` = the controller slot of each bay) renumber controller-read shelves: a drive's `bay` is the physical bay, `controller_slot` the controller's number beside it, `bay_numbering` `platform` or `controller` (no map: the controller's numbering, said). On `/api/v1/drives`, `/placement`, `/shelves`, `/topology`, Drive + Shelf objects (`controllerSlot`, `bayNumbering`), the feed (detail, metric `slot`); an event when a shelf's numbering changes, a warning for a slot the map does not name. Controllers and HBAs are now read before shelves each discovery pass
+## [v0.44.0] — 2026-11-09
 
-### 2026-11-07
-- **docs:** #132 work plan: forge1's live `/api/v1/controllers` (0.43.0) recorded; the HBA switch waits on perccli in the golden (stormcentral#1310)
+### Added
+- bay numbering per platform (#134; owner on forge1, R6415 + PERC H730 Mini: "should be 0,1,2,3 mapped to the 0,3,4,7"). `[[bay_map]]` config entries (system model from DMI, controller by model / board name / PCI subsystem or id / driver, optional enclosure model, `slots` = the controller slot of each bay) renumber controller-read shelves: a drive's `bay` is the physical bay, `controller_slot` the controller's number beside it, `bay_numbering` `platform` or `controller` (no map: the controller's numbering, said). On `/api/v1/drives`, `/placement`, `/shelves`, `/topology`, Drive + Shelf objects (`controllerSlot`, `bayNumbering`), the feed (detail, metric `slot`); an event when a shelf's numbering changes, a warning for a slot the map does not name. Controllers and HBAs are now read before shelves each discovery pass
+
+### Documentation
+- #132 work plan: forge1's live `/api/v1/controllers` (0.43.0) recorded; the HBA switch waits on perccli in the golden (stormcentral#1310)
 
 ## [v0.43.1] — 2026-11-08
 
