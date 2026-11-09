@@ -180,6 +180,15 @@ pub struct Location {
     /// calls it: `internal`, or `external` behind an expander (#65).
     #[serde(default)]
     pub position: Option<Position>,
+    /// The controller's own number for the drive's slot, beside `bay` (#134):
+    /// a RAID controller's slot (forge1's PERC: 0, 3, 4, 7 for bays 0-3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_slot: Option<u32>,
+    /// How `bay` is numbered: `platform` (the physical bay, from a
+    /// `[[bay_map]]` entry) or `controller` (as the controller or enclosure
+    /// numbers it: no map for this platform).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bay_numbering: Option<crate::bays::BayNumbering>,
 }
 
 impl Location {
@@ -259,6 +268,8 @@ impl Location {
             pcie_addr: fresh.pcie_addr.or_else(|| self.pcie_addr.clone()),
             pcie_slot: fresh.pcie_slot.or_else(|| self.pcie_slot.clone()),
             position: fresh.position.or(self.position),
+            controller_slot: fresh.controller_slot.or(self.controller_slot),
+            bay_numbering: fresh.bay_numbering.or(self.bay_numbering),
         }
     }
 

@@ -1365,6 +1365,7 @@ async fn topology(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             "id": d.id,
             "name": d.name,
             "bay": d.location.bay,
+            "controller_slot": d.location.controller_slot,
             "kind": d.kind,
             "model": d.model,
             "serial": d.serial,
@@ -1569,7 +1570,8 @@ async fn shelf_drives(s: &AppState, key: &str) -> Vec<serde_json::Value> {
     ds.iter()
         .map(|d| {
             json!({
-                "id": d.id, "name": d.name, "bay": d.location.bay, "position": d.location.position, "vendor": d.vendor, "model": d.model,
+                "id": d.id, "name": d.name, "bay": d.location.bay, "controller_slot": d.location.controller_slot,
+                "bay_numbering": d.location.bay_numbering, "position": d.location.position, "vendor": d.vendor, "model": d.model,
                 "serial": d.serial, "firmware": d.firmware, "kind": d.kind, "wwid": d.wwid,
                 "block_size": d.block_size, "physical_block_size": d.physical_block_size,
                 "usable": d.usable, "needs_reformat": d.needs_reformat(), "contents": d.contents,

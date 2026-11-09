@@ -47,6 +47,8 @@ pub fn drive_record(d: &Drive) -> Value {
         "paths": d.paths,
         "shelf": loc.shelf.as_ref().and_then(|sh| sh.key().map(|k| shelf_json(&k, sh))),
         "bay": loc.bay,
+        "controller_slot": loc.controller_slot,
+        "bay_numbering": loc.bay_numbering,
         "position": loc.position,
         "sas_address": loc.sas_address,
         "sas_phy": loc.sas_phy,
@@ -86,7 +88,7 @@ pub fn view<'a>(drives: impl IntoIterator<Item = &'a Drive>, shelves: &Shelves, 
         let bays: Vec<Value> = ds
             .iter()
             .filter(|d| d.location.shelf.as_ref().and_then(|s| s.key()).as_deref() == Some(key.as_str()))
-            .map(|d| json!({ "bay": d.location.bay, "wwn": d.wwid, "serial": d.serial }))
+            .map(|d| json!({ "bay": d.location.bay, "controller_slot": d.location.controller_slot, "wwn": d.wwid, "serial": d.serial }))
             .collect();
         v["drives"] = Value::Array(bays);
     }

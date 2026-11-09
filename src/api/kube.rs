@@ -212,6 +212,8 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "thermal": d.thermal,
             "enclosure": d.location.shelf.as_ref().and_then(|s| s.key()),
             "bay": d.location.bay,
+            "controllerSlot": d.location.controller_slot,
+            "bayNumbering": d.location.bay_numbering,
             "position": d.location.position,
             "linkRateMbps": d.link_rate_mbps,
             "healthAck": d.health_ack,
@@ -416,6 +418,7 @@ async fn all_enclosures(s: &AppState) -> Vec<Value> {
         });
         entry.1.push(json!({
             "drive": d.id.0.to_string(), "name": d.name, "bay": d.location.bay,
+            "controllerSlot": d.location.controller_slot, "bayNumbering": d.location.bay_numbering,
             "health": d.health.status(), "membership": d.membership, "kind": d.kind,
             "blockSize": d.block_size, "usable": d.usable, "needsReformat": d.needs_reformat(),
         }));

@@ -468,6 +468,17 @@ half that.
   `through.no_enclosure_devices`; with none or several it keeps a shelf of the
   controller's own, as there is nothing to choose by. Slot 0xff: on the shelf,
   no bay, in `through.slot_not_matched` — never a shelf of its own.
+  Then the platform's bay map (#134, `bays.rs`): the first `[[bay_map]]`
+  entry whose `system` is DMI `product_name` and whose `controller` is one of
+  the controller's names (MFI model from `raidctl`, HBA board name, PCI
+  subsystem, PCI id, driver) and, when set, whose `enclosure` is the shelf's
+  model renumbers `device_bays` and `slots` (bay i = `slots[i]`), keeping
+  `through.controller_slots`; `through.bay_numbering` is `platform` (with
+  `bay_map`, the entry's name) or `controller`. Controllers and HBAs are read
+  before shelves each pass so the names are there. `Location` carries
+  `controller_slot` and `bay_numbering`; any other bay (SES, sysfs slot,
+  NVMe slot) is `controller` numbering. SES enclosures are not renumbered:
+  their element index addresses the LEDs, power and fault control.
   `internal`: the engine sees no enclosure there, and the owner's rule says so
   (a server's PERC). An external shelf on a PERC would read `internal` as well;
   nothing the controller reports tells them apart, and the engine does the same.

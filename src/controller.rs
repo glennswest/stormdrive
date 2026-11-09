@@ -364,6 +364,7 @@ impl Controller {
                 let Some(k) = d.location.shelf.as_ref().and_then(|s| s.key()) else { continue };
                 bays.entry(k).or_default().push(BayDrive {
                     bay: d.location.bay,
+                    controller_slot: d.location.controller_slot,
                     drive: d.id.0.to_string(),
                     name: d.name.clone(),
                     model: (!d.model.is_empty()).then(|| d.model.clone()),

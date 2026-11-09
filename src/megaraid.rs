@@ -65,6 +65,17 @@ pub struct Through {
     /// own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slot_not_matched: Vec<u16>,
+    /// Physical device id → the controller's own slot, kept when
+    /// `device_bays` is renumbered by a platform map (#134).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub controller_slots: BTreeMap<u16, u32>,
+    /// How `device_bays` and the shelf's slots are numbered: `platform` (a
+    /// `[[bay_map]]` entry) or `controller` (no map for this platform).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bay_numbering: Option<crate::bays::BayNumbering>,
+    /// The map applied, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bay_map: Option<String>,
     /// Why the controller could not be read: the shelf has no bays then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -196,25 +207,42 @@ pub fn device_id(channel: u16, target: u16) -> Option<u16> {
     (channel < PD_CHANNELS).then_some(channel * DEVICES_PER_CHANNEL + target)
 }
 
+/// Where a controller puts one drive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    pub shelf: Shelf,
+    /// The bay: physical when a platform map applied (#134).
+    pub bay: Option<u32>,
+    /// The controller's own slot number.
+    pub controller_slot: Option<u32>,
+    pub numbering: Option<crate::bays::BayNumbering>,
+}
+
 /// The shelf and bay of a drive on `host` at SCSI address `addr`, from the
 /// controller-read reports. A device the list does not name (a RAID volume, or
 /// a controller that was not read) is on the controller's shelf with no bay,
 /// when it has just one to be on.
-pub fn place(shelves: &Shelves, host: &str, addr: (u16, u16)) -> Option<(Shelf, Option<u32>)> {
+pub fn place(shelves: &Shelves, host: &str, addr: (u16, u16)) -> Option<Placement> {
     let mine: Vec<&ShelfReport> = shelves.values().filter(|r| r.through.as_ref().is_some_and(|t| t.scsi_host == host)).collect();
+    let at = |r: &ShelfReport, t: &Through, id: u16, bay: Option<u32>| Placement {
+        shelf: r.shelf.clone(),
+        bay,
+        controller_slot: t.controller_slots.get(&id).copied().or(if t.bay_numbering.is_none() { bay } else { None }),
+        numbering: bay.and(t.bay_numbering),
+    };
     if let Some(id) = device_id(addr.0, addr.1) {
         for r in &mine {
             let Some(t) = r.through.as_ref() else { continue };
             if let Some(bay) = t.device_bays.get(&id) {
-                return Some((r.shelf.clone(), Some(*bay)));
+                return Some(at(r, t, id, Some(*bay)));
             }
             if t.slot_not_matched.contains(&id) {
-                return Some((r.shelf.clone(), None));
+                return Some(at(r, t, id, None));
             }
         }
     }
     match mine.as_slice() {
-        [only] => Some((only.shelf.clone(), None)),
+        [only] => Some(Placement { shelf: only.shelf.clone(), bay: None, controller_slot: None, numbering: None }),
         _ => None,
     }
 }
@@ -267,6 +295,9 @@ impl Controller<'_> {
                 device_bays,
                 no_enclosure_devices,
                 slot_not_matched,
+                controller_slots: BTreeMap::new(),
+                bay_numbering: None,
+                bay_map: None,
                 error,
             }),
             collected_at: SystemTime::now(),
@@ -526,6 +557,10 @@ pub fn major_of(devices: &str) -> Option<u32> {
 mod tests {
     use super::*;
 
+    fn pl(shelves: &Shelves, host: &str, addr: (u16, u16)) -> Option<(Shelf, Option<u32>)> {
+        place(shelves, host, addr).map(|p| (p.shelf, p.bay))
+    }
+
     fn entry(device: u16, enclosure: u16, slot: u8, scsi_type: u8, sas: u64) -> Vec<u8> {
         let mut e = Vec::new();
         e.extend_from_slice(&device.to_le_bytes());
@@ -588,14 +623,14 @@ mod tests {
 
         // Each drive by its SCSI address: device id, never the slot.
         for (target, bay) in [(4, 0), (5, 1), (6, 2), (7, 3)] {
-            let (sh, b) = place(&shelves, "host0", (0, target)).unwrap();
+            let (sh, b) = pl(&shelves, "host0", (0, target)).unwrap();
             assert_eq!((sh.key().as_deref(), b), (Some("500056b300000001"), Some(bay)));
         }
         // A RAID volume on the same controller: its shelf, no bay.
-        let (_, b) = place(&shelves, "host0", (2, 0)).unwrap();
+        let (_, b) = pl(&shelves, "host0", (2, 0)).unwrap();
         assert_eq!(b, None);
         // Another host's drive is not in it.
-        assert_eq!(place(&shelves, "host1", (0, 4)), None);
+        assert_eq!(pl(&shelves, "host1", (0, 4)), None);
     }
 
     #[test]
@@ -606,7 +641,7 @@ mod tests {
         assert_eq!(r.key, "internal-forge1-0000-03-00.0", "per node, and fit to be an object name");
         assert_eq!(r.shelf.position, Some(Position::Internal));
         assert!(r.through.as_ref().unwrap().error.as_deref().unwrap().contains("EPERM"));
-        let (sh, bay) = place(&shelves, "host2", (0, 9)).unwrap();
+        let (sh, bay) = pl(&shelves, "host2", (0, 9)).unwrap();
         assert_eq!((sh.key().as_deref(), bay), (Some("internal-forge1-0000-03-00.0"), None));
     }
 
@@ -629,19 +664,19 @@ mod tests {
         }));
         assert_eq!(shelves.len(), 3, "no enclosure, an empty one with an address, one without");
         assert!(shelves.contains_key("000000000000000a"), "an enclosure with no drives is a shelf");
-        assert_eq!(place(&shelves, "host0", (0, 1)).unwrap().1, Some(1));
+        assert_eq!(pl(&shelves, "host0", (0, 1)).unwrap().1, Some(1));
         // Device 130 is channel 1, target 2.
-        let (sh, bay) = place(&shelves, "host0", (1, 2)).unwrap();
+        let (sh, bay) = pl(&shelves, "host0", (1, 2)).unwrap();
         assert_eq!((sh.key().as_deref(), bay), (Some("internal-n-host0-e33"), Some(7)));
         // Slot 0xff: on its enclosure, no bay ("slot not matched").
-        let (sh, bay) = place(&shelves, "host0", (0, 3)).unwrap();
+        let (sh, bay) = pl(&shelves, "host0", (0, 3)).unwrap();
         assert_eq!((sh.key().as_deref(), bay), (Some("internal-n-host0-e33"), None), "slot 0xff is no bay, still e33");
         assert_eq!(shelves["internal-n-host0-e33"].through.as_ref().unwrap().slot_not_matched, vec![3]);
         // Two enclosures: a drive in none could be in either; it keeps the
         // controller's own shelf rather than a guess.
         assert!(shelves.contains_key("internal-n-host0"));
         // Three shelves: a device nobody lists is on none of them for certain.
-        assert_eq!(place(&shelves, "host0", (0, 9)), None);
+        assert_eq!(pl(&shelves, "host0", (0, 9)), None);
     }
 
     /// forge1 as it is (#122, 0.39.0 on 2026-11-07): the PERC on host1
@@ -680,9 +715,33 @@ mod tests {
         assert_eq!(t.no_enclosure_devices, vec![4, 7], "said, not hidden");
         assert!(t.slot_not_matched.is_empty());
         for (name, target, bay) in [("sda", 0, 0), ("sdb", 3, 3), ("sdc", 4, 4), ("sdd", 7, 7)] {
-            let (sh, b) = place(&shelves, "host1", (0, target)).unwrap();
+            let (sh, b) = pl(&shelves, "host1", (0, target)).unwrap();
             assert_eq!((sh.key().as_deref(), b), (Some("5e09406039f0cf00"), Some(bay)), "{name}");
         }
+    }
+
+    /// #134: with the R6415's map, forge1's PERC slots 0, 3, 4, 7 are front
+    /// bays 0-3, each drive keeping its controller slot beside the bay.
+    #[test]
+    fn forge1s_drives_read_front_bays_0_1_2_3_by_the_platform_map() {
+        use crate::bays::{BayMap, BayNumbering};
+        let mut shelves = forge1_live(7);
+        let map = BayMap { name: None, system: "PowerEdge R6415".into(), controller: "megaraid_sas".into(), enclosure: Some("BP14G+".into()), slots: vec![0, 3, 4, 7] };
+        for r in shelves.values_mut() {
+            crate::bays::apply(r, Some(&map));
+        }
+        for (name, target, bay) in [("sda", 0u16, 0u32), ("sdb", 3, 1), ("sdc", 4, 2), ("sdd", 7, 3)] {
+            let p = place(&shelves, "host1", (0, target)).unwrap();
+            assert_eq!((p.bay, p.controller_slot, p.numbering), (Some(bay), Some(u32::from(target)), Some(BayNumbering::Platform)), "{name}");
+        }
+        assert_eq!(shelves["5e09406039f0cf00"].slots.keys().copied().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        // Without a map: the controller's numbering, said.
+        let mut plain = forge1_live(7);
+        for r in plain.values_mut() {
+            crate::bays::apply(r, None);
+        }
+        let p = place(&plain, "host1", (0, 7)).unwrap();
+        assert_eq!((p.bay, p.controller_slot, p.numbering), (Some(7), Some(7), Some(BayNumbering::Controller)));
     }
 
     #[test]
@@ -692,7 +751,7 @@ mod tests {
         let r = &shelves["5e09406039f0cf00"];
         assert_eq!(r.through.as_ref().unwrap().slot_not_matched, vec![7]);
         assert_eq!(r.slots.keys().copied().collect::<Vec<_>>(), vec![0, 3, 4]);
-        let (sh, b) = place(&shelves, "host1", (0, 7)).unwrap();
+        let (sh, b) = pl(&shelves, "host1", (0, 7)).unwrap();
         assert_eq!((sh.key().as_deref(), b), (Some("5e09406039f0cf00"), None));
     }
 

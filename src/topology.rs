@@ -364,12 +364,15 @@ mod linux {
                 rep.zip(loc.sas_address.as_deref())
                     .and_then(|(r, sas)| r.bay_of(sas))
             });
-        } else if let Some((sh, bay)) = real.as_deref().zip(loc.controller.as_ref()).and_then(|(r, c)| {
+        } else if let Some(p) = real.as_deref().zip(loc.controller.as_ref()).and_then(|(r, c)| {
             crate::megaraid::place(shelves, c.scsi_host.as_deref()?, crate::megaraid::scsi_address(r)?)
         }) {
-            // Behind a RAID controller: no SES device, the controller knows.
-            loc.shelf = Some(sh);
-            loc.bay = bay;
+            // Behind a RAID controller: no SES device, the controller knows;
+            // its slot is renumbered by the platform's bay map (#134).
+            loc.shelf = Some(p.shelf);
+            loc.bay = p.bay;
+            loc.controller_slot = p.controller_slot;
+            loc.bay_numbering = p.numbering;
         }
         if name.starts_with("nvme") {
             if let Some(dev) = super::nvme::device_path(sys, name) {
@@ -385,6 +388,10 @@ mod linux {
             loc.pcie_addr = loc.controller.as_ref().and_then(|c| c.pcie_addr.clone());
         }
         loc.position = Some(loc.shelf.as_ref().and_then(|s| s.position).unwrap_or_else(|| super::position_no_enclosure(behind)));
+        if loc.bay.is_some() && loc.bay_numbering.is_none() {
+            // No platform map: the bay is as the hardware numbers it (#134).
+            loc.bay_numbering = Some(crate::bays::BayNumbering::Controller);
+        }
         loc
     }
 

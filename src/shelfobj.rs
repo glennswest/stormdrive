@@ -53,6 +53,8 @@ impl ShelfSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BayDrive {
     pub bay: Option<u32>,
+    /// The controller's own slot (#134), beside a platform-numbered bay.
+    pub controller_slot: Option<u32>,
     pub drive: String,
     pub name: String,
     pub model: Option<String>,
@@ -263,7 +265,7 @@ pub fn shelf_object(rep: &ShelfReport, sm: &Summary, drives: &[BayDrive], node: 
     let bays: Vec<Value> = drives
         .iter()
         .map(|d| json!({
-            "bay": d.bay, "drive": d.drive, "name": d.name, "model": d.model, "health": d.health,
+            "bay": d.bay, "controllerSlot": d.controller_slot, "drive": d.drive, "name": d.name, "model": d.model, "health": d.health,
             "blockSize": d.block_size, "needsReformat": d.needs_reformat,
         }))
         .collect();
@@ -487,7 +489,7 @@ mod tests {
     #[test]
     fn the_object() {
         let r = report(2);
-        let d = BayDrive { bay: Some(0), drive: "ca0aa25f".into(), name: "sdb".into(), model: Some("ST1200MM0098".into()), health: "healthy".into(), block_size: 520, needs_reformat: true };
+        let d = BayDrive { bay: Some(0), controller_slot: None, drive: "ca0aa25f".into(), name: "sdb".into(), model: Some("ST1200MM0098".into()), health: "healthy".into(), block_size: 520, needs_reformat: true };
         let o = shelf_object(&r, &summary(&r), &[d], "c2nr0q2", &Value::Null, "t0");
         assert_eq!(o["kind"], "Shelf");
         assert_eq!(o["metadata"]["name"], "500a09800e359135");

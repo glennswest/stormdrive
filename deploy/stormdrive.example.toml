@@ -99,3 +99,15 @@ token_file = ""             # stormdrive's own credential (auth-delegator + stor
 insecure = false            # skip TLS verification (lab only)
 controller = true           # keep Drive objects, run this node's DriveOperations and the DrivePolicies that select it
 interval_secs = 5           # between controller passes
+
+# Bay numbering per platform (#134): a RAID controller's slot → the physical
+# bay, by system model (DMI product_name) and controller (its model as it
+# reports it, board name, PCI subsystem or id, or driver; without case).
+# `slots` is the controller's slot of bay 0, 1, 2, … An `enclosure` (shelf
+# model) narrows it further. No entry = the controller's numbering, said
+# (`bay_numbering: controller`). Applies to shelves a RAID controller reads;
+# an SES enclosure keeps its own numbering.
+# [[bay_map]]
+# system = "PowerEdge R6415"
+# controller = "PERC H730 Mini"
+# slots = [0, 3, 4, 7]

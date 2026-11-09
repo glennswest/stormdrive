@@ -319,6 +319,23 @@ are listed under [Not yet](#not-yet).
     `through.no_enclosure_devices` names it; only with no enclosure or several
     does it get a shelf of the controller's own. A drive with no slot (0xff)
     stays on its shelf with no bay (`through.slot_not_matched`).
+  - **Bay numbering per platform** (#134, `src/bays.rs`): the controller's
+    slots are not always the front panel's bays (forge1, a PowerEdge R6415
+    with a PERC H730 Mini: slots 0, 3, 4, 7 are bays 0, 1, 2, 3). A
+    `[[bay_map]]` entry in the config (data, not code) names, by system model
+    (DMI `product_name`) and controller (its model as it reports it, board
+    name, PCI subsystem or id, or driver), the controller slot of each bay.
+    Where one matches, the shelf's bays and each drive's `bay` are the
+    physical bays, `controller_slot` keeps the controller's number beside
+    it and `bay_numbering` is `platform`; where none does, the bay is the
+    controller's slot and `bay_numbering` says `controller`. A slot the map
+    does not name is on the shelf with no bay (a warning event). On
+    `/api/v1/drives`, `/placement`, `/shelves`, `/topology`, the Drive and
+    Shelf objects (`controllerSlot`, `bayNumbering`) and the feed (detail
+    "bay 1 (controller slot 3)", metric `slot`). Controller-read shelves only:
+    an SES enclosure keeps its own numbering, which its LEDs are addressed by.
+    A changed controller (forge1's HBA330 swap) matches no entry until one is
+    set for it
     Not read that way: other RAID families (smartpqi, hpsa); their drives are
     placed by what sysfs shows
   - **The controller itself** (#132, `src/raidctl.rs`; owner: "hba is
@@ -743,6 +760,7 @@ or only one of `api.tls_cert_file`/`tls_key_file` set.
 | `thermal.heartbeat_secs` | `600` | thermal history: a reading on a 1 °C move or a level change, else this often |
 | `thermal.trend_samples` | `120` | readings kept in memory per component |
 | `thermal.classes.<class>` | none | `{warn_c, crit_c}` class defaults in place of the built-in ones (under the device's own limits and the live settings) |
+| `bay_map` | none | `[[bay_map]]` entries (#134): `system` (DMI product_name), `controller` (model, board name, PCI subsystem/id or driver), optional `enclosure` (shelf model), `slots` = the controller slot of bay 0, 1, 2, …; e.g. `system = "PowerEdge R6415"`, `controller = "PERC H730 Mini"`, `slots = [0, 3, 4, 7]`. A slot listed twice is refused at start |
 | `controllers.perccli` | none | perccli for the RAID personality change (#132); none = the first of `/usr/libexec/stormdrive/perccli64`, `/opt/MegaRAID/perccli/perccli64`, `/opt/dell/perccli/perccli64`, `/usr/sbin/perccli64`, `/usr/bin/perccli64`, `/usr/sbin/perccli` |
 
 Qualified for `auto_add`: out of the fleet, designation `none`, idle, a

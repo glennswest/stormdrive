@@ -21,6 +21,10 @@ pub struct Config {
     pub history: HistoryConfig,
     pub thermal: ThermalConfig,
     pub controllers: ControllersConfig,
+    /// Bay numbering per platform (#134): `[[bay_map]]` entries, the
+    /// controller's slot of each physical bay by system model + controller.
+    #[serde(default)]
+    pub bay_map: Vec<crate::bays::BayMap>,
 }
 
 impl Default for Config {
@@ -39,6 +43,7 @@ impl Default for Config {
             history: HistoryConfig::default(),
             thermal: ThermalConfig::default(),
             controllers: ControllersConfig::default(),
+            bay_map: Vec::new(),
         }
     }
 }
@@ -412,6 +417,9 @@ impl Config {
         if self.kubernetes.interval_secs == 0 {
             anyhow::bail!("kubernetes.interval_secs must be non-zero");
         }
+        for m in &self.bay_map {
+            m.validate().map_err(|e| anyhow::anyhow!(e))?;
+        }
         if self.history.keep_months == 0 {
             anyhow::bail!("history.keep_months must be >= 1");
         }
@@ -504,6 +512,16 @@ mod tests {
         assert!(!wildcard_match("sd*", "nvme0n1"));
         assert!(wildcard_match("sda", "sda"));
         assert!(!wildcard_match("sda", "sdab"));
+    }
+
+    #[test]
+    fn bay_maps_parse_and_validate() {
+        let c: Config = toml::from_str("[[bay_map]]\nsystem = \"PowerEdge R6415\"\ncontroller = \"PERC H730 Mini\"\nslots = [0, 3, 4, 7]\n").unwrap();
+        assert_eq!(c.bay_map.len(), 1);
+        assert_eq!(c.bay_map[0].bay_of(4), Some(2));
+        assert!(c.validate().is_ok());
+        let bad: Config = toml::from_str("[[bay_map]]\nsystem = \"X\"\ncontroller = \"Y\"\nslots = [1, 1]\n").unwrap();
+        assert!(bad.validate().is_err(), "a slot in two bays");
     }
 
     #[test]

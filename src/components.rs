@@ -99,7 +99,12 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     }
     if let Some(sh) = &d.location.shelf {
         if let Some(b) = d.location.bay {
-            detail.push(format!("{} bay {b}", sh.display()));
+            detail.push(match (d.location.bay_numbering, d.location.controller_slot) {
+                // #134: the physical bay, the controller's slot beside it.
+                (Some(crate::bays::BayNumbering::Platform), Some(s)) if s != b => format!("{} bay {b} (controller slot {s})", sh.display()),
+                (Some(crate::bays::BayNumbering::Controller), Some(_)) => format!("{} controller slot {b}", sh.display()),
+                _ => format!("{} bay {b}", sh.display()),
+            });
         }
     }
     if d.format_reason.is_some() {
@@ -130,6 +135,10 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     let mut metrics = Vec::new();
     if let Some(b) = d.location.bay {
         metrics.push(Metric::new("bay", b.to_string()));
+        // #134: the controller's own slot, when the bay is the platform's.
+        if let Some(s) = d.location.controller_slot.filter(|s| *s != b) {
+            metrics.push(Metric::new("slot", s.to_string()).tone("muted"));
+        }
     }
     if let Some(p) = d.location.position {
         metrics.push(Metric::new("position", p.as_str()).tone("muted"));
@@ -1187,6 +1196,21 @@ mod tests {
         assert_eq!(bay.value, "4", "a renderer orders by this, not by a regex");
         let hba = c.metrics.iter().find(|m| m.label == "hba").unwrap();
         assert_eq!(hba.value, "0000:03:00.0");
+        assert!(c.metrics.iter().all(|m| m.label != "slot"), "no controller slot, no metric");
+    }
+
+    /// #134: a platform-numbered bay shows the controller's slot beside it.
+    #[test]
+    fn a_platform_bay_carries_the_controller_slot() {
+        let mut d = drive();
+        d.location.shelf = Some(Shelf { model: Some("BP14G+".into()), logical_id: Some("5e09406039f0cf00".into()), ..Default::default() });
+        d.location.bay = Some(1);
+        d.location.controller_slot = Some(3);
+        d.location.bay_numbering = Some(crate::bays::BayNumbering::Platform);
+        let c = drive_component(&d);
+        assert_eq!(c.metrics.iter().find(|m| m.label == "bay").unwrap().value, "1");
+        assert_eq!(c.metrics.iter().find(|m| m.label == "slot").unwrap().value, "3");
+        assert!(c.detail.contains("bay 1 (controller slot 3)"), "{}", c.detail);
     }
 
     #[test]

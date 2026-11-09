@@ -98,7 +98,9 @@ spec:
                 dependsOn: { type: array, items: { type: string }, description: "What stops working if it is destroyed: the node's root, its data half, a RAID set, the engine's volumes on it." }
                 inUseReason: { type: string, nullable: true, description: "The sentence a refusal carries." }
                 enclosure: { type: string, nullable: true }
-                bay: { type: integer, nullable: true }
+                bay: { type: integer, nullable: true, description: "The bay: the physical bay when bayNumbering is platform (#134)." }
+                controllerSlot: { type: integer, nullable: true, description: "The RAID controller's own slot number, beside the bay." }
+                bayNumbering: { type: string, nullable: true, enum: [platform, controller], description: "platform = a [[bay_map]] entry for this system + controller; controller = the controller's numbering." }
                 sasAddress: { type: string, nullable: true }
                 membership: { type: string }
                 activity: { type: string }

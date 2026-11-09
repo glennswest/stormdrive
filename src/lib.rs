@@ -11,6 +11,7 @@
 
 pub mod api;
 pub mod assets;
+pub mod bays;
 pub mod components;
 pub mod config;
 pub mod contents;

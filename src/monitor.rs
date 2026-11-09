@@ -244,12 +244,14 @@ async fn tick(
     collect: bool,
 ) -> anyhow::Result<()> {
     if discover {
-        // Shelves first: drive location resolution names the shelf from
-        // this scan when only a logical id is visible.
-        scan_shelves(state).await?;
+        // Controllers and HBAs first: a shelf's bay map is chosen by its
+        // controller's names (#134). Shelves before drives: drive location
+        // resolution names the shelf from this scan when only a logical id
+        // is visible.
         scan_controllers(state).await;
         let hbas = tokio::task::spawn_blocking(crate::hba::scan).await?;
         merge_hbas(state, hbas).await;
+        scan_shelves(state).await?;
         let started = std::time::Instant::now();
         let cfg = state.config.discovery.clone();
         let (observed, media) = tokio::task::spawn_blocking(move || (discovery::scan(&cfg), discovery::media(&cfg))).await?;
@@ -317,7 +319,11 @@ async fn scan_shelves(state: &Arc<AppState>) -> anyhow::Result<()> {
         shelves
     });
     match tokio::time::timeout(SHELF_SCAN_LIMIT, scan).await {
-        Ok(shelves) => merge_shelves(state, shelves?).await,
+        Ok(shelves) => {
+            let mut shelves = shelves?;
+            apply_bay_maps(state, &mut shelves).await;
+            merge_shelves(state, shelves).await
+        }
         Err(_) => {
             let msg = format!("shelf scan: no answer in {} s; keeping the last table", SHELF_SCAN_LIMIT.as_secs());
             state.events.write().await.push(None, Severity::Warning, "shelf", msg);
@@ -413,6 +419,53 @@ pub async fn merge_controllers(state: &Arc<AppState>, mut reports: Vec<crate::ra
     let mut log = state.events.write().await;
     for (id, sev, msg) in events {
         log.push(id, sev, "controller", msg);
+    }
+}
+
+/// Renumber controller-read shelves by the platform's `[[bay_map]]` (#134):
+/// the system model from DMI, the controller by every name it has. An event
+/// when a shelf's numbering changes (first seen, a map added or removed) and
+/// when the map leaves a slot out.
+async fn apply_bay_maps(state: &Arc<AppState>, shelves: &mut topology::Shelves) {
+    if !shelves.values().any(|r| r.through.is_some()) {
+        return;
+    }
+    let system = crate::bays::system_model(std::path::Path::new("/sys"));
+    let mut events: Vec<(Severity, String)> = Vec::new();
+    {
+        let hbas = state.hbas.read().await;
+        let controllers = state.controllers.read().await;
+        let old = state.shelves.read().await;
+        for r in shelves.values_mut() {
+            let Some(t) = r.through.as_ref() else { continue };
+            let names = crate::bays::ControllerNames::of(t.pcie_addr.as_deref(), &t.scsi_host, &t.driver, &hbas, &controllers);
+            let map = crate::bays::find(&state.config.bay_map, system.as_deref(), &names, r.shelf.model.as_deref());
+            let unmapped = crate::bays::apply(r, map);
+            let numbering = |t: &crate::megaraid::Through| (t.bay_numbering, t.bay_map.clone(), t.slot_not_matched.clone());
+            if old.get(&r.key).and_then(|o| o.through.as_ref()).map(numbering) == r.through.as_ref().map(numbering) {
+                continue;
+            }
+            let shelf = r.shelf.display();
+            match map {
+                Some(m) => {
+                    let pairs: Vec<String> = m.slots.iter().enumerate().map(|(b, s)| format!("{s}→{b}")).collect();
+                    events.push((Severity::Info, format!("shelf {shelf}: bays numbered by the platform map {} (controller slot → bay: {})", m.label(), pairs.join(", "))));
+                }
+                None => events.push((
+                    Severity::Info,
+                    format!("shelf {shelf}: bays are the controller's numbering: no [[bay_map]] for system {:?}, controller {}", system.as_deref().unwrap_or("unknown"), names.0.join(" / ")),
+                )),
+            }
+            if !unmapped.is_empty() {
+                events.push((Severity::Warning, format!("shelf {shelf}: controller slot(s) {unmapped:?} not in the platform map: those drives have no bay until the map names them")));
+            }
+        }
+    }
+    if !events.is_empty() {
+        let mut log = state.events.write().await;
+        for (sev, msg) in events {
+            log.push(None, sev, "shelf", msg);
+        }
     }
 }
 
