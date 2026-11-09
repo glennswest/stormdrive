@@ -636,6 +636,26 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #134: bay numbering per platform — a data map (P1, owner, 2026-11-09) — in progress
+
+Owner, forge1 (R6415, PERC H730 Mini): "should be 0,1,2,3 mapped to the
+0,3,4,7". The PERC's slots (enclosure 32 slots 0, 3 + "Direct" 4, 7) are the
+bays today. Design (the issue's; no open decision):
+- data, not code: `[[bay_map]]` in stormdrive.toml (the registry's config
+  text): `system` (DMI product_name), `controller` (the HBA's board name, PCI
+  subsystem or id, or driver), optional `enclosure` (shelf model), `slots`
+  = the controller slot of bay 0, 1, 2 … (`[0, 3, 4, 7]`)
+- applied to controller-read shelves (megaraid, #65): the shelf's bays and
+  each drive's `bay` become the physical bay; `controller_slot` beside it;
+  `bay_numbering` platform | controller (unknown platform = controller's
+  numbering, said). A slot the map does not name: on the shelf, no bay.
+  SES enclosures keep their own numbering (their LEDs are addressed by it)
+- outputs: /drives, /placement, /shelves, kube Drive + Shelf, feed
+- the R6415 entry goes to the master as a `component edit` (registry)
+Steps:
+- [ ] config + bays.rs + megaraid/topology + outputs + tests
+- [ ] docs, changelog, build VM, v0.44.0, golden; note to the master
+
 ### #132: the PERC from the node — controller state, set good / JBOD, personality HBA (P0, owner, 2026-11-08) — DONE (v0.43.0); HBA switch waits on perccli in the image
 
 forge1: H730 Mini in RAID mode, sdb–sdd **Failed, 0 KB** after their formats
