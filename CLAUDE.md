@@ -636,7 +636,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #134: bay numbering per platform — a data map (P1, owner, 2026-11-09) — in progress
+### #134: bay numbering per platform — a data map (P1, owner, 2026-11-09) — DONE (v0.44.0)
 
 Owner, forge1 (R6415, PERC H730 Mini): "should be 0,1,2,3 mapped to the
 0,3,4,7". The PERC's slots (enclosure 32 slots 0, 3 + "Direct" 4, 7) are the
@@ -653,8 +653,14 @@ bays today. Design (the issue's; no open decision):
 - outputs: /drives, /placement, /shelves, kube Drive + Shelf, feed
 - the R6415 entry goes to the master as a `component edit` (registry)
 Steps:
-- [ ] config + bays.rs + megaraid/topology + outputs + tests
-- [ ] docs, changelog, build VM, v0.44.0, golden; note to the master
+- [x] config + bays.rs + megaraid/topology + outputs + tests (55ffeb5)
+- [x] docs, changelog; build VM on 3b8aa53 (v0.44.0): clippy -D warnings
+      --locked, 362 unit (7 new: forge1's 0,3,4,7 → 0-3 with the controller
+      slot kept, unknown platform / HBA330 = controller numbering, unmapped
+      slot = no bay, validation, DMI) + harnesses; golden requested (build
+      c959526ea4cd); the R6415 `[[bay_map]]` entry sent to the master (note)
+- Live: forge1's `/api/v1/drives` bays 0-3, `controller_slot` 0/3/4/7,
+  `bay_numbering: platform`, once the release + the registry entry are there
 
 ### #132: the PERC from the node — controller state, set good / JBOD, personality HBA (P0, owner, 2026-11-08) — DONE (v0.43.0); HBA switch waits on perccli in the image
 
