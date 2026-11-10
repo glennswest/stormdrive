@@ -638,7 +638,7 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
-### #136: `stormdrive format` — a CLI the initramfs runs, no Kubernetes (P1, owner, stormcos#902, 2026-11-10) — in progress
+### #136: `stormdrive format` — a CLI the initramfs runs, no Kubernetes (P1, owner, stormcos#902, 2026-11-10) — DONE (v0.45.0)
 
 Owner: every drive is formatted at install before anything is laid
 (stormcos STORAGE-LAYOUT.md step 2), in stormblock's initramfs: a static
@@ -665,8 +665,12 @@ said on it when closing):
 Steps:
 - [x] scsi FFMT + RSOC builders/parsers · [x] formatcli.rs core + fake tests
 - [x] main subcommand (bb798e3; build VM: clippy -D warnings --locked, all
-      tests) · [x] docs (README, architecture), changelog · [ ] v0.45.0
-- [ ] build VM, image, close
+      tests) · [x] docs (README, architecture), changelog · [x] v0.45.0 (0b46a8e)
+- [x] build VM on 0b46a8e: clippy -D warnings --locked, 374 unit (11
+      formatcli on a fake drive) + harnesses; release binary: help, usage
+      exits 2; image build 26c9f963ea5a; #136 closed
+- Not on metal: the FFMT + RSOC commands have only met a fake drive. Live:
+  forge1's 4 × X378 from the initramfs (stormblock carries the binary)
 
 ### #134: bay numbering per platform — a data map (P1, owner, 2026-11-09) — DONE (v0.44.0)
 
