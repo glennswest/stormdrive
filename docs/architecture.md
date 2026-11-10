@@ -448,7 +448,9 @@ half that.
   personality has no public DCMD (megaraid_sas.h has only the
   `supportPersonalityChange` capability bits): perccli runs it (`/call show
   J` → our controller by PCI address, `/cN show personality J`, `/cN set
-  personality=HBA J`), bounded, its JSON `Command Status` checked. Mode
+  personality=HBA J`), bounded, its JSON `Command Status` checked. Not
+  needed (stormcentral#1310 ruling, 2026-11-10: storage nodes use IT-mode
+  HBAs; perccli is a separate diagnostic image, not in stormdrive's). Mode
   without perccli: RAID when virtual disks exist or a disk is in any state
   but JBOD; otherwise `unknown` (RAID with JBOD and HBA read alike). Joined to
   the inventory (SAS address, else host + slot when the slot is unique):

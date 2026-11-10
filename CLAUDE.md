@@ -698,7 +698,7 @@ Steps:
 - Live: forge1's `/api/v1/drives` bays 0-3, `controller_slot` 0/3/4/7,
   `bay_numbering: platform`, once the release + the registry entry are there
 
-### #132: the PERC from the node — controller state, set good / JBOD, personality HBA (P0, owner, 2026-11-08) — DONE (v0.43.0); HBA switch waits on perccli in the image
+### #132: the PERC from the node — controller state, set good / JBOD, personality HBA (P0, owner, 2026-11-08) — DONE (v0.43.0/0.43.1); HBA switch not needed (stormcentral#1310)
 
 forge1: H730 Mini in RAID mode, sdb–sdd **Failed, 0 KB** after their formats
 were cut; HII and iDRAC refuse every operation. Dell's fix is from the OS
@@ -757,6 +757,14 @@ Steps:
   `raid_mode` + 3 `drive_failed` findings, perccli absent said. 0.43.1's
   golden (50bbf003d774) not on forge1 yet. Item proposed after
   stormcentral#1310 (perccli in the golden: the HBA switch)
+- 2026-11-10: stormcentral#1310 closed with the master's ruling: a RAID
+  controller's HBA mode is not needed (storage nodes use IT-mode HBAs,
+  HBA330); perccli becomes its own diagnostic image (P3, once
+  compliance-operations#231 clears the EULA), never inside stormdrive's.
+  Launching it as a one-shot pod would be a new issue if it is wanted. No
+  code change: the personality route stays (501 without perccli). forge1
+  unreachable today (no route); #132 `shipped`, proof = `/api/v1/controllers`
+  answering on a node
 
 ### #131: an interrupted format (3/31/00, no block node) reads Missing and can't be formatted (P0, 2026-11-07) — DONE (v0.42.1)
 

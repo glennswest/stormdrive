@@ -355,7 +355,11 @@ are listed under [Not yet](#not-yet).
     in-use drive; from Failed it needs `force`. The **personality** change
     (`perccli /cN set personality=HBA`; a reboot applies it) runs perccli:
     no public MFI command does it, so it is not guessed. Without perccli it
-    answers 501 `tool_missing`; refused while the controller has virtual disks
+    answers 501 `tool_missing`; refused while the controller has virtual disks.
+    Not needed for storage nodes (master's ruling, stormcentral#1310,
+    2026-11-10): they use IT-mode HBAs (HBA330), and perccli becomes its own
+    diagnostic image, never part of stormdrive's; the route stays for a node
+    that has perccli
   - **NVMe:** the PCIe slot on the drive's PCIe chain. A numeric slot name
     is also the bay. Intel VMD domains and native multipath heads are
     followed.

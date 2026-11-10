@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-10
+- **docs:** #132: the PERC personality switch is not needed (stormcentral#1310 ruling: storage nodes use IT-mode HBAs; perccli is its own diagnostic image, never in stormdrive's). README, architecture and the work plan say so; the route stays and answers 501 without perccli
+
 ## [v0.45.0] — 2026-11-10
 
 ### Added
