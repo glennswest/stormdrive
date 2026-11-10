@@ -636,6 +636,35 @@ run's ServiceAccount had no `get` on storage.storm.io (#53).
 - [ ] the R230 (C2NR0Q2, down) checks from the issue: usage-from-stormblock
       (engine token), hbas; the page item is obsolete (#84)
 
+### #136: `stormdrive format` — a CLI the initramfs runs, no Kubernetes (P1, owner, stormcos#902, 2026-11-10) — in progress
+
+Owner: every drive is formatted at install before anything is laid
+(stormcos STORAGE-LAYOUT.md step 2), in stormblock's initramfs: a static
+CLI, no API, no Kubernetes, no config file. Design (the issue's; my calls
+said on it when closing):
+- `stormdrive format --device /dev/sdX --block-size 512|4096 --protection
+  none|type1 --method auto|fast|full|none`: a subcommand of the same static
+  musl binary (one thing to carry); runs before any runtime starts, reads
+  no config, opens nothing but the device
+- SCSI: READ CAPACITY → already at the format? (`auto`/`none` stop there);
+  MODE SELECT the length (#129's list); FORMAT UNIT with FFMT = 01b (SBC-4
+  fast format: no media write) when REPORT SUPPORTED OPERATION CODES says
+  the drive takes FFMT (or does not answer); refused (ILLEGAL REQUEST) →
+  `auto` goes on with a full FORMAT UNIT, `fast` stops refused with the
+  length put back. IMMED, REQUEST SENSE/TUR progress, % and ETA printed
+  (a line each poll, `--poll-secs`, default 10), sd rescan, READ CAPACITY
+  verify: block length, PI type, capacity printed
+- NVMe namespace: Format NVM to the LBA format of that size (`none` only;
+  PI on NVMe refused for now)
+- `--json`: the result as one JSON line on stdout as well
+- exit: 0 formatted, 1 failed, 2 usage, 3 refused (nothing formatted; the
+  sense with its field pointer), 4 already at the format (auto/none),
+  5 not at the format (`none`)
+Steps:
+- [ ] scsi FFMT + RSOC builders/parsers · [ ] formatcli.rs core + fake tests
+- [ ] main subcommand · [ ] docs (README, architecture), changelog, v0.45.0
+- [ ] build VM, image, close
+
 ### #134: bay numbering per platform — a data map (P1, owner, 2026-11-09) — DONE (v0.44.0)
 
 Owner, forge1 (R6415, PERC H730 Mini): "should be 0,1,2,3 mapped to the
