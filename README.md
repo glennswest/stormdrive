@@ -670,6 +670,7 @@ drive-touching checks skip there; they meet real drives on the test machines
 
 ```
 stormdrive [--config PATH] [--listen ADDR] [--data-dir DIR]
+stormdrive format --device /dev/sdX ...      # one drive, no daemon (below)
 ```
 
 | Flag | Default | Meaning |
@@ -685,6 +686,46 @@ event log and the inventory are written, and it exits 0 (#21). The
 inventory is also written every tick. The drive work needs root, or at least `CAP_SYS_ADMIN` +
 `CAP_SYS_RAWIO` for SG_IO and the NVMe admin ioctl, and write access to sysfs
 for locate LEDs and rescans.
+
+### `stormdrive format`: one drive, from the installer's initramfs (#136)
+
+```
+stormdrive format --device /dev/sdX [--block-size 4096] [--protection none|type1]
+                  [--method auto|fast|full|none] [--poll-secs 10] [--json]
+```
+
+Every drive is formatted at install, before anything is laid on it
+(stormcos#902, STORAGE-LAYOUT.md step 2). This subcommand of the same static
+binary does it with no daemon, no API, no Kubernetes and no config file: it
+opens the device and nothing else. `--device` is an sd node (sent through its
+sg node when there is one), an sg node, or an NVMe namespace.
+
+| `--method` | What it does |
+|---|---|
+| `auto` (default) | Already at the block size and PI: nothing (exit 4). Else MODE SELECT the length, then a **fast format** (FORMAT UNIT FFMT = 01b: the drive changes its sector size / PI without writing the medium) unless REPORT SUPPORTED OPERATION CODES says FORMAT UNIT takes no FFMT; a fast format the drive refuses is followed by a full FORMAT UNIT |
+| `fast` | The fast format only; refused = the old length put back, nothing formatted (exit 3) |
+| `full` | A full FORMAT UNIT (IMMED; the blocking form when IMMED is refused without PI), even on a drive already at the format |
+| `none` | Check only: exit 4 at the format, 5 not |
+
+While it runs it prints the method, then a line every `--poll-secs` with the
+drive's progress and the time left (stderr). At the end READ CAPACITY must
+read the asked block size and PI type; the kernel then rescans the device. The
+last line (stdout, or one JSON object with `--json`) says the outcome, the
+method used, logical block size, PI type, capacity and blocks, before and after.
+
+| Exit | Meaning |
+|---|---|
+| 0 | formatted and read back as asked |
+| 1 | failed (transport, the format failed, the read-back is not what was asked): the drive may need a format |
+| 2 | usage: unknown flag, a block size other than 512/4096, no such device |
+| 3 | refused by the drive (ILLEGAL REQUEST, with the sense and its field pointer, as #129), or a partition of it is mounted: nothing was formatted |
+| 4 | already at the format (`auto`, `none`): nothing sent |
+| 5 | not at the format (`none`) |
+
+An NVMe namespace gets Format NVM to the LBA format of that size without
+metadata; `--protection type1` on NVMe is refused (exit 3). A drive whose last
+format was cut off (31/00) is at no format and is formatted. `RUST_LOG` sets
+the log filter (default `warn`, on stderr). Needs root (SG_IO, sysfs rescan).
 
 ## Configuration
 

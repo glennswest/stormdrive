@@ -101,6 +101,8 @@ src/
   shelfview.rs    shelf summary: IOMs, PSUs, connectors, multipath, problems (#81)
   shelfobj.rs     the Shelf object: status, conditions, transitions, spec (#83)
   format.rs       sector-size reformat jobs (520 → 512/4096)
+  formatcli.rs    `stormdrive format`: one drive from the initramfs, no daemon;
+                  fast format (FFMT) first, then FORMAT UNIT (#136)
   worker.rs       the drive worker (#5): select × steps jobs, guards, lanes,
                   jobs.json, restart recovery, prep phase
   erase.rs        NVMe Format NVM / Sanitize, SCSI SANITIZE (build + parse)
@@ -661,8 +663,9 @@ said on it when closing):
   sense with its field pointer), 4 already at the format (auto/none),
   5 not at the format (`none`)
 Steps:
-- [ ] scsi FFMT + RSOC builders/parsers · [ ] formatcli.rs core + fake tests
-- [ ] main subcommand · [ ] docs (README, architecture), changelog, v0.45.0
+- [x] scsi FFMT + RSOC builders/parsers · [x] formatcli.rs core + fake tests
+- [x] main subcommand (bb798e3; build VM: clippy -D warnings --locked, all
+      tests) · [x] docs (README, architecture), changelog · [ ] v0.45.0
 - [ ] build VM, image, close
 
 ### #134: bay numbering per platform — a data map (P1, owner, 2026-11-09) — DONE (v0.44.0)

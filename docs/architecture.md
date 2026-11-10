@@ -630,6 +630,26 @@ A batch request validates every drive before starting any. There is no
 cancel. The result is persisted on the drive (`format`) and reported
 as an event; the drive is `usable` again once the kernel re-reads it.
 
+### The install-time format CLI (`formatcli.rs`, #136)
+
+`stormdrive format` is the same commands with no daemon around them, for
+stormblock's initramfs (stormcos#902): every drive is formatted at install
+before anything is laid. Nothing is read but the device: no config, no
+inventory, no apiserver, no tokio runtime (the subcommand runs before one is
+built). It reuses `format.rs`'s MODE SELECT (`set_length`) and progress poll
+(`poll_format`) and adds the **fast format**: FORMAT UNIT with FFMT = 01b
+(SBC-4 CDB byte 4), which changes the sector size or PI by re-initialising
+the drive's own resources without writing the medium, minutes instead of
+hours where the drive supports it. Whether it does: REPORT SUPPORTED
+OPERATION CODES (0xA3/0x0C, one command, opcode 0x04) usage data byte 4 bits
+1:0; a drive that does not answer it is tried, and ILLEGAL REQUEST on the
+fast format sends `auto` on to a full FORMAT UNIT (`fast` stops, with the
+old length put back). Already at the asked length and PI (READ CAPACITY)
+under `auto` sends nothing. The read-back is READ CAPACITY's length and
+P_TYPE before the kernel rescan (a re-add would drop the open sg handle).
+Exit codes and output: README "stormdrive format". The daemon's formats
+(REST, worker, DriveOperation) do not use FFMT yet.
+
 ### The drive worker (`worker.rs`, `erase.rs`, `gpt.rs`, #5)
 One request prepares many drives: a **selection** (drives, shelf + bays,
 model, unusable) × a list of **steps** (format → sanitize or

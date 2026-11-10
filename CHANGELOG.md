@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.45.0] — 2026-11-10
+
+### Added
+- `stormdrive format` (#136, stormcos#902): one drive's low-level format from a shell, for stormblock's initramfs, with no daemon, API, Kubernetes or config file. `--device /dev/sdX|sgN|nvmeXnY --block-size 512|4096 --protection none|type1 --method auto|fast|full|none [--poll-secs N] [--json]`. `auto` sends nothing when READ CAPACITY already reads the asked length + PI, else MODE SELECT (#129's list) and a **fast format** (FORMAT UNIT FFMT = 01b, no media write) unless REPORT SUPPORTED OPERATION CODES says FORMAT UNIT takes no FFMT, then a full FORMAT UNIT when the drive refuses the fast one. Progress and time left every poll, READ CAPACITY read-back (length, PI type, capacity), kernel rescan. Exit 0 formatted, 1 failed, 2 usage, 3 refused (nothing formatted; sense with field pointer) or mounted, 4 already at the format, 5 not at it (`none`). NVMe: Format NVM to the LBA format of that size (no PI)
+- scsi: FORMAT UNIT with FFMT, REPORT SUPPORTED OPERATION CODES (one command) and its FFMT reading; erase: `nvme_current` (the LBA format in use)
+
 ## [v0.44.0] — 2026-11-09
 
 ### Added
