@@ -419,6 +419,45 @@ pub fn format_unit_param(immed: bool) -> [u8; 4] {
     [0, if immed { 0x02 } else { 0 }, 0, 0]
 }
 
+/// What REPORT SUPPORTED OPERATION CODES says of one command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OneCommand {
+    /// SUPPORT: 001b not supported, 011b supported as the standard says,
+    /// 101b supported in a vendor-specific way; 000b no data.
+    pub support: u8,
+    /// CDB USAGE DATA: byte 0 the opcode, then a bit set for every CDB bit
+    /// the drive looks at.
+    pub usage: Vec<u8>,
+}
+
+impl OneCommand {
+    pub fn supported(&self) -> bool {
+        matches!(self.support, 0b011 | 0b101)
+    }
+}
+
+/// The one-command format of REPORT SUPPORTED OPERATION CODES: byte 1
+/// SUPPORT (2:0), bytes 2-3 CDB SIZE, the usage data after.
+pub fn parse_one_command(raw: &[u8]) -> Option<OneCommand> {
+    if raw.len() < 4 {
+        return None;
+    }
+    let size = u16::from_be_bytes([raw[2], raw[3]]) as usize;
+    let usage = raw.get(4..4 + size).unwrap_or(&raw[4..]).to_vec();
+    Some(OneCommand { support: raw[1] & 0x07, usage })
+}
+
+/// Whether a drive takes FORMAT UNIT's FFMT field, from its usage data for
+/// opcode 0x04: Some(true) when a bit of byte 4's 1:0 is set, Some(false)
+/// when the drive lists FORMAT UNIT and none is, None when it said nothing
+/// we can read (then only trying tells).
+pub fn ffmt_supported(c: &OneCommand) -> Option<bool> {
+    if !c.supported() || c.usage.len() < 5 {
+        return None;
+    }
+    Some(c.usage[4] & 0x03 != 0)
+}
+
 // ---------------------------------------------------------------- CDBs
 
 pub mod cdb {
@@ -473,7 +512,20 @@ pub mod cdb {
     /// The same, with FMTPINFO (byte 1 bits 7:6; #85): 00b no protection
     /// information, 10b type 1 (with PFU 000b in the parameter list).
     pub fn format_unit_pi(fmtpinfo: u8) -> [u8; 6] {
-        [0x04, ((fmtpinfo & 0x03) << 6) | 0x10, 0, 0, 0, 0]
+        format_unit_ffmt(fmtpinfo, 0)
+    }
+    /// FORMAT UNIT with FAST FORMAT (SBC-4, CDB byte 4 bits 1:0): 00b a
+    /// normal format, 01b the drive initialises its own resources without
+    /// writing the medium (#136: the initramfs's sector size / PI change).
+    pub fn format_unit_ffmt(fmtpinfo: u8, ffmt: u8) -> [u8; 6] {
+        [0x04, ((fmtpinfo & 0x03) << 6) | 0x10, 0, 0, ffmt & 0x03, 0]
+    }
+    /// REPORT SUPPORTED OPERATION CODES (MAINTENANCE IN 0xA3/0x0C),
+    /// reporting options 001b: the one command `op` (no service action),
+    /// with its CDB usage data.
+    pub fn report_supported_opcode(op: u8, alloc: u32) -> [u8; 12] {
+        let a = alloc.to_be_bytes();
+        [0xa3, 0x0c, 0x01, op, 0, 0, a[0], a[1], a[2], a[3], 0, 0]
     }
     /// PCV=1: the named diagnostic page.
     pub fn receive_diagnostic(page: u8, alloc: u16) -> [u8; 6] {
@@ -757,6 +809,20 @@ impl Device {
         self.io(&cdb::format_unit_pi(fmtpinfo), Dir::ToDevice, &mut p, t).map(|_| ())
     }
 
+    /// FORMAT UNIT with FMTPINFO and FAST FORMAT (`cdb::format_unit_ffmt`).
+    pub fn format_unit_ffmt(&self, immed: bool, fmtpinfo: u8, ffmt: u8) -> Result<()> {
+        let mut p = format_unit_param(immed);
+        let t = if immed { T_FORMAT_IMMED } else { T_FORMAT_BLOCKING };
+        self.io(&cdb::format_unit_ffmt(fmtpinfo, ffmt), Dir::ToDevice, &mut p, t).map(|_| ())
+    }
+
+    /// REPORT SUPPORTED OPERATION CODES for one opcode.
+    pub fn supported_opcode(&self, op: u8) -> Result<OneCommand> {
+        let mut buf = vec![0u8; 64];
+        let n = self.io(&cdb::report_supported_opcode(op, 64), Dir::FromDevice, &mut buf, T_SHORT)?;
+        parse_one_command(&buf[..n]).ok_or(Error::Short(n))
+    }
+
     pub fn receive_diagnostic(&self, page: u8) -> Result<Vec<u8>> {
         const ALLOC: usize = 0xfffc;
         let mut buf = vec![0u8; ALLOC];
@@ -832,6 +898,25 @@ pub fn sg_path_in(scsi_generic_dir: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fast_format_cdb_and_ffmt_support() {
+        assert_eq!(cdb::format_unit_ffmt(0b10, 1), [0x04, 0x90, 0, 0, 0x01, 0]);
+        assert_eq!(cdb::format_unit_pi(0), [0x04, 0x10, 0, 0, 0, 0], "normal format: FFMT 00b");
+        assert_eq!(cdb::report_supported_opcode(0x04, 64), [0xa3, 0x0c, 0x01, 0x04, 0, 0, 0, 0, 0, 64, 0, 0]);
+        // Supported as the standard says, 6-byte usage with FFMT bits.
+        let raw = [0, 0b011, 0, 6, 0x04, 0xff, 0x00, 0x00, 0x03, 0x07];
+        let c = parse_one_command(&raw).unwrap();
+        assert_eq!(c.usage, vec![0x04, 0xff, 0, 0, 0x03, 0x07]);
+        assert_eq!(ffmt_supported(&c), Some(true));
+        // Lists FORMAT UNIT, byte 4 reserved → no fast format.
+        let raw = [0, 0b011, 0, 6, 0x04, 0xff, 0x00, 0x00, 0x00, 0x07];
+        assert_eq!(ffmt_supported(&parse_one_command(&raw).unwrap()), Some(false));
+        // Not supported / no data: only trying tells.
+        let raw = [0, 0b001, 0, 0];
+        assert_eq!(ffmt_supported(&parse_one_command(&raw).unwrap()), None);
+        assert!(parse_one_command(&[0, 3]).is_none());
+    }
 
     #[test]
     fn an_interrupted_format_is_named() {

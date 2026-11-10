@@ -21,18 +21,64 @@ struct Args {
     /// Override data directory
     #[arg(long)]
     data_dir: Option<String>,
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Low-level format of one drive, for the installer's initramfs (#136):
+    /// no daemon, no API, no Kubernetes, no config file.
+    ///
+    /// Exit: 0 formatted, 1 failed, 2 usage, 3 refused by the drive
+    /// (nothing formatted), 4 already at the format (auto, none), 5 not at
+    /// the format (none).
+    Format {
+        /// The drive: /dev/sdX, /dev/sgN or /dev/nvmeXnY.
+        #[arg(long)]
+        device: String,
+        /// Logical block size to format to.
+        #[arg(long, default_value_t = 4096)]
+        block_size: u32,
+        /// T10 protection information.
+        #[arg(long, value_enum, default_value = "none")]
+        protection: stormdrive::formatcli::Prot,
+        /// auto: nothing when already there, else fast format (FFMT) where
+        /// the drive takes it, else FORMAT UNIT. fast / full: only that.
+        /// none: check only.
+        #[arg(long, value_enum, default_value = "auto")]
+        method: stormdrive::formatcli::Method,
+        /// Seconds between progress lines.
+        #[arg(long, default_value_t = 10)]
+        poll_secs: u64,
+        /// The result as one JSON line on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    if let Some(Command::Format { device, block_size, protection, method, poll_secs, json }) = &args.command {
+        // stdout is the result; everything else goes to stderr.
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+            )
+            .init();
+        std::process::exit(stormdrive::formatcli::main(device, *block_size, *protection, *method, *poll_secs, *json));
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info".into()),
         )
         .init();
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(daemon(args))
+}
 
-    let args = Args::parse();
+async fn daemon(args: Args) -> anyhow::Result<()> {
     let mut config = Config::load(&args.config)?;
     if let Some(l) = args.listen {
         config.listen_addr = l;

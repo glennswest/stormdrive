@@ -401,6 +401,13 @@ mod linux {
         parse_identify_ctrl(&identify(path, 1, 0)?).ok_or_else(|| "identify controller: short".into())
     }
 
+    /// The namespace's LBA format in use (#136: is it already at the size?).
+    pub fn nvme_current(path: &str, name: &str) -> Result<LbaFormat, String> {
+        let (_, nsid) = nvme_names(name).ok_or_else(|| format!("{name}: not an NVMe namespace name"))?;
+        let (formats, current) = parse_identify_ns(&identify(path, 0, nsid)?).ok_or("identify namespace: short")?;
+        formats.into_iter().find(|f| f.index == current).ok_or_else(|| format!("LBA format {current} in use is not in the table"))
+    }
+
     pub fn nvme_format(path: &str, name: &str, data_size: u32, progress: Progress) -> Result<u32, String> {
         let (_, nsid) = nvme_names(name).ok_or_else(|| format!("{name}: not an NVMe namespace name"))?;
         let caps = nvme_caps(path)?;
@@ -554,7 +561,7 @@ mod linux {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{ata_security, ata_security_erase, nvme_caps, nvme_format, nvme_sanitize, nvme_sanitize_wait, scsi_sanitize_run, scsi_wait};
+pub use linux::{ata_security, ata_security_erase, nvme_caps, nvme_current, nvme_format, nvme_sanitize, nvme_sanitize_wait, scsi_sanitize_run, scsi_wait};
 
 #[cfg(not(target_os = "linux"))]
 pub fn ata_security(_: &str) -> Result<AtaSecurity, String> {
@@ -567,6 +574,10 @@ pub fn ata_security_erase(_: &str, _: &str, _: &AtaErasePlan, _: Progress) -> Re
 
 #[cfg(not(target_os = "linux"))]
 pub fn nvme_caps(_: &str) -> Result<NvmeCaps, String> {
+    Err("NVMe admin commands are Linux-only".into())
+}
+#[cfg(not(target_os = "linux"))]
+pub fn nvme_current(_: &str, _: &str) -> Result<LbaFormat, String> {
     Err("NVMe admin commands are Linux-only".into())
 }
 #[cfg(not(target_os = "linux"))]

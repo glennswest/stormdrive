@@ -156,7 +156,7 @@ pub fn interpret_tur(r: &Result<(), ScsiError>) -> Result<Option<Option<u8>>, St
 /// One poll of a running format. REQUEST SENSE when it says the format is
 /// running with a progress, or that it failed; otherwise TEST UNIT READY
 /// decides (an idle drive's REQUEST SENSE says NO SENSE, not "done").
-fn poll_format(
+pub(crate) fn poll_format(
     request_sense: impl FnOnce() -> Result<Vec<u8>, ScsiError>,
     tur: impl FnOnce() -> Result<(), ScsiError>,
 ) -> Result<Option<Option<u16>>, String> {
@@ -185,8 +185,8 @@ fn raw_progress(r: &Result<(), ScsiError>) -> Result<Option<Option<u16>>, String
     }
 }
 
-const POLL: Duration = Duration::from_secs(30);
-const MAX_WAIT: Duration = Duration::from_secs(48 * 60 * 60);
+pub(crate) const POLL: Duration = Duration::from_secs(30);
+pub(crate) const MAX_WAIT: Duration = Duration::from_secs(48 * 60 * 60);
 
 fn dev_path(drive: &Drive) -> String {
     scsi::sg_path_for_block(&drive.name).unwrap_or_else(|| drive.path.clone())
@@ -194,7 +194,7 @@ fn dev_path(drive: &Drive) -> String {
 
 /// What starting a format needs of a drive: a trait so the commands and
 /// their order are tested without one.
-trait Unit {
+pub(crate) trait Unit {
     /// MODE SENSE(10), long LBA descriptors allowed (LLBAA=1).
     fn mode_sense10(&self, page: u8) -> scsi::Result<scsi::ModeHeader10>;
     fn mode_select10(&self, data: &[u8]) -> scsi::Result<()>;
@@ -237,7 +237,7 @@ fn current_length(dev: &impl Unit, recorded: u32) -> Result<u32, String> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Attempt {
+pub(crate) enum Attempt {
     /// FORMAT UNIT accepted. `immediate`: it runs on, poll it; else it ended.
     Started { immediate: bool },
     /// ILLEGAL REQUEST: the drive will not do this one, and nothing is
@@ -263,7 +263,7 @@ fn refused_or_failed(e: &ScsiError, why: String) -> Attempt {
 /// answer (refused, with the field it points at); only errors that answer
 /// nothing (the (6) failing at the transport on a drive that has no (6))
 /// leave it failed.
-fn set_length(dev: &impl Unit, name: &str, to: u32) -> Result<(), Attempt> {
+pub(crate) fn set_length(dev: &impl Unit, name: &str, to: u32) -> Result<(), Attempt> {
     let h = dev.mode_sense10(0x01).unwrap_or_else(|e| {
         tracing::debug!(drive = %name, "mode sense failed ({e}); a zero block descriptor");
         scsi::ModeHeader10 { medium_type: 0, device_specific: 0, long_lba: false, block_descriptor: None }

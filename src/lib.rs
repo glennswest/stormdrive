@@ -25,6 +25,7 @@ pub mod events;
 pub mod firmware;
 pub mod fleet;
 pub mod format;
+pub mod formatcli;
 pub mod gpt;
 pub mod hba;
 pub mod history;
