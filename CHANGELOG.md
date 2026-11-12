@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-11
+- **docs:** refreshed from the code since 2026-11-05 (v0.39.1–v0.45.0): checked every route, config key, metric family and version location against README/architecture (all present); CLAUDE.md module map gains bays.rs, inuse.rs, pi.rs and the build section says build VM, not dev
+
 ### 2026-11-10
 - **docs:** #132: the PERC personality switch is not needed (stormcentral#1310 ruling: storage nodes use IT-mode HBAs; perccli is its own diagnostic image, never in stormdrive's). README, architecture and the work plan say so; the route stays and answers 501 without perccli
 

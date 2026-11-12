@@ -43,9 +43,8 @@ drives; StormDrive is the *curator* of them.
 ## Build and test with sc-build
 
 Per the cross-project rules (`~/src/CLAUDE.md`): commit, push, then
-`sc-build` from this checkout. It builds the pushed commit on dev.g8.lo in a
-scratch volume and deletes it; there is no checkout on dev, and nothing here
-needs root.
+`sc-build` from this checkout. It builds the pushed commit on a fresh build VM
+(dev.g8.lo is retired) and destroys it; nothing here needs root.
 
 ```
 git push && sc-build                                   # cargo build && cargo test
@@ -85,6 +84,12 @@ src/
   events.rs       event ring (4096; newest 512 in events.json, #25)
   transport.rs    SAS or SATA from the drive itself: VPD 0x83, log page 0x18,
                   negotiated link rate (#105)
+  bays.rs         `[[bay_map]]`: a platform's physical bay numbering over a
+                  controller's slots (#134)
+  inuse.rs        what a drive is used for (system/data/raid/mounted/free) and
+                  why; destructive verbs refuse it (#123)
+  pi.rs           protection-information probe (VPD 0xB4, READ CAPACITY) and
+                  the format plan: 4096+PI1 first, alternatives (#82, #130)
   topology.rs     location: SAS/SES/mpt3sas bays, NVMe PCIe slots, locate LEDs,
                   shelf position by the engine's rules (#65)
   megaraid.rs     a RAID controller's enclosures as internal shelves: MFI reads
