@@ -3,11 +3,15 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-13
-- **fix:** #141: a drive that is on the HBA but NOT READY (forge1's unformatted SAS drives, which the iDRAC lists and Linux gives no usable disk) is reported as what it is: its `formatReason` reads "present on the HBA, not ready (2/04/xx: …): unformatted or mid-format; no usable disk until it is formatted", for an sg-only drive and for a block node with 0 sectors, instead of a generic "no block device" or nothing
-- **fix:** #141: an sg-only drive with no sysfs `wwid` takes its WWID from VPD 0x83 (the logical unit's NAA, spelled as the kernel spells it), so it keeps its identity and its Drive object
-- **fix:** #141: a format resumed after a restart finds a drive that has only an sg node by its WWID; the error when none has it says "no block or sg node" (it was "no disk has WWID", which read as missing)
-- **docs:** the format and the layout of forge1's drives are the install's (stormblock#592, from install-config `storage:`), not stormdrive's API
+## [v0.46.1] — 2026-11-13
+
+### Fixed
+- #141: a drive that is on the HBA but NOT READY (forge1's unformatted SAS drives, which the iDRAC lists and Linux gives no usable disk) is reported as what it is: its `formatReason` reads "present on the HBA, not ready (2/04/xx: …): unformatted or mid-format; no usable disk until it is formatted", for an sg-only drive and for a block node with 0 sectors, instead of a generic "no block device" or nothing
+- #141: an sg-only drive with no sysfs `wwid` takes its WWID from VPD 0x83 (the logical unit's NAA, spelled as the kernel spells it), so it keeps its identity and its Drive object
+- #141: a format resumed after a restart finds a drive that has only an sg node by its WWID; the error when none has it says "no block or sg node" (it was "no disk has WWID", which read as missing)
+
+### Documentation
+- The format and the layout of forge1's drives are the install's (stormblock#592, from install-config `storage:`), not stormdrive's API
 
 ## [v0.46.0] — 2026-11-13
 
