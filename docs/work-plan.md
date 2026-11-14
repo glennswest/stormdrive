@@ -2004,3 +2004,16 @@ pvetest3 12.82: vda/vdb/vdc (virtio-blk) failed `read capacity: Not a tty`
 - [x] NVMe: Identify failing falls back to the same block-layer check
 - [x] tests (19 formatcli), sc-build (build + test + clippy -D warnings), v0.46.3, image requested
 - [ ] proof on pvetest3's console: `vda: already 512 with no PI … nothing to format`, install past the format step
+
+### #140: API format runs formatcli's method (2026-11-14) — P0
+Owner: "try the fast format first, and then do the other"; "i need to be able
+watch progress, and error logs".
+- [ ] `format::run_blocking` calls `formatcli::run_scsi` (one code path), with
+  the daemon's IOC-reset hold, rescan/re-add, refusal alternatives as its Io
+- [ ] `method` (auto default | fast | full) on drive, batch, shelf format and
+  the worker's format step; auto at the format = "already", nothing sent
+- [ ] run + record: method asked/used, fast_skipped (the drive's sense),
+  already; per-run log (time + line, every sense/refusal/fallback/progress)
+  also to the node log; `GET /api/v1/drives/{id}/format/log`
+- [ ] batch already parallel (one task per drive): keep, test it
+- [ ] tests, docs, sc-build, release, image
