@@ -240,6 +240,8 @@ pub fn progress_line(device: &str, how: &str, elapsed_secs: u64, progress: Optio
 pub(crate) trait Target: Unit {
     fn test_unit_ready(&self) -> scsi::Result<()>;
     fn request_sense(&self) -> scsi::Result<Vec<u8>>;
+    /// START UNIT, for a drive NOT READY 04/02 (#142).
+    fn start_unit(&self) -> scsi::Result<()>;
     /// REPORT SUPPORTED OPERATION CODES on FORMAT UNIT's FFMT bits.
     fn ffmt_supported(&self) -> Option<bool>;
     fn format_unit_ffmt(&self, immed: bool, fmtpinfo: u8, ffmt: u8) -> scsi::Result<()>;
@@ -251,6 +253,9 @@ impl Target for scsi::Device {
     }
     fn request_sense(&self) -> scsi::Result<Vec<u8>> {
         scsi::Device::request_sense(self)
+    }
+    fn start_unit(&self) -> scsi::Result<()> {
+        scsi::Device::start_unit(self)
     }
     fn ffmt_supported(&self) -> Option<bool> {
         self.supported_opcode(0x04).ok().as_ref().and_then(scsi::ffmt_supported)
@@ -288,12 +293,9 @@ pub(crate) fn run_scsi(dev: &impl Target, name: &str, want: (u32, Protection), m
     let mut r = Report::new(name, method, want);
     // A pending unit attention would fail the first real command.
     let _ = dev.test_unit_ready();
-    match dev.read_capacity16() {
-        Ok(c) => r.before = Some(Geometry::of(&c)),
-        Err(ScsiError::Sense(s)) if s.is_medium_format_corrupted() => {
-            (io.say)(&format!("{name}: read capacity: {s} (an interrupted format)"));
-        }
-        Err(e) => return r.end(Outcome::Failed, Some(format!("read capacity: {e}"))),
+    match before_format(dev, name, io) {
+        Ok(b) => r.before = b,
+        Err(e) => return r.end(Outcome::Failed, Some(e)),
     }
     let at = r.before.is_some_and(|b| b.block_size == to && b.pi_type == prot.prot_type());
     match (method, at) {
@@ -365,26 +367,13 @@ pub(crate) fn run_scsi(dev: &impl Target, name: &str, want: (u32, Protection), m
     let how = used.unwrap_or("?");
 
     // Progress until the drive is ready again.
-    let mut elapsed = Duration::ZERO;
     if immediate {
-        loop {
-            (io.sleep)(io.poll);
-            elapsed += io.poll;
-            match poll_format(|| dev.request_sense(), || dev.test_unit_ready()) {
-                Ok(None) => break,
-                Ok(Some(p)) => (io.say)(&progress_line(name, how, elapsed.as_secs(), p)),
-                Err(e) => {
-                    r.elapsed_secs = elapsed.as_secs();
-                    return r.end(Outcome::Failed, Some(format!("{how} format: {e}")));
-                }
-            }
-            if elapsed > crate::format::MAX_WAIT {
-                r.elapsed_secs = elapsed.as_secs();
-                return r.end(Outcome::Failed, Some("the format did not finish within 48 h".into()));
-            }
+        let (elapsed, done) = wait_format(dev, name, how, io);
+        r.elapsed_secs = elapsed.as_secs();
+        if let Err(e) = done {
+            return r.end(Outcome::Failed, Some(format!("{how} format: {e}")));
         }
     }
-    r.elapsed_secs = elapsed.as_secs();
 
     // Read back what the drive is now, then let the kernel see it.
     let _ = dev.test_unit_ready();
@@ -408,6 +397,76 @@ pub(crate) fn run_scsi(dev: &impl Target, name: &str, want: (u32, Protection), m
         );
     }
     r.end(Outcome::Formatted, None)
+}
+
+/// Poll a running format until the drive is ready, saying its progress.
+/// Never stops it (#141): the only ends are ready, the drive saying the
+/// format failed, or 48 h.
+fn wait_format(dev: &impl Target, name: &str, how: &str, io: &Io) -> (Duration, Result<(), String>) {
+    let mut elapsed = Duration::ZERO;
+    loop {
+        (io.sleep)(io.poll);
+        elapsed += io.poll;
+        match poll_format(|| dev.request_sense(), || dev.test_unit_ready()) {
+            Ok(None) => return (elapsed, Ok(())),
+            Ok(Some(p)) => (io.say)(&progress_line(name, how, elapsed.as_secs(), p)),
+            Err(e) => return (elapsed, Err(e)),
+        }
+        if elapsed > crate::format::MAX_WAIT {
+            return (elapsed, Err("did not finish within 48 h".into()));
+        }
+    }
+}
+
+/// What the drive is before the format: its geometry, or None when it
+/// has no readable format, which is what a format is for (#142):
+/// - 31/00 MEDIUM FORMAT CORRUPTED: an interrupted format;
+/// - NOT READY 04/02 (initializing command required): START UNIT, then
+///   read again;
+/// - NOT READY 04/04 (a format in progress, a previous attempt's) or 04/01
+///   (becoming ready): wait for it, never stop it, then read again;
+/// - any other NOT READY (04/00, 04/03, …): say what it answered and
+///   format it.
+///
+/// Anything else (another sense key, a transport error) is a failure: the
+/// drive is not one a format would cure.
+fn before_format(dev: &impl Target, name: &str, io: &Io) -> Result<Option<Geometry>, String> {
+    let mut acted = false;
+    loop {
+        let s = match dev.read_capacity16() {
+            Ok(c) => return Ok(Some(Geometry::of(&c))),
+            Err(ScsiError::Sense(s)) if s.is_medium_format_corrupted() => {
+                (io.say)(&format!("{name}: read capacity: {s} (an interrupted format)"));
+                return Ok(None);
+            }
+            Err(ScsiError::Sense(s)) if s.key == 0x2 => s,
+            Err(e) => return Err(format!("read capacity: {e}")),
+        };
+        if acted {
+            (io.say)(&format!("{name}: read capacity: {s} (still not ready; formatting it)"));
+            return Ok(None);
+        }
+        acted = true;
+        match (s.asc, s.ascq) {
+            (0x04, 0x02) => {
+                (io.say)(&format!("{name}: read capacity: {s} (START UNIT first)"));
+                if let Err(e) = dev.start_unit() {
+                    (io.say)(&format!("{name}: start unit: {e}"));
+                }
+            }
+            (0x04, 0x04) | (0x04, 0x01) => {
+                let what = if s.ascq == 0x04 { "a format is running; waiting for it" } else { "becoming ready; waiting" };
+                (io.say)(&format!("{name}: read capacity: {s} ({what})"));
+                if let (_, Err(e)) = wait_format(dev, name, "the drive's own", io) {
+                    (io.say)(&format!("{name}: waiting for the running format: {e}"));
+                }
+            }
+            _ => {
+                (io.say)(&format!("{name}: read capacity: {s} (not ready; formatting it)"));
+                return Ok(None);
+            }
+        }
+    }
 }
 
 fn e_of(a: &Attempt) -> String {
@@ -557,6 +616,14 @@ mod tests {
         polls: Cell<u8>,
         selected: Cell<u32>,
         formatted: Cell<Option<u8>>,
+        /// NOT READY (asc, ascq) to READ CAPACITY until formatted (#142).
+        not_ready: Cell<Option<(u8, u8)>>,
+        /// The sense key it answers with (2, NOT READY, unless a test says).
+        key: u8,
+        /// START UNIT makes it ready.
+        starts: bool,
+        /// Polls left of a format already running when the run starts.
+        running: Cell<u8>,
     }
 
     impl Fake {
@@ -572,7 +639,14 @@ mod tests {
                 polls: Cell::new(0),
                 selected: Cell::new(block),
                 formatted: Cell::new(None),
+                not_ready: Cell::new(None),
+                key: 2,
+                starts: false,
+                running: Cell::new(0),
             }
+        }
+        fn not_ready(asc: u8, ascq: u8) -> Self {
+            Fake { before: None, not_ready: Cell::new(Some((asc, ascq))), ..Fake::at(512, 0) }
         }
         fn sent(&self) -> Vec<String> {
             self.log.borrow().iter().filter(|l| !l.starts_with("tur") && !l.starts_with("sense") && l.as_str() != "read capacity").cloned().collect()
@@ -623,6 +697,10 @@ mod tests {
                     let (b, p) = self.after.unwrap_or((self.selected.get(), if f == 0b10 { 1 } else { 0 }));
                     Ok(cap(b, p))
                 }
+                _ if self.formatted.get().is_none() && self.not_ready.get().is_some() => {
+                    let (asc, ascq) = self.not_ready.get().unwrap();
+                    Err(ScsiError::Sense(Sense::new(self.key, asc, ascq)))
+                }
                 (_, Some((b, p))) => Ok(cap(b, p)),
                 (_, None) => Err(ScsiError::Sense(Sense::new(3, 0x31, 0))),
             }
@@ -632,6 +710,9 @@ mod tests {
     impl Target for Fake {
         fn test_unit_ready(&self) -> scsi::Result<()> {
             self.log.borrow_mut().push("tur".into());
+            if self.running.get() > 0 {
+                return Err(ScsiError::Sense(Sense { progress: Some(0x8000), ..Sense::new(2, 4, 4) }));
+            }
             if self.formatted.get().is_some() && self.polls.get() < 3 {
                 return Err(ScsiError::Sense(Sense { progress: Some(0x4000), ..Sense::new(2, 4, 4) }));
             }
@@ -639,6 +720,16 @@ mod tests {
         }
         fn request_sense(&self) -> scsi::Result<Vec<u8>> {
             self.log.borrow_mut().push("sense".into());
+            if self.running.get() > 0 {
+                let n = self.running.get() - 1;
+                self.running.set(n);
+                if n == 0 {
+                    // The earlier format ended: the drive reads at 512.
+                    self.not_ready.set(None);
+                } else {
+                    return Ok(vec![0x70, 0, 2, 0, 0, 0, 0, 10, 0, 0, 0, 0, 4, 4, 0, 0x80, 0x80, 0]);
+                }
+            }
             if self.formatted.get().is_some() && self.polls.get() < 3 {
                 let n = self.polls.get() + 1;
                 self.polls.set(n);
@@ -649,6 +740,13 @@ mod tests {
                 }
             }
             Ok(vec![0x70, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        }
+        fn start_unit(&self) -> scsi::Result<()> {
+            self.log.borrow_mut().push("start".into());
+            if self.starts {
+                self.not_ready.set(None);
+            }
+            Ok(())
         }
         fn ffmt_supported(&self) -> Option<bool> {
             self.log.borrow_mut().push("rsoc".into());
@@ -784,6 +882,65 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("interrupted format")));
         let (r, _) = run(&Fake { before: None, ..Fake::at(512, 0) }, PI4K, Method::None);
         assert_eq!(r.outcome, Outcome::NotAtFormat);
+    }
+
+    /// #142: forge1's NOT READY drives are formatted, not given up on.
+    #[test]
+    fn not_ready_is_formatted() {
+        for (asc, ascq) in [(0x04, 0x00), (0x04, 0x03), (0x04, 0x11)] {
+            let f = Fake::not_ready(asc, ascq);
+            let (r, lines) = run(&f, PI4K, Method::Auto);
+            assert_eq!(r.outcome, Outcome::Formatted, "{asc:02x}/{ascq:02x}: {r:?}");
+            assert!(r.before.is_none());
+            assert_eq!(f.sent(), vec!["select 4096", "rsoc", "ffmt1 immed=true fmtpinfo=2"]);
+            assert!(lines.iter().any(|l| l.contains("not ready; formatting it")), "{lines:?}");
+        }
+        let (r, _) = run(&Fake::not_ready(0x04, 0x00), PI4K, Method::None);
+        assert_eq!(r.outcome, Outcome::NotAtFormat);
+    }
+
+    #[test]
+    fn not_ready_04_02_gets_a_start_unit_first() {
+        // Ready after START UNIT: reads 512, so it is formatted to 4096.
+        let f = Fake { before: Some((512, 0)), starts: true, ..Fake::not_ready(0x04, 0x02) };
+        let (r, lines) = run(&f, PI4K, Method::Auto);
+        assert_eq!(r.outcome, Outcome::Formatted, "{r:?}");
+        assert_eq!(r.before.unwrap().block_size, 512);
+        assert_eq!(f.sent(), vec!["start", "select 4096", "rsoc", "ffmt1 immed=true fmtpinfo=2"]);
+        assert!(lines.iter().any(|l| l.contains("START UNIT first")), "{lines:?}");
+        // Still not ready after it: formatted all the same, one START UNIT.
+        let f = Fake::not_ready(0x04, 0x02);
+        let (r, lines) = run(&f, PI4K, Method::Auto);
+        assert_eq!(r.outcome, Outcome::Formatted, "{r:?}");
+        assert_eq!(f.sent(), vec!["start", "select 4096", "rsoc", "ffmt1 immed=true fmtpinfo=2"]);
+        assert!(lines.iter().any(|l| l.contains("still not ready")), "{lines:?}");
+    }
+
+    #[test]
+    fn a_format_in_progress_is_waited_for_not_stopped() {
+        let f = Fake { before: Some((512, 0)), running: Cell::new(3), ..Fake::not_ready(0x04, 0x04) };
+        let (r, lines) = run(&f, PI4K, Method::Auto);
+        assert_eq!(r.outcome, Outcome::Formatted, "{r:?}");
+        assert_eq!(r.before.unwrap().block_size, 512, "read again once the running format ended");
+        // Nothing was sent while it ran: the first command is the new format's.
+        assert_eq!(f.sent(), vec!["select 4096", "rsoc", "ffmt1 immed=true fmtpinfo=2"]);
+        assert!(lines.iter().any(|l| l.contains("a format is running; waiting")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("formatting (the drive's own) 50.")), "{lines:?}");
+        // A running format to what is wanted ends Already, nothing sent.
+        let f = Fake { before: Some((4096, 1)), running: Cell::new(2), ..Fake::not_ready(0x04, 0x04) };
+        let (r, _) = run(&f, PI4K, Method::Auto);
+        assert_eq!(r.outcome, Outcome::Already, "{r:?}");
+        assert!(f.sent().is_empty());
+    }
+
+    #[test]
+    fn another_sense_key_still_fails() {
+        // A hardware error to READ CAPACITY is not one a format cures.
+        let f = Fake { key: 4, ..Fake::not_ready(0x44, 0x00) };
+        let (r, _) = run(&f, PI4K, Method::Auto);
+        assert_eq!(r.outcome, Outcome::Failed, "{r:?}");
+        assert!(r.error.as_deref().unwrap().starts_with("read capacity:"), "{r:?}");
+        assert!(f.sent().is_empty());
     }
 
     #[test]

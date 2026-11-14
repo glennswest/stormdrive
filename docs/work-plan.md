@@ -1985,4 +1985,10 @@ Nov 7 format on their Drive objects.
 - [x] v0.46.1: NOT READY reported honestly (`scsi::not_ready_reason`, sg-only
   and 0-sector block nodes), WWID from VPD 0x83 when sysfs has none
   (`transport::vpd83_naa`), format resume finds sg-only drives by WWID
+- [x] #142: `stormdrive format` formats a NOT READY drive (04/02 → START UNIT,
+  04/04/04/01 → wait for it, other 04/xx → format) instead of failing at READ
+  CAPACITY; this is the path stormblock's install (stormblock#595) uses for
+  forge1's three drives
+- [ ] proof on forge1's console (bays 3/4/7 formatted to 4096 + PI, layout
+  created): the next install with stormblock v24.5.0 + this image
 

@@ -478,6 +478,11 @@ pub mod cdb {
     pub fn request_sense(alloc: u8) -> [u8; 6] {
         [0x03, 0, 0, 0, alloc, 0]
     }
+    /// START STOP UNIT, IMMED=0, START=1 (#142: a drive NOT READY 04/02,
+    /// "initializing command required", wants it before anything else).
+    pub fn start_unit() -> [u8; 6] {
+        [0x1b, 0, 0, 0, 0x01, 0]
+    }
 
     pub fn read16(lba: u64, blocks: u32) -> [u8; 16] {
         let l = lba.to_be_bytes();
@@ -571,6 +576,8 @@ pub enum Dir {
 
 /// How long to give a command, in milliseconds.
 pub const T_SHORT: u32 = 30_000;
+/// START UNIT waits for the spindle (#142): a large SAS HDD takes ~1 min.
+pub const T_START: u32 = 3 * 60 * 1000;
 pub const T_FORMAT_IMMED: u32 = 20 * 60 * 1000;
 /// A full format without IMMED support: the command blocks until the
 /// drive is done. Hours, on a large HDD.
@@ -729,6 +736,11 @@ impl Device {
     pub fn test_unit_ready(&self) -> Result<()> {
         self.io(&cdb::test_unit_ready(), Dir::None, &mut [], T_SHORT)
             .map(|_| ())
+    }
+
+    /// START UNIT (`cdb::start_unit`), waiting for the drive to spin up.
+    pub fn start_unit(&self) -> Result<()> {
+        self.io(&cdb::start_unit(), Dir::None, &mut [], T_START).map(|_| ())
     }
 
     /// The drive's current sense data (`cdb::request_sense`).
@@ -1184,6 +1196,7 @@ mod tests {
     fn cdb_shapes() {
         assert_eq!(cdb::inquiry(Some(0x80), 255), [0x12, 1, 0x80, 0, 255, 0]);
         assert_eq!(cdb::read_capacity16(32)[0..2], [0x9e, 0x10]);
+        assert_eq!(cdb::start_unit(), [0x1b, 0, 0, 0, 1, 0], "IMMED=0, START=1");
         assert_eq!(cdb::receive_diagnostic(0x02, 0xfffc), [0x1c, 1, 2, 0xff, 0xfc, 0]);
         assert_eq!(cdb::send_diagnostic(0x100), [0x1d, 0x10, 0, 1, 0, 0]);
         assert_eq!(cdb::mode_select10(16), [0x55, 0x10, 0, 0, 0, 0, 0, 0, 16, 0]);

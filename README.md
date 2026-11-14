@@ -728,7 +728,12 @@ method used, logical block size, PI type, capacity and blocks, before and after.
 
 An NVMe namespace gets Format NVM to the LBA format of that size without
 metadata; `--protection type1` on NVMe is refused (exit 3). A drive whose last
-format was cut off (31/00) is at no format and is formatted. `RUST_LOG` sets
+format was cut off (31/00) is at no format and is formatted. So is a drive
+that answers READ CAPACITY with NOT READY (#142): 04/02 gets a START UNIT and
+is read again; 04/04 (a format still running) or 04/01 is waited for, never
+stopped, then read again; any other NOT READY (04/00, 04/03, …) is named on
+the console and formatted. Only another sense key or a transport error ends
+it before MODE SELECT (exit 1). `RUST_LOG` sets
 the log filter (default `warn`, on stderr). Needs root (SG_IO, sysfs rescan).
 
 ## Configuration
