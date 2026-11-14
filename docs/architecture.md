@@ -255,6 +255,20 @@ path failover is actually needed.
   settle, so a pulled shelf is one pass, not hundreds. A kernel-side
   overflow (`ENOBUFS`) also triggers a pass. The interval scan is still the
   safety net, and the only mechanism when the socket cannot be opened.
+  Since #141 an `add`/`remove` of a SCSI device, an sg node or a SAS end
+  device also triggers a pass (a drive that never gets a block node is
+  still seen arriving), and every burst is an event (`hotplug: add sdc,
+  …`, stormblock#593).
+- **SAS rescan** (`rescan.rs`, #141): a drive that spins up after the HBA
+  driver loaded is not always added by the driver on its own. For 15
+  minutes after start, and whenever the inventory holds a drive it cannot
+  see (`missing`), the monitor writes `- - -` to every SAS host's
+  `scsi_host/hostN/scan` every `discovery.rescan_missing_secs` (60; 0 =
+  never), with an event each time the missing set changes. A drive back
+  from missing sheds a `failed`/`interrupted` format record (the event
+  quotes it), and a controller state from a controller that is gone (a
+  PERC replaced by an IT-mode HBA) is dropped, so neither stands on the
+  drive or its Drive object.
 - **Probe cache** (#15): what discovery asks the drive itself (READ
   CAPACITY(16) and the slab probe of LBA 0 and the GPT) is kept per device
   and asked again only when the device changes (`dev` maj:min, size,

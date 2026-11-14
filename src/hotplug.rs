@@ -1,4 +1,6 @@
-//! Hotplug (#15): the kernel's uevents for block disks, so a drive pulled
+//! Hotplug (#15): the kernel's uevents for block disks, and (#141) for the
+//! SCSI-level objects a drive brings before or instead of one (sg node, SCSI
+//! device, SAS end device), so a drive pulled
 //! from or pushed into one of 160 bays is seen in a couple of seconds
 //! rather than at the next discovery pass. The periodic pass stays: it is
 //! the backstop for a missed event, and for a node where the netlink
@@ -18,9 +20,10 @@ pub struct DiskEvent {
     pub name: String,
 }
 
-/// Parse one kernel uevent datagram: `ACTION@DEVPATH\0KEY=VALUE\0…`. Only
-/// whole disks count (not partitions, not other subsystems); `change`
-/// covers a resize or a media change (a reformat's rescan).
+/// Parse one kernel uevent datagram: `ACTION@DEVPATH\0KEY=VALUE\0…`. Whole
+/// disks count (not partitions); `change` covers a resize or a media change
+/// (a reformat's rescan). So do a drive's sg node, SCSI device and SAS end
+/// device being added or removed (#141).
 pub fn parse(buf: &[u8]) -> Option<DiskEvent> {
     let mut fields = buf.split(|&b| b == 0).map(|f| String::from_utf8_lossy(f));
     let head = fields.next()?;
@@ -39,13 +42,23 @@ pub fn parse(buf: &[u8]) -> Option<DiskEvent> {
         }
     }
     let action = action?;
-    if subsystem.as_deref() != Some("block") || devtype.as_deref() != Some("disk") {
-        return None;
-    }
     if !matches!(action.as_str(), "add" | "remove" | "change") {
         return None;
     }
-    Some(DiskEvent { action, name: name? })
+    match (subsystem.as_deref(), devtype.as_deref()) {
+        (Some("block"), Some("disk")) => Some(DiskEvent { action, name: name? }),
+        // A drive that arrives after boot without a block node (#141): an
+        // unformatted or half-formatted SAS drive is reached through its sg
+        // node only (#131), and a SAS end device or SCSI target appears
+        // before either. Each is worth a pass; the name is the sg node
+        // when there is one, else the kernel object (`0:0:5:0`,
+        // `end_device-0:3`). `change` there is noise (no resize).
+        (Some("scsi_generic"), _) | (Some("scsi"), Some("scsi_device")) | (Some("sas_end_device"), _) if action != "change" => {
+            let name = name.or_else(|| head.rsplit('/').next().map(str::to_string)).filter(|n| !n.is_empty())?;
+            Some(DiskEvent { action, name })
+        }
+        _ => None,
+    }
 }
 
 /// Start the listener thread. Events go to `tx`; an error opening the
@@ -140,11 +153,26 @@ mod tests {
     }
 
     #[test]
+    fn a_drive_without_a_block_node_is_an_event() {
+        // forge1 (#141): a SAS drive that spins up after boot, unformatted.
+        let scsi = msg(&["add@/devices/pci0000:c0/0000:c1:00.0/host0/port-0:3/end_device-0:3/target0:0:3/0:0:3:0", "ACTION=add", "SUBSYSTEM=scsi", "DEVTYPE=scsi_device"]);
+        assert_eq!(parse(&scsi), Some(DiskEvent { action: "add".into(), name: "0:0:3:0".into() }));
+        let sg = msg(&["add@/x/0:0:3:0/scsi_generic/sg3", "ACTION=add", "SUBSYSTEM=scsi_generic", "MAJOR=21", "DEVNAME=sg3"]);
+        assert_eq!(parse(&sg), Some(DiskEvent { action: "add".into(), name: "sg3".into() }));
+        let end = msg(&["add@/x/port-0:3/end_device-0:3/sas_end_device/end_device-0:3", "ACTION=add", "SUBSYSTEM=sas_end_device"]);
+        assert_eq!(parse(&end).unwrap().name, "end_device-0:3");
+        let gone = msg(&["remove@/x/scsi_generic/sg3", "ACTION=remove", "SUBSYSTEM=scsi_generic", "DEVNAME=sg3"]);
+        assert_eq!(parse(&gone).unwrap().action, "remove");
+    }
+
+    #[test]
     fn partitions_other_subsystems_and_udev_messages_are_not() {
         let part = msg(&["add@/x/sdq/sdq1", "ACTION=add", "SUBSYSTEM=block", "DEVNAME=sdq1", "DEVTYPE=partition"]);
         assert_eq!(parse(&part), None);
-        let scsi = msg(&["add@/x/0:0:5:0", "ACTION=add", "SUBSYSTEM=scsi", "DEVTYPE=scsi_device"]);
-        assert_eq!(parse(&scsi), None);
+        let host = msg(&["add@/x/host0", "ACTION=add", "SUBSYSTEM=scsi", "DEVTYPE=scsi_host"]);
+        assert_eq!(parse(&host), None);
+        let sg_change = msg(&["change@/x/sg3", "ACTION=change", "SUBSYSTEM=scsi_generic", "DEVNAME=sg3"]);
+        assert_eq!(parse(&sg_change), None);
         let bind = msg(&["bind@/x/sdq", "ACTION=bind", "SUBSYSTEM=block", "DEVNAME=sdq", "DEVTYPE=disk"]);
         assert_eq!(parse(&bind), None);
         let udev = msg(&["libudev", "ACTION=add", "SUBSYSTEM=block", "DEVNAME=sdq", "DEVTYPE=disk"]);

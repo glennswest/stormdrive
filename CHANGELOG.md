@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-13
+- **fix:** #141: drives that come up after boot are taken. While a known drive is missing, and for 15 min after start, every SAS host is asked to rescan (`discovery.rescan_missing_secs`, default 60, 0 = never; new `rescan.rs`), with an event when the missing set changes
+- **fix:** #141: hotplug also acts on SCSI device, sg and SAS end-device add/remove (not only block disks), and every burst is an event naming the devices (stormblock#593)
+- **fix:** #141: a drive back from missing sheds a failed/interrupted format record (the event quotes the old error); a controller state from a controller that is gone (forge1's PERC, now IT mode) is dropped instead of kept forever (stale `unconfigured_bad` on the Drive objects)
+
 ### 2026-11-11
 - **docs:** refreshed from the code since 2026-11-05 (v0.39.1–v0.45.0): checked every route, config key, metric family and version location against README/architecture (all present); CLAUDE.md module map gains bays.rs, inuse.rs, pi.rs and the build section says build VM, not dev
 

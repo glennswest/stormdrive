@@ -12,6 +12,7 @@ interval_secs = 30
 exclude = []                # extra '*' patterns on kernel names
 include = []                # explicit allow-list; empty = all eligible
 manage_mounted = false      # drives with mounted partitions are left alone
+rescan_missing_secs = 60    # rescan SAS hosts while a known drive is missing (0 = never, #141)
 
 [monitor]
 interval_secs  = 60

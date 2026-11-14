@@ -176,6 +176,10 @@ pub struct DiscoveryConfig {
     /// Manage drives that have mounted partitions. Off by default: a
     /// mounted drive is somebody's root/boot disk until proven otherwise.
     pub manage_mounted: bool,
+    /// While the inventory holds a drive it cannot see, ask every SAS host
+    /// to rescan this often (seconds; 0 = never). A late-spinning drive is
+    /// not always added by the HBA driver on its own (#141).
+    pub rescan_missing_secs: u64,
 }
 
 impl Default for DiscoveryConfig {
@@ -185,6 +189,7 @@ impl Default for DiscoveryConfig {
             exclude: Vec::new(),
             include: Vec::new(),
             manage_mounted: false,
+            rescan_missing_secs: 60,
         }
     }
 }

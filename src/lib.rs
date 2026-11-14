@@ -43,6 +43,7 @@ pub mod pi;
 pub mod policy;
 pub mod poller;
 pub mod raidctl;
+pub mod rescan;
 pub mod scsi;
 pub mod ses;
 pub mod shelfobj;

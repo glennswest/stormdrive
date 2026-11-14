@@ -1969,3 +1969,15 @@ drive-management plane — confirm before building:
   sysfs paths (bay_identifier, enclosure_identifier, version_fw) are used
   where present.
 
+### #141: forge1's late drives (2026-11-13) — P0, in progress
+forge1 (IT-mode mpt3sas) took only bay 0 at boot; bays 3/4/7 (unformatted,
+512B) came up later and stayed `missing`/`unconfigured_bad` with a failed
+Nov 7 format on their Drive objects.
+- [x] hotplug: SCSI device / sg / SAS end-device add+remove trigger a pass; each burst an event
+- [x] rescan.rs: SAS host rescan after start (15 min) and while anything is missing
+- [x] back from missing: failed/interrupted format record cleared (event keeps it)
+- [x] controller state from a gone controller dropped (monitor `last_controller_state`)
+- [ ] sc-build, v0.46.0, image
+- 4K fast format in the daemon is #140 (formatcli's FFMT method); the
+  layout (OS mirror on 4, 3+1 parity) is stormblock's (#573/#593).
+

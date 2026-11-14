@@ -197,7 +197,10 @@ pub async fn run(state: Arc<AppState>) {
         Err(e) => tracing::warn!("hotplug unavailable, discovery polls every {disc_int} s: {e}"),
     }
     let mut hotplugged = false;
+    let mut last_rescan: Option<std::time::Instant> = None;
+    let mut rescan_said: Vec<String> = Vec::new();
     loop {
+        rescan_missing(&state, &mut last_rescan, &mut rescan_said).await;
         let disc_due = hotplugged || last_disc.map_or(true, |t| t.elapsed().as_secs() >= disc_int);
         hotplugged = false;
         let mon_due = last_mon.map_or(true, |t| t.elapsed().as_secs() >= mon_int);
@@ -228,9 +231,52 @@ pub async fn run(state: Arc<AppState>) {
                 }
                 let first = format!("{} {}", names[0].action, names[0].name);
                 tracing::info!(events = names.len(), %first, "hotplug: rescanning");
+                // Every add and remove is on the record (stormblock#593):
+                // a drive that arrives after boot is seen arriving.
+                let said: Vec<String> = names.iter().map(|e| format!("{} {}", e.action, e.name)).collect();
+                state.events.write().await.push(None, Severity::Info, "hotplug", format!("hotplug: {}", said.join(", ")));
                 hotplugged = true;
             }
         }
+    }
+}
+
+/// Ask the SAS hosts to rescan (#141) after start and while the
+/// inventory holds a drive it cannot see. An event when the set of missing
+/// drives changes, not on every rescan.
+async fn rescan_missing(state: &Arc<AppState>, last: &mut Option<std::time::Instant>, said: &mut Vec<String>) {
+    let every = state.config.discovery.rescan_missing_secs;
+    let up = STARTED.get().map(|t| t.elapsed()).unwrap_or_default();
+    let mut missing: Vec<String> = {
+        let inv = state.inventory.read().await;
+        inv.drives.values().filter(|d| d.activity == Activity::Missing).map(|d| format!("{} {}", d.serial, d.location.place())).collect()
+    };
+    missing.sort();
+    let now = std::time::Instant::now();
+    if !crate::rescan::due(missing.len(), up, every, *last, now) {
+        return;
+    }
+    *last = Some(now);
+    let results = tokio::task::spawn_blocking(|| {
+        let sys = std::path::Path::new("/sys");
+        let hosts = crate::rescan::sas_hosts(sys);
+        crate::rescan::scan(sys, &hosts)
+    })
+    .await
+    .unwrap_or_default();
+    let failed: Vec<String> = results.iter().filter_map(|(h, r)| r.as_ref().err().map(|e| format!("{h}: {e}"))).collect();
+    let hosts: Vec<&str> = results.iter().map(|(h, _)| h.as_str()).collect();
+    tracing::debug!(?hosts, missing = missing.len(), "rescan: SAS hosts asked to scan");
+    if missing != *said || !failed.is_empty() {
+        if !missing.is_empty() || !failed.is_empty() {
+            let mut msg = format!("rescan: {} drive(s) missing ({}); asked SAS host(s) {} to scan", missing.len(), missing.join("; "), if hosts.is_empty() { "-".to_string() } else { hosts.join(", ") });
+            if !failed.is_empty() {
+                msg.push_str(&format!("; refused: {}", failed.join("; ")));
+            }
+            let sev = if failed.is_empty() { Severity::Info } else { Severity::Warning };
+            state.events.write().await.push(None, sev, "discovered", msg);
+        }
+        *said = missing;
     }
 }
 
@@ -386,12 +432,21 @@ pub async fn merge_controllers(state: &Arc<AppState>, mut reports: Vec<crate::ra
             }
             r.findings = crate::raidctl::findings(r);
         }
-        let read: Vec<&str> = reports.iter().filter(|r| r.error.is_none()).map(|r| r.key.as_str()).collect();
+        // A controller that answered with an error keeps its drives' last
+        // state; one that is gone (forge1's PERC, now an IT-mode HBA, #141)
+        // takes it away: an `unconfigured_bad` from a controller that no
+        // longer exists is not the drive's state.
+        let keys: Vec<(&str, bool)> = reports.iter().map(|r| (r.key.as_str(), r.error.is_none())).collect();
         for d in inv.drives.values_mut() {
             let now = seen.remove(&d.id);
-            let keep_old = now.is_none() && d.controller_state.as_ref().is_some_and(|c| !read.contains(&c.controller.as_str()));
-            if keep_old || d.controller_state == now {
+            let verdict = d.controller_state.as_ref().map(|c| last_controller_state(&c.controller, &keys));
+            if (now.is_none() && verdict == Some(LastState::Keep)) || d.controller_state == now {
                 continue;
+            }
+            if now.is_none() && verdict == Some(LastState::Gone) {
+                if let Some(old) = &d.controller_state {
+                    events.push((Some(d.id), Severity::Info, format!("{}: controller {} is gone; its state ({}) is dropped", d.name, old.controller, old.state)));
+                }
             }
             let was = d.controller_state.as_ref().map(|c| c.state.clone());
             if let Some(c) = &now {
@@ -419,6 +474,51 @@ pub async fn merge_controllers(state: &Arc<AppState>, mut reports: Vec<crate::ra
     let mut log = state.events.write().await;
     for (id, sev, msg) in events {
         log.push(id, sev, "controller", msg);
+    }
+}
+
+/// A drive back from missing (#141): a format that failed or was cut off
+/// before it went is history, not its state. forge1's three late drives
+/// carried "4096 refused by mode select" from a controller that is gone;
+/// that record must not stand on the drive, nor block the next format.
+/// The old record stays in the drive's history through the event this
+/// returns. A running format is never touched.
+pub fn clear_stale_format(d: &mut crate::drive::Drive) -> Option<String> {
+    let f = d.format.as_ref()?;
+    if f.state != "failed" && f.state != "interrupted" {
+        return None;
+    }
+    let msg = format!(
+        "{}: back from missing; the last format ({} → {}, {}{}) is cleared",
+        d.name,
+        f.from_block_size,
+        f.to_block_size,
+        f.state,
+        f.error.as_deref().map(|e| format!(": {e}")).unwrap_or_default()
+    );
+    d.format = None;
+    Some(msg)
+}
+
+/// What becomes of a drive's last controller state when this scan did not
+/// place the drive on its controller (#141).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastState {
+    /// The controller answered with an error: nothing is known, keep it.
+    Keep,
+    /// The controller read fine and the drive is not on it: drop it.
+    Read,
+    /// The controller is not there at all (a PERC replaced by an IT-mode
+    /// HBA): drop it, and say so.
+    Gone,
+}
+
+/// `keys`: each reported controller and whether it read without error.
+pub fn last_controller_state(controller: &str, keys: &[(&str, bool)]) -> LastState {
+    match keys.iter().find(|(k, _)| *k == controller) {
+        Some((_, false)) => LastState::Keep,
+        Some((_, true)) => LastState::Read,
+        None => LastState::Gone,
     }
 }
 
@@ -1003,6 +1103,9 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         "discovered",
                         format!("{}: reappeared", d.name),
                     ));
+                    if let Some(msg) = clear_stale_format(d) {
+                        events.push((Some(id), Severity::Info, "format", msg));
+                    }
                 }
             }
             None => {
@@ -1288,6 +1391,50 @@ pub fn fallback_issue(name: &str, s: Option<&crate::pi::Supports>) -> Option<Str
 
 #[cfg(test)]
 mod tests {
+    /// #141: a drive back from missing sheds a failed format record (and
+    /// says what it was); a running one is never touched.
+    #[test]
+    fn a_drive_back_from_missing_sheds_its_failed_format() {
+        let mut d: crate::drive::Drive = serde_json::from_value(serde_json::json!({
+            "id": crate::drive::DriveId::derive(Some("naa.5000cca26801b648"), "M", "E4G4301K"), "path": "/dev/sdc", "name": "sdc", "paths": ["/dev/sdc"],
+            "kind": "sas_hdd", "model": "M", "serial": "E4G4301K", "firmware": "A1", "wwid": "naa.5000cca26801b648",
+            "capacity_bytes": 1_000_000_000u64, "block_size": 512,
+            "first_seen": {"secs_since_epoch": 0, "nanos_since_epoch": 0}, "last_seen": {"secs_since_epoch": 0, "nanos_since_epoch": 0},
+        }))
+        .unwrap();
+        assert_eq!(super::clear_stale_format(&mut d), None, "no record");
+        let rec = |state: &str| crate::drive::FormatRecord {
+            from_block_size: 512,
+            to_block_size: 4096,
+            state: state.into(),
+            error: Some("4096 refused by mode select (asc/ascq 0x26/0x00)".into()),
+            ..Default::default()
+        };
+        d.format = Some(rec("running"));
+        assert_eq!(super::clear_stale_format(&mut d), None);
+        assert!(d.format.is_some(), "a running format stays");
+        d.format = Some(rec("done"));
+        assert_eq!(super::clear_stale_format(&mut d), None);
+        for state in ["failed", "interrupted"] {
+            d.format = Some(rec(state));
+            let msg = super::clear_stale_format(&mut d).expect("cleared");
+            assert!(d.format.is_none());
+            assert!(msg.contains("512 → 4096") && msg.contains(state) && msg.contains("0x26/0x00"), "{msg}");
+        }
+    }
+
+    /// #141: forge1's PERC said `unconfigured_bad` on Nov 7; it is an
+    /// IT-mode HBA now and that state must not outlive the controller.
+    #[test]
+    fn a_gone_controllers_state_is_dropped() {
+        use super::{last_controller_state, LastState};
+        let keys = [("0000:03:00.0", false), ("0000:c1:00.0", true)];
+        assert_eq!(last_controller_state("0000:03:00.0", &keys), LastState::Keep, "errored: unknown, keep");
+        assert_eq!(last_controller_state("0000:c1:00.0", &keys), LastState::Read);
+        assert_eq!(last_controller_state("0000:41:00.0", &keys), LastState::Gone);
+        assert_eq!(last_controller_state("0000:41:00.0", &[]), LastState::Gone, "no controller at all");
+    }
+
     /// #107: sdc's 0Bh/97h, its 5 grown defects, and what an acknowledgement
     /// does and does not take back.
     #[test]

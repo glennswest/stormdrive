@@ -754,6 +754,7 @@ or only one of `api.tls_cert_file`/`tls_key_file` set.
 | `discovery.exclude` | `[]` | extra `*` patterns on kernel names; built-ins always apply |
 | `discovery.include` | `[]` | allow-list; empty = every eligible disk |
 | `discovery.manage_mounted` | `false` | list drives with mounted partitions |
+| `discovery.rescan_missing_secs` | `60` | while a known drive is missing, ask every SAS host to rescan this often; `0` = never (#141) |
 | `monitor.interval_secs` | `60` | each drive's health sample period; also the stormblock usage/reconcile and fleet tick |
 | `monitor.temp_warn_c` / `temp_crit_c` | `55` / `70` | temperature thresholds (both give `warning`) |
 | `monitor.spare_warn_pct` / `spare_crit_pct` | `20` / `10` | NVMe available spare: `warning` / `failing` |
