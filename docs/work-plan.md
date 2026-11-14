@@ -1997,9 +1997,10 @@ Nov 7 format on their Drive objects.
 pvetest3 12.82: vda/vdb/vdc (virtio-blk) failed `read capacity: Not a tty`
 (SG_IO → ENOTTY) and the install went FATAL. stormblock's initramfs runs
 `--method fast` (its `auto`) and takes exit 0 or 4.
-- [ ] SG_IO ENOTTY = no passthrough, not a failure: geometry from the block
+- [x] SG_IO ENOTTY = no passthrough, not a failure: geometry from the block
   layer (sysfs queue/logical_block_size, size, integrity/format)
-- [ ] at the asked format → `already …; nothing to format` (exit 4) for every
+- [x] at the asked format → `already …; nothing to format` (exit 4) for every
   method; not at it → refused (exit 3) naming the driver
-- [ ] NVMe: Identify failing falls back to the same block-layer check
-- [ ] tests, sc-build, release, image
+- [x] NVMe: Identify failing falls back to the same block-layer check
+- [x] tests (19 formatcli), sc-build (build + test + clippy -D warnings), v0.46.3, image requested
+- [ ] proof on pvetest3's console: `vda: already 512 with no PI … nothing to format`, install past the format step

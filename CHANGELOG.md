@@ -3,8 +3,10 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-14
-- **fix:** #143: `stormdrive format` on a drive with no SCSI passthrough (virtio-blk: SG_IO answers ENOTTY, pvetest3 12.82 `vda: failed: read capacity: Not a tty`) reads the geometry from the block layer (sysfs `queue/logical_block_size`, `size`, `integrity/format`). At the asked block size and PI it needs no format for any method, `fast` included (stormblock's install runs that): exit 4, "already 512 with no PI: …; nothing to format (virtio_blk: no SCSI passthrough …)". Not at it (4096 or PI asked): refused, exit 3, "cannot be reached: … virtio_blk takes no FORMAT UNIT". An NVMe namespace whose Identify fails gets the same block-layer check before it is called failed
+## [v0.46.3] — 2026-11-14
+
+### Fixed
+- #143: `stormdrive format` on a drive with no SCSI passthrough (virtio-blk: SG_IO answers ENOTTY, pvetest3 12.82 `vda: failed: read capacity: Not a tty`) reads the geometry from the block layer (sysfs `queue/logical_block_size`, `size`, `integrity/format`). At the asked block size and PI it needs no format for any method, `fast` included (stormblock's install runs that): exit 4, "already 512 with no PI: …; nothing to format (virtio_blk: no SCSI passthrough …)". Not at it (4096 or PI asked): refused, exit 3, "cannot be reached: … virtio_blk takes no FORMAT UNIT". An NVMe namespace whose Identify fails gets the same block-layer check before it is called failed
 
 ## [v0.46.2] — 2026-11-13
 
@@ -319,7 +321,6 @@
 
 ### Changed
 - `stormview` pinned to a rev (#63)
-
 
 ### 2026-10-08 (in v0.26.0)
 - **test:** short suite `system-data`: history status, this boot's assets, a record for every sampled drive (skipped while system-data is not mounted); the cargo-test harness gives its daemon a system-data dir (#64)
