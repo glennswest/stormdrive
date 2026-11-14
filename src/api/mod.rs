@@ -228,6 +228,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // whole shelf's worth of 520-byte drives.
         .route("/api/v1/drives/{id}/enroll", post(enroll_drive))
         .route("/api/v1/drives/{id}/format", get(get_format).post(format_drive))
+        .route("/api/v1/drives/{id}/format/log", get(get_format_log))
         .route("/api/v1/drives/{id}/format/{block_size}", post(format_drive_by_path))
         .route("/api/v1/format", get(list_formats).post(format_many))
         // Firmware: image store + updates (one, many, or by model).
@@ -2048,6 +2049,10 @@ struct FormatBody {
     /// `none` (default) or `type1`, where the drive offers it (#108).
     #[serde(default)]
     protection: crate::pi::Protection,
+    /// `auto` (default): nothing at the format, else the fast format, a
+    /// full one if the drive refuses it; `fast`; `full` (#140).
+    #[serde(default)]
+    method: crate::formatcli::Method,
 }
 
 fn default_block_size() -> u32 {
@@ -2062,6 +2067,8 @@ struct FormatManyBody {
     block_size: u32,
     #[serde(default)]
     protection: crate::pi::Protection,
+    #[serde(default)]
+    method: crate::formatcli::Method,
 }
 
 #[derive(Deserialize)]
@@ -2070,6 +2077,8 @@ struct FormatShelfBody {
     block_size: u32,
     #[serde(default)]
     protection: crate::pi::Protection,
+    #[serde(default)]
+    method: crate::formatcli::Method,
     /// Every out-of-fleet drive in the shelf, not only those the kernel
     /// cannot use.
     #[serde(default)]
@@ -2083,9 +2092,13 @@ async fn start_formats(
     ids: Vec<DriveId>,
     block_size: u32,
     protection: crate::pi::Protection,
+    method: crate::formatcli::Method,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if !crate::format::valid_target(block_size) {
         return Err(ApiError::bad_request(format!("block_size {block_size}: use 512 or 4096")));
+    }
+    if method == crate::formatcli::Method::None {
+        return Err(ApiError::bad_request("method none: use auto, fast or full (the drive's plannedFormat says where it stands)"));
     }
     if ids.is_empty() {
         return Err(ApiError::bad_request("no drives to format"));
@@ -2132,13 +2145,15 @@ async fn start_formats(
             ),
         });
     }
+    // Every drive at once (#140): each run is its own task, the drive does
+    // the work and the host only polls.
     let mut started = Vec::new();
     for d in drives {
-        let h = crate::format::start(s.clone(), d, block_size, protection).await;
+        let h = crate::format::start(s.clone(), d, block_size, protection, method).await;
         let run = h.run.lock().unwrap().clone();
         started.push(serde_json::to_value(run).unwrap_or_default());
     }
-    Ok(Json(json!({ "block_size": block_size, "protection": protection, "started": started })))
+    Ok(Json(json!({ "block_size": block_size, "protection": protection, "method": method, "started": started })))
 }
 
 async fn format_drive(
@@ -2147,14 +2162,14 @@ async fn format_drive(
     Json(body): Json<FormatBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let did = resolve_id(&s, &id).await?;
-    start_formats(&s, vec![did], body.block_size, body.protection).await
+    start_formats(&s, vec![did], body.block_size, body.protection, body.method).await
 }
 
 async fn format_drive_by_path(
     State(s): State<Arc<AppState>>,
     Path((id, bs)): Path<(String, u32)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    format_drive(State(s), Path(id), Json(FormatBody { block_size: bs, protection: Default::default() })).await
+    format_drive(State(s), Path(id), Json(FormatBody { block_size: bs, protection: Default::default(), method: Default::default() })).await
 }
 
 async fn format_many(
@@ -2168,7 +2183,7 @@ async fn format_many(
             ids.push(id);
         }
     }
-    start_formats(&s, ids, body.block_size, body.protection).await
+    start_formats(&s, ids, body.block_size, body.protection, body.method).await
 }
 
 async fn format_shelf(
@@ -2193,14 +2208,14 @@ async fn format_shelf(
             r.shelf.display()
         )));
     }
-    start_formats(&s, ids, body.block_size, body.protection).await
+    start_formats(&s, ids, body.block_size, body.protection, body.method).await
 }
 
 async fn format_shelf_by_path(
     State(s): State<Arc<AppState>>,
     Path((key, bs)): Path<(String, u32)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    format_shelf(State(s), Path(key), Json(FormatShelfBody { block_size: bs, protection: Default::default(), all: false })).await
+    format_shelf(State(s), Path(key), Json(FormatShelfBody { block_size: bs, protection: Default::default(), method: Default::default(), all: false })).await
 }
 
 async fn get_format(
@@ -2212,6 +2227,27 @@ async fn get_format(
     let run = formats.get(&did).map(|h| h.run.lock().unwrap().clone());
     let record = s.inventory.read().await.drives.get(&did).and_then(|d| d.format.clone());
     Ok(Json(json!({ "run": run, "last": record })))
+}
+
+/// A drive's format log (#140): the running run's, else the last record's.
+async fn get_format_log(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let did = resolve_id(&s, &id).await?;
+    let run = s.formats.read().await.get(&did).map(|h| {
+        let r = h.run.lock().unwrap();
+        (r.name.clone(), r.state, r.log.clone())
+    });
+    let (name, state, log) = match run {
+        Some((n, st, l)) => (n, Some(st), l),
+        None => {
+            let inv = s.inventory.read().await;
+            let d = inv.drives.get(&did);
+            (d.map(|d| d.name.clone()).unwrap_or_default(), None, d.and_then(|d| d.format.as_ref()).map(|f| f.log.clone()).unwrap_or_default())
+        }
+    };
+    Ok(Json(json!({ "drive": did, "name": name, "running": state.map(|st| st == crate::format::FormatState::Running), "log": log })))
 }
 
 async fn list_formats(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {

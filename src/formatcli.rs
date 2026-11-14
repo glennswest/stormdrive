@@ -47,11 +47,12 @@ use serde::Serialize;
 use std::time::Duration;
 
 /// How to format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
     /// Already at the format: nothing. Else fast format where the drive
     /// takes it, else a full FORMAT UNIT.
+    #[default]
     Auto,
     /// Fast format only (FFMT 01b); refused = nothing formatted.
     Fast,
@@ -93,6 +94,17 @@ pub enum Outcome {
     Already,
     /// `none`: the drive is not at the format. Exit 5.
     NotAtFormat,
+}
+
+impl Method {
+    pub fn word(self) -> &'static str {
+        match self {
+            Method::Auto => "auto",
+            Method::Fast => "fast",
+            Method::Full => "full",
+            Method::None => "none",
+        }
+    }
 }
 
 impl Outcome {
@@ -293,6 +305,11 @@ pub(crate) struct Io<'a> {
     pub say: &'a dyn Fn(&str),
     pub rescan: &'a dyn Fn(),
     pub block: &'a dyn Fn() -> Result<BlockDev, String>,
+    /// Where the run is: `format`, `formatting`, `verify` (the daemon's
+    /// run record, #140).
+    pub phase: &'a dyn Fn(&str),
+    /// The drive's progress indication at each poll (0..=65535 of the whole).
+    pub progress: &'a dyn Fn(Option<u16>),
 }
 
 /// A drive as the block layer has it (#143): its geometry and the driver
@@ -409,8 +426,12 @@ pub(crate) fn run_scsi(dev: &impl Target, name: &str, want: (u32, Protection), m
         _ => {}
     }
 
+    (io.phase)("format");
     if let Err(a) = set_length(dev, name, to) {
         let refused = matches!(a, Attempt::Refused(_));
+        if refused {
+            put_back(dev, name, r.before, to, io);
+        }
         return r.end(if refused { Outcome::Refused } else { Outcome::Failed }, Some(e_of(&a)));
     }
 
@@ -473,6 +494,7 @@ pub(crate) fn run_scsi(dev: &impl Target, name: &str, want: (u32, Protection), m
 
     // Progress until the drive is ready again.
     if immediate {
+        (io.phase)("formatting");
         let (elapsed, done) = wait_format(dev, name, how, io);
         r.elapsed_secs = elapsed.as_secs();
         if let Err(e) = done {
@@ -481,6 +503,7 @@ pub(crate) fn run_scsi(dev: &impl Target, name: &str, want: (u32, Protection), m
     }
 
     // Read back what the drive is now, then let the kernel see it.
+    (io.phase)("verify");
     let _ = dev.test_unit_ready();
     let after = match dev.read_capacity16() {
         Ok(c) => Geometry::of(&c),
@@ -514,7 +537,10 @@ fn wait_format(dev: &impl Target, name: &str, how: &str, io: &Io) -> (Duration, 
         elapsed += io.poll;
         match poll_format(|| dev.request_sense(), || dev.test_unit_ready()) {
             Ok(None) => return (elapsed, Ok(())),
-            Ok(Some(p)) => (io.say)(&progress_line(name, how, elapsed.as_secs(), p)),
+            Ok(Some(p)) => {
+                (io.progress)(p);
+                (io.say)(&progress_line(name, how, elapsed.as_secs(), p));
+            }
             Err(e) => return (elapsed, Err(e)),
         }
         if elapsed > crate::format::MAX_WAIT {
@@ -702,7 +728,15 @@ pub fn main(device: &str, block_size: u32, protection: Prot, method: Method, pol
                 let say = |l: &str| eprintln!("{l}");
                 let rescan = || crate::format::rescan(&name);
                 let block = || block_geometry(std::path::Path::new(&format!("/sys/block/{name}")));
-                let io = Io { poll: Duration::from_secs(poll_secs.max(1)), sleep: &std::thread::sleep, say: &say, rescan: &rescan, block: &block };
+                let io = Io {
+                    poll: Duration::from_secs(poll_secs.max(1)),
+                    sleep: &std::thread::sleep,
+                    say: &say,
+                    rescan: &rescan,
+                    block: &block,
+                    phase: &|_| {},
+                    progress: &|_| {},
+                };
                 run_scsi(&dev, &name, (block_size, prot), method, &io)
             }
             Err(e) => Report::new(&name, method, (block_size, prot)).end(Outcome::Failed, Some(format!("open {path}: {e}"))),
@@ -914,7 +948,7 @@ mod tests {
         let sleep = |_: Duration| {};
         let rescan = || rescans.set(rescans.get() + 1);
         let block = || block.clone();
-        let io = Io { poll: Duration::from_secs(600), sleep: &sleep, say: &say, rescan: &rescan, block: &block };
+        let io = Io { poll: Duration::from_secs(600), sleep: &sleep, say: &say, rescan: &rescan, block: &block, phase: &|_| {}, progress: &|_| {} };
         let r = run_scsi(f, "sdd", want, m, &io);
         if r.outcome == Outcome::Formatted {
             assert_eq!(rescans.get(), 1, "the kernel rescans after a format");

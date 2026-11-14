@@ -126,6 +126,9 @@ pub fn format_status(d: &Drive, want: Option<(u32, crate::pi::Protection)>) -> (
     (current, planned)
 }
 
+/// Log lines a Drive object's `status.format.logTail` carries.
+const FORMAT_LOG_TAIL: usize = 20;
+
 /// `status.format` (#108): the drive's last format, as stormconsole follows
 /// it. It outlives a restart: it is the drive's persisted record.
 pub fn format_run_status(d: &Drive) -> Value {
@@ -149,6 +152,14 @@ pub fn format_run_status(d: &Drive) -> Value {
             "blockSizeAfter": f.block_size_after,
             "protTypeAfter": f.prot_type_after,
             "error": f.error,
+            "method": f.method,
+            "methodUsed": f.method_used,
+            "fastSkipped": f.fast_skipped,
+            "already": f.already,
+            // The newest lines; the whole log is GET …/format/log (#140).
+            "logTail": f.log.iter().rev().take(FORMAT_LOG_TAIL).rev()
+                .map(|l| json!({ "atUnix": unix(Some(l.at)), "line": l.line }))
+                .collect::<Vec<_>>(),
         }),
     }
 }

@@ -699,6 +699,21 @@ pub struct FormatRecord {
     /// The boot it started in: another one means names may have moved.
     #[serde(default)]
     pub boot_id: String,
+    /// `auto`, `fast` or `full` (#140); None on a record from before.
+    #[serde(default)]
+    pub method: Option<crate::formatcli::Method>,
+    /// `fast`, `full`, `full_blocking`; None when nothing was sent.
+    #[serde(default)]
+    pub method_used: Option<String>,
+    /// Why the fast format was not used (the drive's sense when it refused).
+    #[serde(default)]
+    pub fast_skipped: Option<String>,
+    /// `auto` found the drive at the format: nothing was sent.
+    #[serde(default)]
+    pub already: bool,
+    /// The run's log, newest `format::LOG_LINES` (#140).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log: Vec<crate::format::LogLine>,
 }
 
 /// The last firmware update we ran on a drive.

@@ -34,6 +34,7 @@
 //! no cancel — a half-formatted drive is worse than a slow one.
 
 use crate::api::AppState;
+use crate::formatcli::Method;
 use crate::drive::{Activity, Drive, DriveId, FormatRecord};
 use crate::pi::Protection;
 use crate::events::Severity;
@@ -82,7 +83,28 @@ pub struct FormatRun {
     pub prot_type_after: Option<u8>,
     /// Controller (IOC) resets seen on the drive's HBA while it ran.
     pub resets: Vec<String>,
+    /// `auto` (default), `fast` or `full` (#140).
+    pub method: Method,
+    /// `fast`, `full`, `full_blocking`; None when nothing was sent.
+    pub method_used: Option<String>,
+    /// Why the fast format was not used: the drive's sense when it refused.
+    pub fast_skipped: Option<String>,
+    /// `auto` found the drive at the format: nothing was sent.
+    pub already: bool,
+    /// What the run did and saw, with times: every sense, refusal, the
+    /// fallback to the full format, progress (#140). Also in the node's log.
+    pub log: Vec<LogLine>,
 }
+
+/// One line of a format's log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct LogLine {
+    pub at: SystemTime,
+    pub line: String,
+}
+
+/// Lines a run keeps (the newest); a 19 h format polls every 30 s.
+pub const LOG_LINES: usize = 500;
 
 /// Set once a controller reset is seen during a format: nothing new
 /// starts until stormdrive restarts (owner, #85: "on any host or IOC
@@ -124,6 +146,16 @@ impl FormatHandle {
         run.progress_pct = Some(((p as u32 * 100) / 65536) as u8);
         run.progress_at = Some(now);
         run.eta_secs = eta_secs(now.duration_since(run.started).unwrap_or_default().as_secs(), p);
+    }
+    /// A line on the run's log and in the node's log.
+    pub(crate) fn log(&self, line: &str) {
+        let mut run = self.run.lock().unwrap();
+        tracing::info!(drive = %run.name, "format: {line}");
+        run.log.push(LogLine { at: SystemTime::now(), line: line.to_string() });
+        let n = run.log.len();
+        if n > LOG_LINES {
+            run.log.drain(..n - LOG_LINES);
+        }
     }
     fn set_finished_progress(&self) {
         let mut run = self.run.lock().unwrap();
@@ -221,21 +253,6 @@ impl Unit for Device {
     }
 }
 
-/// The block length a format starts from (and puts back on a refusal):
-/// READ CAPACITY's. A drive whose last format was cut off answers 31/00
-/// MEDIUM FORMAT CORRUPTED instead (#131) — a format is what it needs, so
-/// that is no reason to stop: the length on record stands in.
-fn current_length(dev: &impl Unit, recorded: u32) -> Result<u32, String> {
-    match dev.read_capacity16() {
-        Ok(c) => Ok(c.block_len),
-        Err(ScsiError::Sense(s)) if s.is_medium_format_corrupted() => {
-            tracing::info!("read capacity: {s} (an interrupted format); starting from the recorded {recorded}-byte length");
-            Ok(if recorded > 0 { recorded } else { 512 })
-        }
-        Err(e) => Err(format!("read capacity: {e}")),
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Attempt {
     /// FORMAT UNIT accepted. `immediate`: it runs on, poll it; else it ended.
@@ -246,13 +263,6 @@ pub(crate) enum Attempt {
     /// Anything else (a transport error, a busy drive) is no answer about
     /// the format: the run stops.
     Failed(String),
-}
-
-fn refused_or_failed(e: &ScsiError, why: String) -> Attempt {
-    match e {
-        ScsiError::Sense(s) if s.is_illegal_request() => Attempt::Refused(why),
-        _ => Attempt::Failed(why),
-    }
 }
 
 /// MODE SELECT with the new block length in the drive's own block
@@ -293,45 +303,6 @@ pub(crate) fn set_length(dev: &impl Unit, name: &str, to: u32) -> Result<(), Att
     Err(if refused { Attempt::Refused(why) } else { Attempt::Failed(why) })
 }
 
-/// The block length, then FORMAT UNIT.
-fn begin(dev: &impl Unit, name: &str, to: u32, prot: Protection) -> Attempt {
-    if let Err(a) = set_length(dev, name, to) {
-        return a;
-    }
-    match dev.format_unit_pi(true, prot.fmtpinfo()) {
-        Ok(()) => Attempt::Started { immediate: true },
-        Err(ScsiError::Sense(s)) if s.is_illegal_request() && prot != Protection::None => {
-            Attempt::Refused(format!("format unit with {}: refused ({s})", prot.word()))
-        }
-        Err(ScsiError::Sense(s)) if s.is_illegal_request() => {
-            tracing::info!(drive = %name, "IMMED refused ({s}); blocking format");
-            match dev.format_unit_pi(false, 0) {
-                Ok(()) => Attempt::Started { immediate: false },
-                Err(e) => refused_or_failed(&e, format!("format unit: {e}")),
-            }
-        }
-        Err(e) => Attempt::Failed(format!("format unit: {e}")),
-    }
-}
-
-/// Exactly the format asked for (#130): no fallback of our own. A refusal
-/// puts the drive's old block length back and starts nothing; the line
-/// says what was refused and why. Ok = whether it runs on (IMMED).
-fn start_exact(dev: &impl Unit, name: &str, current: u32, (to, prot): (u32, Protection)) -> Result<bool, Attempt> {
-    match begin(dev, name, to, prot) {
-        Attempt::Started { immediate } => Ok(immediate),
-        Attempt::Refused(why) => {
-            let line = format!("{to} with {}: {why}", prot.word());
-            tracing::warn!(drive = %name, "refused {line}");
-            if let Err(Attempt::Refused(e) | Attempt::Failed(e)) = set_length(dev, name, current) {
-                tracing::warn!(drive = %name, "putting block length {current} back: {e}");
-            }
-            Err(Attempt::Refused(line))
-        }
-        failed => Err(failed),
-    }
-}
-
 /// The error of a refused format: nothing ran, and what the person may
 /// choose instead.
 fn refused_error(line: &str, alternatives: &[crate::pi::Choice]) -> String {
@@ -343,93 +314,95 @@ fn refused_error(line: &str, alternatives: &[crate::pi::Choice]) -> String {
     e
 }
 
-fn run_blocking(drive: &Drive, (to, prot): (u32, Protection), alternatives: &[crate::pi::Choice], handle: &FormatHandle) -> Result<u32, String> {
+fn run_blocking(
+    drive: &Drive,
+    (to, prot): (u32, Protection),
+    method: Method,
+    alternatives: &[crate::pi::Choice],
+    handle: &FormatHandle,
+) -> Result<u32, String> {
     if let Some(why) = reset_hold() {
         return Err(format!("not started: {why}; no new format starts until stormdrive restarts"));
     }
     let host = drive.location.controller.as_ref().and_then(|c| c.scsi_host.clone());
-    let resets0 = ioc_resets(host.as_deref());
+    let seen = std::cell::Cell::new(ioc_resets(host.as_deref()));
     handle.set_phase("prepare");
-    let dev = Device::open(&dev_path(drive)).map_err(|e| format!("open: {e}"))?;
-    // Clear a pending unit attention so it does not fail the first real
-    // command.
-    let _ = dev.test_unit_ready();
-    let current = current_length(&dev, drive.block_size)?;
-    if current == to && drive.format_reason.is_none() {
-        tracing::info!(drive = %drive.name, "already {to}-byte; formatting anyway (operator asked)");
-    }
+    let path = dev_path(drive);
+    handle.log(&format!("{}: {} format to {to} with {} through {path}", drive.name, method.word(), prot.word()));
+    let dev = Device::open(&path).map_err(|e| format!("open {path}: {e}"))?;
 
-    // Blocking FORMAT UNIT: the phase reads `format` for as long as it takes.
-    handle.set_phase("format");
-    let immediate = match start_exact(&dev, &drive.name, current, (to, prot)) {
-        Ok(immediate) => immediate,
-        Err(Attempt::Refused(line)) => {
-            let mut run = handle.run.lock().unwrap();
+    // formatcli's run (#140), with the daemon around it: the run's record
+    // and log, the IOC reset watch between polls, rescan + re-add.
+    let say = |l: &str| handle.log(l);
+    let sleep = |d: Duration| {
+        std::thread::sleep(d);
+        let now = ioc_resets(host.as_deref());
+        if let Some(line) = reset_seen(host.as_deref().unwrap_or("?"), seen.get(), now) {
+            tracing::warn!(drive = %drive.name, "{line} during a format");
+            *RESET_HOLD.lock().unwrap() = Some(format!("{line} during {}'s format", drive.name));
+            handle.log(&format!("{}: {line} during the format; no new format starts until stormdrive restarts", drive.name));
+            handle.run.lock().unwrap().resets.push(line);
+            seen.set(now);
+        }
+    };
+    let rescan = || {
+        handle.set_phase("rescan");
+        for p in &drive.paths {
+            rescan_block(p.trim_start_matches("/dev/"));
+        }
+        std::thread::sleep(Duration::from_secs(3));
+        // sd may need a delete + re-add to drop its "unsupported sector
+        // size" conclusion; per path, when the rescan did not take.
+        for p in &drive.paths {
+            let name = p.trim_start_matches("/dev/");
+            if sysfs_sectors(name) == 0 {
+                readd_block(name);
+            }
+        }
+    };
+    let block = || crate::formatcli::block_geometry(std::path::Path::new(&format!("/sys/block/{}", drive.name)));
+    let phase = |p: &str| handle.set_phase(p);
+    let progress = |p: Option<u16>| handle.set_progress(p);
+    let io = crate::formatcli::Io { poll: POLL, sleep: &sleep, say: &say, rescan: &rescan, block: &block, phase: &phase, progress: &progress };
+    let r = crate::formatcli::run_scsi(&dev, &drive.name, (to, prot), method, &io);
+    handle.log(&r.summary());
+    if r.outcome == crate::formatcli::Outcome::Formatted {
+        handle.set_finished_progress();
+    }
+    settle(handle, &r, (to, prot), alternatives)
+}
+
+/// A formatcli report on the run: what was used, what it reads, and the
+/// result `finish` records.
+fn settle(handle: &FormatHandle, r: &crate::formatcli::Report, (to, prot): (u32, Protection), alternatives: &[crate::pi::Choice]) -> Result<u32, String> {
+    use crate::formatcli::Outcome;
+    let mut run = handle.run.lock().unwrap();
+    run.method_used = r.method_used.map(str::to_string);
+    run.fast_skipped = r.fast_skipped.clone();
+    run.immediate = r.method_used != Some("full_blocking");
+    if let Some(b) = r.before {
+        run.from_block_size = b.block_size;
+    }
+    let read = r.after.or(if r.outcome == Outcome::Already { r.before } else { None });
+    if let Some(g) = read {
+        run.block_size_after = Some(g.block_size);
+        run.prot_type_after = Some(g.pi_type);
+    }
+    let error = r.error.clone().unwrap_or_else(|| r.summary());
+    match r.outcome {
+        Outcome::Formatted => Ok(r.after.map(|g| g.block_size).unwrap_or(to)),
+        Outcome::Already => {
+            run.already = true;
+            Ok(to)
+        }
+        Outcome::Refused => {
+            let line = format!("{to} with {}: {error}", prot.word());
             run.refused.push(line.clone());
             run.alternatives = alternatives.to_vec();
-            return Err(refused_error(&line, alternatives));
+            Err(refused_error(&line, alternatives))
         }
-        Err(Attempt::Failed(e)) => return Err(e),
-        Err(Attempt::Started { .. }) => unreachable!("start_exact returns Ok for a started format"),
-    };
-    handle.run.lock().unwrap().immediate = immediate;
-
-    if immediate {
-        handle.set_phase("formatting");
-        let t0 = Instant::now();
-        let mut seen = resets0;
-        loop {
-            std::thread::sleep(POLL);
-            let now = ioc_resets(host.as_deref());
-            if let Some(line) = reset_seen(host.as_deref().unwrap_or("?"), seen, now) {
-                tracing::warn!(drive = %drive.name, "{line} during a format");
-                *RESET_HOLD.lock().unwrap() = Some(format!("{line} during {}'s format", drive.name));
-                handle.run.lock().unwrap().resets.push(line);
-                seen = now;
-            }
-            match poll_format(|| dev.request_sense(), || dev.test_unit_ready())? {
-                None => break,
-                Some(p) => handle.set_progress(p),
-            }
-            if t0.elapsed() > MAX_WAIT {
-                return Err("format did not finish within 48 h".into());
-            }
-        }
+        Outcome::Failed | Outcome::NotAtFormat => Err(error),
     }
-    handle.set_finished_progress();
-
-    handle.set_phase("rescan");
-    for p in &drive.paths {
-        let name = p.trim_start_matches("/dev/");
-        rescan_block(name);
-    }
-    std::thread::sleep(Duration::from_secs(3));
-
-    handle.set_phase("verify");
-    let after = dev.read_capacity16().map_err(|e| format!("read capacity after format: {e}"))?;
-    {
-        let mut run = handle.run.lock().unwrap();
-        run.prot_type_after = Some(after.prot_type);
-        run.block_size_after = Some(after.block_len);
-    }
-    if after.block_len != to {
-        return Err(format!(
-            "drive reports {}-byte blocks after formatting to {to}",
-            after.block_len
-        ));
-    }
-    if after.prot_type != prot.prot_type() {
-        return Err(verify_prot_error(prot, after.prot_type));
-    }
-    // sd may need a delete + re-add to drop its "unsupported sector size"
-    // conclusion; do it per path when the rescan did not take.
-    for p in &drive.paths {
-        let name = p.trim_start_matches("/dev/");
-        if sysfs_sectors(name) == 0 {
-            readd_block(name);
-        }
-    }
-    Ok(after.block_len)
 }
 
 /// An sg-only disk (#131) has no block node, so no sectors: once it is
@@ -517,7 +490,7 @@ fn verify_prot_error(prot: Protection, got: u8) -> String {
 }
 
 /// Start a format on one drive. Caller has checked `format_blocker`.
-pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection) -> Arc<FormatHandle> {
+pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection, method: Method) -> Arc<FormatHandle> {
     let handle = Arc::new(FormatHandle {
         run: Mutex::new(FormatRun {
             drive: drive.id,
@@ -539,6 +512,11 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection
             protection: prot,
             prot_type_after: None,
             resets: vec![],
+            method,
+            method_used: None,
+            fast_skipped: None,
+            already: false,
+            log: vec![],
         }),
     });
     state.formats.write().await.insert(drive.id, handle.clone());
@@ -558,6 +536,7 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection
                 started: Some(SystemTime::now()),
                 phase: "queued".into(),
                 boot_id: current_boot_id(),
+                method: Some(method),
                 ..Default::default()
             });
         }
@@ -567,8 +546,9 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection
         Severity::Warning,
         "format",
         format!(
-            "{}: FORMAT UNIT {} → {} bytes/sector, {} started (all data destroyed)",
+            "{}: format ({}) {} → {} bytes/sector, {} started (all data destroyed unless it is already at the format)",
             drive.name,
+            method.word(),
             drive.block_size,
             to,
             prot.word()
@@ -580,7 +560,7 @@ pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection
     tokio::spawn(async move {
         let h3 = h2.clone();
         let d2 = drive.clone();
-        let task = tokio::task::spawn_blocking(move || run_blocking(&d2, (to, prot), &alternatives, &h3));
+        let task = tokio::task::spawn_blocking(move || run_blocking(&d2, (to, prot), method, &alternatives, &h3));
         let result = follow(&state, &h2, &drive, task).await;
         finish(&state, &h2, &drive, result).await;
     });
@@ -604,6 +584,11 @@ fn copy_to_record(run: &FormatRun, f: &mut FormatRecord) {
     f.target = crate::pi::target(run.to_block_size, run.protection);
     f.block_size_after = run.block_size_after;
     f.prot_type_after = run.prot_type_after;
+    f.method = Some(run.method);
+    f.method_used = run.method_used.clone();
+    f.fast_skipped = run.fast_skipped.clone();
+    f.already = run.already;
+    f.log = run.log.clone();
 }
 
 /// Wait for the blocking run, keeping the drive's record up with it. Written
@@ -710,6 +695,9 @@ fn as_named_now(drive: &Drive, other_boot: bool) -> Result<Drive, String> {
 /// its activity, an event.
 async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, result: Result<u32, String>) {
     let err = result.as_ref().err().cloned();
+    if let Some(e) = &err {
+        handle.log(&format!("{}: failed: {e}", drive.name));
+    }
     {
         let mut run = handle.run.lock().unwrap();
         run.state = if err.is_some() { FormatState::Failed } else { FormatState::Done };
@@ -740,9 +728,18 @@ async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, res
             }
         }
     }
-    let (prot, after, resets, from, to) = {
+    let (prot, after, resets, from, to, method, method_used, already) = {
         let run = handle.run.lock().unwrap();
-        (run.protection, run.prot_type_after, run.resets.clone(), run.from_block_size, run.to_block_size)
+        (
+            run.protection,
+            run.prot_type_after,
+            run.resets.clone(),
+            run.from_block_size,
+            run.to_block_size,
+            run.method,
+            run.method_used.clone(),
+            run.already,
+        )
     };
     // Kept history (#68). A worker step records its own action (with the
     // requester); this is for the REST format routes and a re-attach.
@@ -752,8 +749,8 @@ async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, res
             drive.id,
             crate::history::Action {
                 op: "format".into(),
-                params: serde_json::json!({ "block_size": to, "protection": prot, "resets": resets }),
-                result: if err.is_some() { "failed".into() } else { "done".into() },
+                params: serde_json::json!({ "block_size": to, "protection": prot, "method": method, "method_used": method_used, "resets": resets }),
+                result: if err.is_some() { "failed".into() } else if already { "already".into() } else { "done".into() },
                 error: err.clone(),
                 requester: None,
                 job: None,
@@ -776,7 +773,13 @@ async fn finish(state: &Arc<AppState>, handle: &FormatHandle, drive: &Drive, res
         if err.is_some() { Severity::Error } else { Severity::Info },
         "format",
         match &result {
-            Ok(bs) => format!("{}: formatted to {bs}-byte sectors with {}{read_back}; kernel rescanned", drive.name, prot.word()),
+            Ok(bs) if already => format!("{}: already {bs}-byte sectors with {}; nothing sent ({})", drive.name, prot.word(), method.word()),
+            Ok(bs) => format!(
+                "{}: formatted ({}) to {bs}-byte sectors with {}{read_back}; kernel rescanned",
+                drive.name,
+                method_used.as_deref().unwrap_or("?"),
+                prot.word()
+            ),
             Err(e) => format!("{}: format FAILED: {e}", drive.name),
         },
     );
@@ -792,6 +795,7 @@ pub async fn reattach(state: Arc<AppState>, drive: Drive) -> Arc<FormatHandle> {
     let rec = drive.format.clone().unwrap_or_default();
     let to = rec.to_block_size;
     let prot = rec.protection;
+    let method = rec.method.unwrap_or_default();
     let handle = Arc::new(FormatHandle {
         run: Mutex::new(FormatRun {
             drive: drive.id,
@@ -813,9 +817,15 @@ pub async fn reattach(state: Arc<AppState>, drive: Drive) -> Arc<FormatHandle> {
             protection: prot,
             prot_type_after: None,
             resets: vec![],
+            method,
+            method_used: rec.method_used.clone(),
+            fast_skipped: rec.fast_skipped.clone(),
+            already: false,
+            log: rec.log.clone(),
         }),
     });
     state.formats.write().await.insert(drive.id, handle.clone());
+    handle.log(&format!("{}: stormdrive restarted during a format to {to}-byte sectors; watching the drive to the end", drive.name));
     state.events.write().await.push(
         Some(drive.id),
         Severity::Warning,
@@ -926,6 +936,14 @@ mod tests {
         /// forge1 sdb–sdd (#131): a format cut off by a power-off; READ
         /// CAPACITY answers 3/31/00 MEDIUM FORMAT CORRUPTED.
         corrupted: bool,
+        /// Its format before the run (block, PI type); 512 + PI1 if None.
+        at: Option<(u32, u8)>,
+        refuse_ffmt: bool,
+        no_ffmt: bool,
+        /// The last MODE SELECT length the drive took.
+        selected: std::cell::Cell<Option<u32>>,
+        /// A format ran, with this FMTPINFO.
+        formatted: std::cell::Cell<Option<u8>>,
     }
 
     const X378_BLOCKS: u64 = 19_532_873_728;
@@ -968,6 +986,7 @@ mod tests {
             if self.refuse_select.contains(&len) {
                 return sense(5, 0x26, 0, None);
             }
+            self.selected.set(Some(len));
             Ok(())
         }
         fn mode_select6(&self, data: &[u8]) -> scsi::Result<()> {
@@ -989,39 +1008,85 @@ mod tests {
             if self.refuse_fmtpinfo.contains(&fmtpinfo) {
                 return sense(5, 0x24, 0, None);
             }
+            self.formatted.set(Some(fmtpinfo));
             Ok(())
         }
         fn read_capacity16(&self) -> scsi::Result<scsi::Capacity> {
             self.log.borrow_mut().push("read capacity".into());
+            if let Some(f) = self.formatted.get() {
+                let len = self.selected.get().unwrap_or(512);
+                return Ok(scsi::Capacity { last_lba: (1 << 31) - 1, block_len: len, lbppbe: 0, prot_type: if f == 0b10 { 1 } else { 0 } });
+            }
             if self.corrupted {
                 return Err(ScsiError::Sense(Sense::new(3, 0x31, 0)));
             }
-            Ok(scsi::Capacity { last_lba: (1 << 31) - 1, block_len: 512, lbppbe: 3, prot_type: 1 })
+            let (len, pt) = self.at.unwrap_or((512, 1));
+            Ok(scsi::Capacity { last_lba: (1 << 31) - 1, block_len: len, lbppbe: 3, prot_type: pt })
+        }
+    }
+
+    impl crate::formatcli::Target for FakeUnit {
+        fn test_unit_ready(&self) -> scsi::Result<()> {
+            Ok(())
+        }
+        fn request_sense(&self) -> scsi::Result<Vec<u8>> {
+            Ok(vec![0x70, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        }
+        fn start_unit(&self) -> scsi::Result<()> {
+            Ok(())
+        }
+        fn ffmt_supported(&self) -> Option<bool> {
+            Some(!self.no_ffmt)
+        }
+        fn format_unit_ffmt(&self, immed: bool, fmtpinfo: u8, ffmt: u8) -> scsi::Result<()> {
+            self.log.borrow_mut().push(format!("ffmt{ffmt} immed={immed} fmtpinfo={fmtpinfo}"));
+            if self.refuse_ffmt {
+                return sense(5, 0x24, 0, None);
+            }
+            self.formatted.set(Some(fmtpinfo));
+            Ok(())
         }
     }
 
     const PI: (u32, Protection) = (4096, Protection::Type1);
 
-    fn run_fake(u: &FakeUnit) -> Result<bool, Attempt> {
-        start_exact(u, "sdz", 512, PI)
+    /// The daemon's run (`run_blocking`'s middle): formatcli's, with a
+    /// record and a log (#140).
+    fn run_on(u: &FakeUnit, method: Method) -> (Result<u32, String>, FormatRun) {
+        let h = a_run();
+        let say = |l: &str| h.log(l);
+        let io = crate::formatcli::Io {
+            poll: Duration::from_secs(30),
+            sleep: &|_| {},
+            say: &say,
+            rescan: &|| {},
+            block: &|| Err("not used".into()),
+            phase: &|p| h.set_phase(p),
+            progress: &|p| h.set_progress(p),
+        };
+        let r = crate::formatcli::run_scsi(u, "sdz", PI, method, &io);
+        let res = settle(&h, &r, PI, &[]);
+        let run = h.run.lock().unwrap().clone();
+        (res, run)
     }
 
-    fn refused(r: Result<bool, Attempt>) -> String {
-        match r {
-            Err(Attempt::Refused(line)) => line,
-            other => panic!("not a refusal: {other:?}"),
-        }
+    fn run_fake(u: &FakeUnit) -> Result<u32, String> {
+        run_on(u, Method::Full).0
     }
 
     fn formats_sent(u: &FakeUnit) -> Vec<String> {
-        u.log.borrow().iter().filter(|l| l.starts_with("format")).cloned().collect()
+        u.log.borrow().iter().filter(|l| l.starts_with("format") || l.starts_with("ffmt")).cloned().collect()
+    }
+
+    fn sent(u: &FakeUnit) -> Vec<String> {
+        u.log.borrow().iter().filter(|l| l.as_str() != "read capacity").cloned().collect()
     }
 
     #[test]
     fn the_first_format_goes_mode_select_then_format_unit_with_fmtpinfo() {
         let u = FakeUnit::default();
-        assert!(run_fake(&u).unwrap());
-        assert_eq!(*u.log.borrow(), ["select10 4096", "format immed=true fmtpinfo=2"]);
+        assert_eq!(run_fake(&u), Ok(4096));
+        assert_eq!(sent(&u), ["select10 4096", "format immed=true fmtpinfo=2"]);
     }
 
     /// #131: forge1 sdb–sdd after a power-off cut their formats short. READ
@@ -1030,28 +1095,17 @@ mod tests {
     #[test]
     fn an_interrupted_format_is_formatted_at_4096_with_pi() {
         let u = FakeUnit { corrupted: true, ..Default::default() };
-        let current = current_length(&u, 512).expect("31/00 is no reason to stop");
-        assert_eq!(current, 512, "the recorded length stands in");
-        assert!(start_exact(&u, "sg2", current, PI).unwrap());
-        assert_eq!(*u.log.borrow(), ["read capacity", "select10 4096", "format immed=true fmtpinfo=2"]);
-        // Any other failure still stops the run before a command is sent.
-        struct Gone;
-        impl Unit for Gone {
-            fn mode_sense10(&self, _: u8) -> scsi::Result<scsi::ModeHeader10> { unreachable!() }
-            fn mode_select10(&self, _: &[u8]) -> scsi::Result<()> { unreachable!() }
-            fn mode_select6(&self, _: &[u8]) -> scsi::Result<()> { unreachable!() }
-            fn format_unit_pi(&self, _: bool, _: u8) -> scsi::Result<()> { unreachable!() }
-            fn read_capacity16(&self) -> scsi::Result<scsi::Capacity> { Err(ScsiError::Sense(Sense::new(4, 0x44, 0))) }
-        }
-        assert!(current_length(&Gone, 512).unwrap_err().starts_with("read capacity: "));
-        assert_eq!(current_length(&FakeUnit::default(), 4096).unwrap(), 512, "READ CAPACITY is the truth when it answers");
+        let (r, run) = run_on(&u, Method::Auto);
+        assert_eq!(r, Ok(4096));
+        assert_eq!(formats_sent(&u), ["ffmt1 immed=true fmtpinfo=2"]);
+        assert!(!run.already);
     }
 
     #[test]
     fn the_netapp_x378_gets_its_own_long_descriptor_back() {
         let u = FakeUnit { netapp_x378: true, ..Default::default() };
-        assert!(run_fake(&u).unwrap());
-        assert_eq!(*u.log.borrow(), ["select10L 4096", "format immed=true fmtpinfo=2"]);
+        assert_eq!(run_fake(&u), Ok(4096));
+        assert_eq!(sent(&u), ["select10L 4096", "format immed=true fmtpinfo=2"]);
     }
 
     #[test]
@@ -1060,8 +1114,10 @@ mod tests {
         // the run went on to 512 + PI1 by itself; now nothing is formatted
         // and the old length goes back.
         let u = FakeUnit { refuse_select: vec![4096], ..Default::default() };
-        let line = refused(run_fake(&u));
-        assert!(line.starts_with("4096 with PI type 1: mode select rejected"), "{line}");
+        let (r, run) = run_on(&u, Method::Auto);
+        let e = r.unwrap_err();
+        assert!(e.starts_with("the drive refused 4096 with PI type 1: mode select rejected"), "{e}");
+        assert_eq!(run.refused.len(), 1);
         assert!(formats_sent(&u).is_empty(), "no FORMAT UNIT: {:?}", u.log.borrow());
         assert_eq!(u.log.borrow().last().unwrap(), "select10 512", "the old length goes back");
     }
@@ -1071,7 +1127,7 @@ mod tests {
         // The long and short (10) are the drive's answer; the (6) dying at the
         // transport does not make it "failed".
         let u = FakeUnit { netapp_x378: true, refuse_select: vec![4096], ..Default::default() };
-        let line = refused(run_fake(&u));
+        let line = run_fake(&u).unwrap_err();
         assert!(line.contains("(10, long) illegal request"), "{line}");
         assert!(line.contains("(10) illegal request (key 0x5, asc/ascq 0x26/0x00, field pointer: parameter list byte 7)"), "{line}");
         assert!(line.contains("(6) scsi status 0x02, host 0x07"), "{line}");
@@ -1082,8 +1138,8 @@ mod tests {
     #[test]
     fn a_refused_pi_format_is_not_run_without_pi() {
         let u = FakeUnit { refuse_fmtpinfo: vec![2], ..Default::default() };
-        let line = refused(run_fake(&u));
-        assert!(line.starts_with("4096 with PI type 1: format unit with PI type 1: refused"), "{line}");
+        let line = run_fake(&u).unwrap_err();
+        assert!(line.starts_with("the drive refused 4096 with PI type 1: format unit with PI type 1:"), "{line}");
         assert_eq!(formats_sent(&u), ["format immed=true fmtpinfo=2"], "no format without PI after it");
         assert_eq!(u.log.borrow().last().unwrap(), "select10 512");
     }
@@ -1091,8 +1147,64 @@ mod tests {
     #[test]
     fn a_failure_that_is_no_answer_stops_it() {
         let u = FakeUnit { transport_error_on_format: true, ..Default::default() };
-        assert!(matches!(run_fake(&u), Err(Attempt::Failed(_))));
-        assert_eq!(u.log.borrow().len(), 2, "no second format: {:?}", u.log.borrow());
+        let e = run_fake(&u).unwrap_err();
+        assert!(e.starts_with("format unit:"), "{e}");
+        assert_eq!(formats_sent(&u).len(), 1, "no second format: {:?}", u.log.borrow());
+    }
+
+    /// #140: the API's `auto` is formatcli's: the fast format first, and the
+    /// run says which it used, why not fast, and logs it all.
+    #[test]
+    fn auto_fast_first_and_the_run_says_so() {
+        let u = FakeUnit::default();
+        let (r, run) = run_on(&u, Method::Auto);
+        assert_eq!(r, Ok(4096));
+        assert_eq!(run.method_used.as_deref(), Some("fast"));
+        assert_eq!(run.fast_skipped, None);
+        assert_eq!((run.block_size_after, run.prot_type_after), (Some(4096), Some(1)));
+        assert!(run.log.iter().any(|l| l.line.contains("fast format (FFMT 01b)")), "{:?}", run.log);
+        assert!(run.log.last().unwrap().line.contains("formatted (fast)"), "{:?}", run.log);
+
+        let u = FakeUnit { refuse_ffmt: true, ..Default::default() };
+        let (r, run) = run_on(&u, Method::Auto);
+        assert_eq!(r, Ok(4096));
+        assert_eq!(formats_sent(&u), ["ffmt1 immed=true fmtpinfo=2", "format immed=true fmtpinfo=2"]);
+        assert_eq!(run.method_used.as_deref(), Some("full"));
+        let why = run.fast_skipped.unwrap();
+        assert!(why.starts_with("refused: illegal request"), "{why}");
+        assert!(run.log.iter().any(|l| l.line.contains("fast format refused") && l.line.contains("a full format instead")), "{:?}", run.log);
+
+        let u = FakeUnit { refuse_ffmt: true, ..Default::default() };
+        let (r, run) = run_on(&u, Method::Fast);
+        assert!(r.unwrap_err().contains("fast format:"));
+        assert_eq!(run.refused.len(), 1);
+    }
+
+    #[test]
+    fn auto_at_the_format_is_already_and_sends_nothing() {
+        let u = FakeUnit { at: Some((4096, 1)), ..Default::default() };
+        let (r, run) = run_on(&u, Method::Auto);
+        assert_eq!(r, Ok(4096));
+        assert!(run.already);
+        assert!(sent(&u).is_empty(), "{:?}", u.log.borrow());
+        assert!(run.log.last().unwrap().line.contains("already 4096 with PI type 1"), "{:?}", run.log);
+        // `full` formats it anyway.
+        let u = FakeUnit { at: Some((4096, 1)), ..Default::default() };
+        let (r, run) = run_on(&u, Method::Full);
+        assert_eq!(r, Ok(4096));
+        assert!(!run.already);
+        assert_eq!(formats_sent(&u), ["format immed=true fmtpinfo=2"]);
+    }
+
+    #[test]
+    fn the_log_keeps_the_newest_lines() {
+        let h = a_run();
+        for i in 0..LOG_LINES + 7 {
+            h.log(&format!("line {i}"));
+        }
+        let run = h.run.lock().unwrap();
+        assert_eq!(run.log.len(), LOG_LINES);
+        assert_eq!(run.log[0].line, "line 7");
     }
 
     #[test]
@@ -1110,7 +1222,6 @@ mod tests {
         assert_eq!(refused_error("x", &[]), "the drive refused x; nothing was formatted");
     }
 
-    /// Fixed-format REQUEST SENSE data.
     fn sense_data(key: u8, asc: u8, ascq: u8, progress: Option<u16>) -> Vec<u8> {
         let mut d = vec![0u8; 18];
         d[0] = 0x70;
@@ -1179,6 +1290,11 @@ mod tests {
                 protection: Protection::Type1,
                 prot_type_after: None,
                 resets: vec![],
+                method: Method::Auto,
+                method_used: None,
+                fast_skipped: None,
+                already: false,
+                log: vec![],
             }),
         }
     }

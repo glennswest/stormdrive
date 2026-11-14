@@ -1160,9 +1160,13 @@ async fn wait_format(state: &Arc<AppState>, job: &str, idx: usize, handle: &crat
         state.worker.progress(job, idx, run.progress_pct, &format!("format: {}", run.phase));
         match run.state {
             crate::format::FormatState::Running => continue,
+            crate::format::FormatState::Done if run.already => {
+                return Ok(format!("already {}-byte sectors, {}: nothing sent", run.to_block_size, run.protection.word()));
+            }
             crate::format::FormatState::Done => {
                 let refused = if run.refused.is_empty() { String::new() } else { format!(" (refused: {})", run.refused.join("; ")) };
-                return Ok(format!("FORMAT UNIT to {}-byte sectors, {}{refused}", run.to_block_size, run.protection.word()));
+                let used = run.method_used.as_deref().unwrap_or("?");
+                return Ok(format!("FORMAT UNIT ({used}) to {}-byte sectors, {}{refused}", run.to_block_size, run.protection.word()));
             }
             crate::format::FormatState::Failed => return Err(run.error.unwrap_or_else(|| "format failed".into())),
         }
@@ -1221,8 +1225,9 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
         }
         Step::Format { block_size, protection } => {
             // The SCSI path is the existing format job (records, events,
-            // rescan and verify included); the worker waits on it.
-            let handle = crate::format::start(state.clone(), d.clone(), *block_size, *protection).await;
+            // rescan and verify included); the worker waits on it. `auto`
+            // (#140): nothing at the format, else fast first, full if refused.
+            let handle = crate::format::start(state.clone(), d.clone(), *block_size, *protection, crate::formatcli::Method::Auto).await;
             wait_format(state, job, idx, &handle).await
         }
         Step::Sanitize { method } => {

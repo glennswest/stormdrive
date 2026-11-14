@@ -83,7 +83,7 @@ spec:
                   type: object
                   nullable: true
                   x-kubernetes-preserve-unknown-fields: true
-                  description: "The drive's last format, persisted across restarts (#108): state, phase, toBlockSize, protection, progressPct, etaSeconds, startedUnix, progressAtUnix, finishedUnix, refused (formats the drive refused, with why), blockSizeAfter + protTypeAfter (READ CAPACITY after it), error."
+                  description: "The drive's last format, persisted across restarts (#108): state, phase, toBlockSize, protection, progressPct, etaSeconds, startedUnix, progressAtUnix, finishedUnix, refused (formats the drive refused, with why), blockSizeAfter + protTypeAfter (READ CAPACITY after it), error; method (auto/fast/full), methodUsed (fast, full, full_blocking), fastSkipped (why not fast: the drive's sense when it refused), already (at the format: nothing sent), logTail (the run's newest log lines; the whole log is GET /api/v1/drives/{id}/format/log) (#140)."
                 owner: { type: string, enum: [free, stormblock, stormraid] }
                 inUse: { type: boolean, description: "The drive is in use (#123): every destroying step and the designations that contradict its use refuse it." }
                 use: { type: string, enum: [system, raid_member, data, slab_member, mounted, free], description: "What for: the node's system slab, a stormraid member, a data slab, otherwise held by the engine (fleet, whole-drive slab), a mounted partition, or free." }
