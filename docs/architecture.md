@@ -678,7 +678,13 @@ a failure: `block_geometry` reads sysfs (`queue/logical_block_size`, `size`,
 (exit 4, every method), not at it = refused (exit 3, the driver takes no
 FORMAT UNIT). The same check backs an NVMe namespace whose Identify fails.
 Exit codes and output: README "stormdrive format". The daemon's formats
-(REST, worker, DriveOperation) do not use FFMT yet.
+(REST, worker, DriveOperation) run the same `run_scsi` (#140): `format.rs`'s
+`run_blocking` gives it an `Io` that is the daemon's: the run's log and the
+node log (`say`), the IOC reset watch between polls (`sleep`), rescan and
+re-add per path (`rescan`), the run's phase and progress, and `settle` turns
+the report into the record (method used, fast_skipped, already, refusal
+with its alternatives). The method is the request's (`auto` by default); a
+worker step runs `auto`.
 
 ### The drive worker (`worker.rs`, `erase.rs`, `gpt.rs`, #5)
 One request prepares many drives: a **selection** (drives, shelf + bays,
