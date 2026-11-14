@@ -612,7 +612,6 @@ enum Before {
 fn e_of(a: &Attempt) -> String {
     match a {
         Attempt::Refused(e) | Attempt::Failed(e) => e.clone(),
-        Attempt::Started { .. } => "started".into(),
     }
 }
 

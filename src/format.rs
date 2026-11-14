@@ -255,8 +255,6 @@ impl Unit for Device {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Attempt {
-    /// FORMAT UNIT accepted. `immediate`: it runs on, poll it; else it ended.
-    Started { immediate: bool },
     /// ILLEGAL REQUEST: the drive will not do this one, and nothing is
     /// formatted. The next may be tried.
     Refused(String),
@@ -365,10 +363,6 @@ fn run_blocking(
     let progress = |p: Option<u16>| handle.set_progress(p);
     let io = crate::formatcli::Io { poll: POLL, sleep: &sleep, say: &say, rescan: &rescan, block: &block, phase: &phase, progress: &progress };
     let r = crate::formatcli::run_scsi(&dev, &drive.name, (to, prot), method, &io);
-    handle.log(&r.summary());
-    if r.outcome == crate::formatcli::Outcome::Formatted {
-        handle.set_finished_progress();
-    }
     settle(handle, &r, (to, prot), alternatives)
 }
 
@@ -376,6 +370,10 @@ fn run_blocking(
 /// result `finish` records.
 fn settle(handle: &FormatHandle, r: &crate::formatcli::Report, (to, prot): (u32, Protection), alternatives: &[crate::pi::Choice]) -> Result<u32, String> {
     use crate::formatcli::Outcome;
+    handle.log(&r.summary());
+    if r.outcome == Outcome::Formatted {
+        handle.set_finished_progress();
+    }
     let mut run = handle.run.lock().unwrap();
     run.method_used = r.method_used.map(str::to_string);
     run.fast_skipped = r.fast_skipped.clone();
