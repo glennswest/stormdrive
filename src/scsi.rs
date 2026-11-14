@@ -870,14 +870,40 @@ pub fn sg_path_for_block(name: &str) -> Option<String> {
     sg_path_in(&format!("/sys/block/{name}/device/scsi_generic"))
 }
 
+/// A drive that is on the HBA and answers, but NOT READY (#141): what it
+/// says, honestly. forge1's unformatted SAS drives are this: present (the
+/// iDRAC lists them, INQUIRY and VPD 0x83 answer), with no usable disk
+/// until they are formatted, which is the install's to do (stormblock#592).
+/// None for any other answer.
+pub fn not_ready_reason(s: &Sense) -> Option<String> {
+    if s.key != 0x2 || s.is_medium_format_corrupted() {
+        return None;
+    }
+    let what = match (s.asc, s.ascq) {
+        (0x04, 0x04) => "a format is running",
+        (0x04, 0x01) => "becoming ready",
+        (0x04, 0x02) => "needs a START UNIT",
+        (0x04, 0x03) => "needs manual intervention",
+        (0x04, 0x1b) | (0x04, 0x1c) => "a sanitize is running",
+        (0x04, _) => "not ready, cause in the code",
+        (0x3a, _) => "no medium",
+        _ => "not ready",
+    };
+    Some(format!(
+        "present on the HBA, not ready ({:x}/{:02x}/{:02x}: {what}): unformatted or mid-format; no usable disk until it is formatted",
+        s.key, s.asc, s.ascq
+    ))
+}
+
 /// Why a SCSI disk the kernel gave no block node needs a format (#131),
 /// from its answer to READ CAPACITY(16) over sg: an interrupted format
-/// (31/00), or whatever else it said.
+/// (31/00), NOT READY (#141), or whatever else it said.
 pub fn no_block_node_reason(cap: &Result<Capacity>) -> String {
     match cap {
         Err(Error::Sense(s)) if s.is_medium_format_corrupted() => {
             format!("medium format corrupted ({:x}/{:02x}/{:02x}): an interrupted format; format it again", s.key, s.asc, s.ascq)
         }
+        Err(Error::Sense(s)) if not_ready_reason(s).is_some() => not_ready_reason(s).unwrap_or_default(),
         Err(e) => format!("no block device; read capacity over sg: {e}; a format may bring it back"),
         Ok(c) => format!("no block device; the drive reports {}-byte blocks over sg", c.block_len),
     }
@@ -924,7 +950,19 @@ mod tests {
         assert_eq!(r, "medium format corrupted (3/31/00): an interrupted format; format it again");
         assert!(Sense::new(2, 0x31, 0).is_medium_format_corrupted());
         assert!(!Sense::new(3, 0x31, 1).is_medium_format_corrupted(), "31/01 is a format that failed, not one cut off");
-        assert!(no_block_node_reason(&Err(Error::Sense(Sense::new(2, 4, 4)))).starts_with("no block device"));
+        assert!(no_block_node_reason(&Err(Error::Sense(Sense::new(4, 0x44, 0)))).starts_with("no block device"));
+    }
+
+    #[test]
+    fn a_not_ready_drive_is_said_to_be_present() {
+        let r = no_block_node_reason(&Err(Error::Sense(Sense::new(2, 4, 0))));
+        assert_eq!(
+            r,
+            "present on the HBA, not ready (2/04/00: not ready, cause in the code): unformatted or mid-format; no usable disk until it is formatted"
+        );
+        assert!(no_block_node_reason(&Err(Error::Sense(Sense::new(2, 4, 4)))).contains("a format is running"));
+        assert!(not_ready_reason(&Sense::new(2, 0x31, 0)).is_none(), "31/00 is the interrupted format's wording");
+        assert!(not_ready_reason(&Sense::new(5, 0x24, 0)).is_none());
     }
 
     #[test]

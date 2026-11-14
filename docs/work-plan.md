@@ -1969,7 +1969,7 @@ drive-management plane — confirm before building:
   sysfs paths (bay_identifier, enclosure_identifier, version_fw) are used
   where present.
 
-### #141: forge1's late drives (2026-11-13) — P0, in progress
+### #141: forge1's NOT READY drives (2026-11-13) — P0, done from our side
 forge1 (IT-mode mpt3sas) took only bay 0 at boot; bays 3/4/7 (unformatted,
 512B) came up later and stayed `missing`/`unconfigured_bad` with a failed
 Nov 7 format on their Drive objects.
@@ -1978,6 +1978,11 @@ Nov 7 format on their Drive objects.
 - [x] back from missing: failed/interrupted format record cleared (event keeps it)
 - [x] controller state from a gone controller dropped (monitor `last_controller_state`)
 - [x] sc-build passed (clippy -D warnings + tests), v0.46.0, image requested
-- 4K fast format in the daemon is #140 (formatcli's FFMT method); the
-  layout (OS mirror on 4, 3+1 parity) is stormblock's (#573/#593).
+- Correction (master, 2026-11-13): forge1's 3 SAS drives are not late or
+  missing: they are on the HBA, unformatted, NOT READY. The 4K format and
+  the layout are the install's (stormblock#592, install-config `storage:`);
+  stormdrive must not format or lay them out through the API.
+- [x] v0.46.1: NOT READY reported honestly (`scsi::not_ready_reason`, sg-only
+  and 0-sector block nodes), WWID from VPD 0x83 when sysfs has none
+  (`transport::vpd83_naa`), format resume finds sg-only drives by WWID
 

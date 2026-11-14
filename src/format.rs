@@ -649,15 +649,26 @@ fn current_boot_id() -> String {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map(|s| s.trim().to_string()).unwrap_or_default()
 }
 
-/// The disks under `sys_block` (`/sys/block`) with this WWID: one per path.
-fn names_by_wwid(sys_block: &std::path::Path, wwid: &str) -> Vec<String> {
-    let Ok(dir) = std::fs::read_dir(sys_block) else { return vec![] };
+/// The disks under `sys` (`/sys`) with this WWID: one block node per path.
+///
+/// A drive sd made no block node of (mid-format, NOT READY: #131, #141) is
+/// found by its sg node, `class/scsi_generic/sgN`, when no block node has
+/// the WWID: a format through sg is how it comes back.
+fn names_by_wwid(sys: &std::path::Path, wwid: &str) -> Vec<String> {
+    let has = |p: std::path::PathBuf| std::fs::read_to_string(p).is_ok_and(|w| w.trim() == wwid);
+    let Ok(dir) = std::fs::read_dir(sys.join("block")) else { return vec![] };
     let mut names: Vec<String> = dir
         .flatten()
-        .filter(|e| std::fs::read_to_string(e.path().join("device/wwid")).is_ok_and(|w| w.trim() == wwid))
+        .filter(|e| has(e.path().join("device/wwid")))
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     names.sort();
+    if names.is_empty() {
+        names = crate::discovery::sg_only_disks(sys)
+            .into_iter()
+            .filter(|sg| has(sys.join("class/scsi_generic").join(sg).join("device/wwid")))
+            .collect();
+    }
     names
 }
 
@@ -671,7 +682,7 @@ const REAPPEAR: Duration = Duration::from_secs(10 * 60);
 fn as_named_now(drive: &Drive, other_boot: bool) -> Result<Drive, String> {
     let t0 = Instant::now();
     let names = loop {
-        let names = drive.wwid.as_deref().map(|w| names_by_wwid(std::path::Path::new("/sys/block"), w)).unwrap_or_default();
+        let names = drive.wwid.as_deref().map(|w| names_by_wwid(std::path::Path::new("/sys"), w)).unwrap_or_default();
         if !names.is_empty() || !other_boot || t0.elapsed() > REAPPEAR {
             break names;
         }
@@ -679,7 +690,11 @@ fn as_named_now(drive: &Drive, other_boot: bool) -> Result<Drive, String> {
     };
     if names.is_empty() {
         return if other_boot && drive.wwid.is_some() {
-            Err(format!("the node restarted and no disk has WWID {} after {} min", drive.wwid.as_deref().unwrap_or_default(), REAPPEAR.as_secs() / 60))
+            Err(format!(
+                "the node restarted and no block or sg node has WWID {} after {} min: the drive is not on the HBA (a NOT READY drive still has its sg node)",
+                drive.wwid.as_deref().unwrap_or_default(),
+                REAPPEAR.as_secs() / 60
+            ))
         } else {
             Ok(drive.clone())
         };
@@ -1196,12 +1211,25 @@ mod tests {
     #[test]
     fn a_drive_is_found_by_wwid_when_names_moved() {
         let root = std::env::temp_dir().join(format!("stormdrive-wwid-{}", std::process::id()));
+        let block = root.join("block");
         for (n, w) in [("sdb", "naa.other"), ("sdc", "naa.mine"), ("sdf", "naa.mine")] {
-            std::fs::create_dir_all(root.join(n).join("device")).unwrap();
-            std::fs::write(root.join(n).join("device/wwid"), format!("{w}\n")).unwrap();
+            std::fs::create_dir_all(block.join(n).join("device")).unwrap();
+            std::fs::write(block.join(n).join("device/wwid"), format!("{w}\n")).unwrap();
         }
-        std::fs::create_dir_all(root.join("loop0")).unwrap();
+        std::fs::create_dir_all(block.join("loop0")).unwrap();
+        // #141: a NOT READY drive with only an sg node, and an sg node of a
+        // disk that has a block node (not counted twice).
+        for (sg, w, with_block) in [("sg4", "naa.notready", false), ("sg2", "naa.mine", true)] {
+            let dev = root.join("class/scsi_generic").join(sg).join("device");
+            std::fs::create_dir_all(&dev).unwrap();
+            std::fs::write(dev.join("type"), "0\n").unwrap();
+            std::fs::write(dev.join("wwid"), format!("{w}\n")).unwrap();
+            if with_block {
+                std::fs::create_dir_all(dev.join("block/sdc")).unwrap();
+            }
+        }
         assert_eq!(names_by_wwid(&root, "naa.mine"), ["sdc", "sdf"]);
+        assert_eq!(names_by_wwid(&root, "naa.notready"), ["sg4"]);
         assert!(names_by_wwid(&root, "naa.none").is_empty());
         assert!(names_by_wwid(&root.join("nothing"), "naa.mine").is_empty());
         std::fs::remove_dir_all(&root).unwrap();

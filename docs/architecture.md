@@ -269,6 +269,15 @@ path failover is actually needed.
   quotes it), and a controller state from a controller that is gone (a
   PERC replaced by an IT-mode HBA) is dropped, so neither stands on the
   drive or its Drive object.
+- **NOT READY drives** (#141): a drive on the HBA that answers INQUIRY but
+  is NOT READY (sense key 2: unformatted, a format running) is reported,
+  not lost: its `format_reason` says "present on the HBA, not ready
+  (2/asc/ascq: …)", whether the kernel gave it only an sg node or a block
+  node of 0 sectors, and with no sysfs `wwid` its WWID is read from VPD
+  0x83 (the logical unit's NAA, `naa.<hex>` as the kernel spells it), so it
+  keeps its identity. Formatting it is the install's (stormblock#592),
+  not something stormdrive does on its own; once formatted it comes up as
+  a disk through hotplug and is taken.
 - **Probe cache** (#15): what discovery asks the drive itself (READ
   CAPACITY(16) and the slab probe of LBA 0 and the GPT) is kept per device
   and asked again only when the device changes (`dev` maj:min, size,

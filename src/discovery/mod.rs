@@ -446,14 +446,21 @@ mod linux {
             // physical_block_size is the only hint. READ CAPACITY(16) is
             // the truth; it fails (NOT READY) mid-format, and then sysfs
             // stands in.
-            let asked = if name.starts_with("sd") {
+            let rc = if name.starts_with("sd") {
                 crate::scsi::sg_path_in(&sys.join("block").join(&name).join("device/scsi_generic").to_string_lossy())
                     .or_else(|| Some(node(&name)))
                     .and_then(|p| crate::scsi::Device::open(&p).ok())
-                    .and_then(|d| d.read_capacity16().ok())
+                    .map(|d| d.read_capacity16())
             } else {
                 None
             };
+            // A 0-sector disk that is NOT READY (unformatted, #141) says so,
+            // rather than looking like a drive with nothing to tell.
+            let not_ready = match &rc {
+                Some(Err(crate::scsi::Error::Sense(s))) if sectors == 0 => crate::scsi::not_ready_reason(s),
+                _ => None,
+            };
+            let asked = rc.and_then(|r| r.ok());
             // Only a real answer is cached: a drive that did not answer
             // (mid-format) is asked again next pass.
             let answered = asked.as_ref().is_some_and(|c| c.block_len > 0) || !name.starts_with("sd");
@@ -536,7 +543,7 @@ mod linux {
                 slabs,
                 mounted: super::mounted_in(mounts, &name),
                 supports,
-                format_reason: None,
+                format_reason: not_ready,
                 name,
             });
         }
@@ -600,7 +607,9 @@ mod linux {
                 model: read_trim(&dev.join("model")).unwrap_or_default(),
                 serial: read_trim(&dev.join("serial")).unwrap_or_default(),
                 firmware: read_trim(&dev.join("rev")).unwrap_or_default(),
-                wwid: read_trim(&dev.join("wwid")),
+                // No sysfs wwid for a drive sd never took: VPD 0x83, which
+                // a NOT READY drive still answers (#141), so it keeps its id.
+                wwid: read_trim(&dev.join("wwid")).or_else(|| d.vpd(0x83).ok().and_then(|r| crate::transport::vpd83_naa(&r))),
                 vendor,
                 capacity_bytes,
                 block_size,

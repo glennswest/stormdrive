@@ -44,6 +44,31 @@ pub fn vpd83_says_sas(raw: &[u8]) -> bool {
     false
 }
 
+/// VPD 0x83: the logical unit's NAA designator as the kernel spells its
+/// `wwid` (`naa.` + lowercase hex), for a drive whose sysfs has none (#141:
+/// an sg-only drive that is NOT READY still answers this page). Only a
+/// binary NAA on the logical unit (association 0); the longest one wins,
+/// as the kernel prefers IEEE Registered Extended over shorter forms.
+pub fn vpd83_naa(raw: &[u8]) -> Option<String> {
+    if raw.len() < 4 || raw[1] != 0x83 {
+        return None;
+    }
+    let end = (4 + u16::from_be_bytes([raw[2], raw[3]]) as usize).min(raw.len());
+    let mut off = 4;
+    let mut best: Option<&[u8]> = None;
+    while off + 4 <= end {
+        let (b0, b1, len) = (raw[off], raw[off + 1], raw[off + 3] as usize);
+        let body = raw.get(off + 4..(off + 4 + len).min(end)).unwrap_or(&[]);
+        let binary = b0 & 0x0f == 1;
+        let on_lu = (b1 >> 4) & 0x03 == 0;
+        if binary && on_lu && b1 & 0x0f == 3 && matches!(len, 8 | 16) && body.len() == len && !best.is_some_and(|b| len <= b.len()) {
+            best = Some(body);
+        }
+        off += 4 + len;
+    }
+    best.map(|b| format!("naa.{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()))
+}
+
 /// SPL's negotiated logical link rate, in Mb/s. Anything else is a phy with no
 /// link: disabled, in reset, or nothing on it.
 fn rate_mbps(code: u8) -> Option<u32> {
@@ -148,6 +173,22 @@ mod tests {
         assert!(!vpd83_says_sas(&fc));
         assert!(!vpd83_says_sas(&[0x00, 0x80, 0x00, 0x00]), "another page");
         assert!(!vpd83_says_sas(&[]));
+    }
+
+    #[test]
+    fn vpd83_gives_the_kernels_wwid() {
+        assert_eq!(vpd83_naa(&sas_vpd83()).as_deref(), Some("naa.50000cca01020304"));
+        // The target port's NAA is not the drive's.
+        let mut port_only = sas_vpd83();
+        port_only[5] = 0x13;
+        assert_eq!(vpd83_naa(&port_only), None);
+        // A 16-byte NAA beats an 8-byte one.
+        let mut raw = vec![0x00, 0x83, 0x00, 0x20];
+        raw.extend_from_slice(&[0x01, 0x03, 0x00, 0x08, 0x50, 0, 0x0c, 0xca, 1, 2, 3, 4]);
+        raw.extend_from_slice(&[0x01, 0x03, 0x00, 0x10, 0x60, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(vpd83_naa(&raw).as_deref(), Some("naa.600102030405060708090a0b0c0d0e0f"));
+        assert_eq!(vpd83_naa(&[0x00, 0x80, 0x00, 0x00]), None);
+        assert_eq!(vpd83_naa(&[]), None);
     }
 
     /// One port; `rates` are its phys' negotiated rate codes.
