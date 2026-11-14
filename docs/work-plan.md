@@ -1977,7 +1977,7 @@ Nov 7 format on their Drive objects.
 - [x] rescan.rs: SAS host rescan after start (15 min) and while anything is missing
 - [x] back from missing: failed/interrupted format record cleared (event keeps it)
 - [x] controller state from a gone controller dropped (monitor `last_controller_state`)
-- [ ] sc-build, v0.46.0, image
+- [x] sc-build passed (clippy -D warnings + tests), v0.46.0, image requested
 - 4K fast format in the daemon is #140 (formatcli's FFMT method); the
   layout (OS mirror on 4, 3+1 parity) is stormblock's (#573/#593).
 
