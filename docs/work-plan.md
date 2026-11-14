@@ -1992,3 +1992,14 @@ Nov 7 format on their Drive objects.
 - [ ] proof on forge1's console (bays 3/4/7 formatted to 4096 + PI, layout
   created): the next install with stormblock v24.5.0 + this image
 
+
+### #143: formatcli on a drive with no SCSI passthrough (2026-11-14) — P0
+pvetest3 12.82: vda/vdb/vdc (virtio-blk) failed `read capacity: Not a tty`
+(SG_IO → ENOTTY) and the install went FATAL. stormblock's initramfs runs
+`--method fast` (its `auto`) and takes exit 0 or 4.
+- [ ] SG_IO ENOTTY = no passthrough, not a failure: geometry from the block
+  layer (sysfs queue/logical_block_size, size, integrity/format)
+- [ ] at the asked format → `already …; nothing to format` (exit 4) for every
+  method; not at it → refused (exit 3) naming the driver
+- [ ] NVMe: Identify failing falls back to the same block-layer check
+- [ ] tests, sc-build, release, image
