@@ -672,6 +672,11 @@ fast format sends `auto` on to a full FORMAT UNIT (`fast` stops, with the
 old length put back). Already at the asked length and PI (READ CAPACITY)
 under `auto` sends nothing. The read-back is READ CAPACITY's length and
 P_TYPE before the kernel rescan (a re-add would drop the open sg handle).
+A drive with no SCSI passthrough (SG_IO → ENOTTY, virtio-blk, #143) is not
+a failure: `block_geometry` reads sysfs (`queue/logical_block_size`, `size`,
+`integrity/format`), and `block_only` decides: at the format = nothing to do
+(exit 4, every method), not at it = refused (exit 3, the driver takes no
+FORMAT UNIT). The same check backs an NVMe namespace whose Identify fails.
 Exit codes and output: README "stormdrive format". The daemon's formats
 (REST, worker, DriveOperation) do not use FFMT yet.
 

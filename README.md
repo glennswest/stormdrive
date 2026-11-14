@@ -723,8 +723,17 @@ method used, logical block size, PI type, capacity and blocks, before and after.
 | 1 | failed (transport, the format failed, the read-back is not what was asked): the drive may need a format |
 | 2 | usage: unknown flag, a block size other than 512/4096, no such device |
 | 3 | refused by the drive (ILLEGAL REQUEST, with the sense and its field pointer, as #129), or a partition of it is mounted: nothing was formatted |
-| 4 | already at the format (`auto`, `none`): nothing sent |
+| 4 | already at the format (`auto`, `none`; any method on a drive that takes no format command): nothing sent |
 | 5 | not at the format (`none`) |
+
+A drive with **no SCSI passthrough** (#143: virtio-blk, where SG_IO answers
+"not a tty") is read from the block layer instead: sysfs
+`queue/logical_block_size`, `size` and `integrity/format`. At the asked block
+size and PI it needs no format whatever the method: exit 4, `vda: already 512
+with no PI: …; nothing to format (virtio_blk: no SCSI passthrough …)`. Not at
+it, nothing can get it there: exit 3, "… cannot be reached: … virtio_blk takes
+no FORMAT UNIT". An NVMe namespace whose Identify fails gets the same
+block-layer check (exit 4 at the format, else the Identify failure).
 
 An NVMe namespace gets Format NVM to the LBA format of that size without
 metadata; `--protection type1` on NVMe is refused (exit 3). A drive whose last

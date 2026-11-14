@@ -30,6 +30,14 @@
 //!
 //! An NVMe namespace gets Format NVM to the LBA format of that size, no
 //! metadata (PI on NVMe: refused, not built here).
+//!
+//! A drive with no SCSI passthrough (#143: virtio-blk, where SG_IO answers
+//! ENOTTY) is not a failed drive: its geometry is the block layer's (sysfs
+//! `queue/logical_block_size`, `size`, `integrity/format`). At the asked
+//! block size and PI it needs no format, whatever the method (exit 4,
+//! "nothing to format"); not at it, nothing can get it there, so it is
+//! refused (exit 3) naming the driver. An NVMe namespace whose Identify
+//! fails gets the same block-layer check before it is called failed.
 
 use crate::erase::nvme_names;
 use crate::format::{poll_format, set_length, Attempt, Unit};
@@ -140,6 +148,9 @@ pub struct Report {
     pub after: Option<Geometry>,
     /// `auto`: why the fast format was not used.
     pub fast_skipped: Option<String>,
+    /// The geometry is the block layer's: the drive takes no format
+    /// command (#143), and why.
+    pub no_format_command: Option<String>,
     /// Refused / failed: what the drive said.
     pub error: Option<String>,
     pub elapsed_secs: u64,
@@ -158,6 +169,7 @@ impl Report {
             before: None,
             after: None,
             fast_skipped: None,
+            no_format_command: None,
             error: None,
             elapsed_secs: 0,
         }
@@ -179,11 +191,18 @@ impl Report {
                 human_secs(self.elapsed_secs),
                 self.after.map(|g| g.line()).unwrap_or_default()
             ),
-            Outcome::Already => format!(
-                "{}: already {want}: {}; nothing sent",
-                self.device,
-                self.before.map(|g| g.line()).unwrap_or_default()
-            ),
+            Outcome::Already => match &self.no_format_command {
+                Some(why) => format!(
+                    "{}: already {want}: {}; nothing to format ({why})",
+                    self.device,
+                    self.before.map(|g| g.line()).unwrap_or_default()
+                ),
+                None => format!(
+                    "{}: already {want}: {}; nothing sent",
+                    self.device,
+                    self.before.map(|g| g.line()).unwrap_or_default()
+                ),
+            },
             Outcome::NotAtFormat => format!(
                 "{}: not at {want}: {}",
                 self.device,
@@ -266,12 +285,94 @@ impl Target for scsi::Device {
 }
 
 /// How the run talks to the outside: sleeping between polls, progress
-/// lines, the kernel rescan. A test passes its own.
+/// lines, the kernel rescan, the block layer's geometry for a drive with
+/// no SCSI passthrough. A test passes its own.
 pub(crate) struct Io<'a> {
     pub poll: Duration,
     pub sleep: &'a dyn Fn(Duration),
     pub say: &'a dyn Fn(&str),
     pub rescan: &'a dyn Fn(),
+    pub block: &'a dyn Fn() -> Result<BlockDev, String>,
+}
+
+/// A drive as the block layer has it (#143): its geometry and the driver
+/// that serves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockDev {
+    pub geometry: Geometry,
+    pub driver: String,
+}
+
+/// The PI type of a block-layer integrity profile: `T10-DIF-TYPE1-CRC` is
+/// 1, `none` (or anything that is not T10 DIF) is 0.
+pub fn integrity_pi_type(format: &str) -> u8 {
+    format
+        .trim()
+        .split_once("TYPE")
+        .and_then(|(_, t)| t.chars().next())
+        .and_then(|c| c.to_digit(10))
+        .map(|d| d as u8)
+        .unwrap_or(0)
+}
+
+/// A block device's geometry from its sysfs directory (`/sys/block/<d>`):
+/// `queue/logical_block_size`, `size` (512-byte sectors, whatever the block
+/// size), `integrity/format`, and the driver of `device`.
+pub fn block_geometry(sys: &std::path::Path) -> Result<BlockDev, String> {
+    let read = |f: &str| std::fs::read_to_string(sys.join(f)).map(|s| s.trim().to_string());
+    let block_size: u32 = read("queue/logical_block_size")
+        .map_err(|e| format!("{}/queue/logical_block_size: {e}", sys.display()))?
+        .parse()
+        .map_err(|e| format!("{}/queue/logical_block_size: {e}", sys.display()))?;
+    if block_size == 0 {
+        return Err(format!("{}/queue/logical_block_size: 0", sys.display()));
+    }
+    let sectors: u64 = read("size")
+        .map_err(|e| format!("{}/size: {e}", sys.display()))?
+        .parse()
+        .map_err(|e| format!("{}/size: {e}", sys.display()))?;
+    let pi_type = read("integrity/format").map(|f| integrity_pi_type(&f)).unwrap_or(0);
+    let driver = std::fs::read_link(sys.join("device/driver"))
+        .ok()
+        .and_then(|l| l.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "the block driver".into());
+    let bytes = sectors * 512;
+    Ok(BlockDev {
+        geometry: Geometry { block_size, pi_type, blocks: bytes / block_size as u64, capacity_bytes: bytes },
+        driver,
+    })
+}
+
+/// SG_IO answered "not a tty": the device takes no SCSI commands at all
+/// (virtio-blk, #143). Not a failure of the drive.
+fn no_passthrough(e: &ScsiError) -> bool {
+    matches!(e, ScsiError::Io(e) if e.raw_os_error() == Some(libc::ENOTTY))
+}
+
+/// A drive that takes no format command: at the asked format it needs none
+/// (any method: there is nothing to send), else nothing can get it there.
+fn block_only(mut r: Report, dev: Result<BlockDev, String>, why: &str, (to, prot): (u32, Protection), method: Method) -> Report {
+    let b = match dev {
+        Ok(b) => b,
+        Err(e) => return r.end(Outcome::Failed, Some(format!("{why}, and no block-layer geometry: {e}"))),
+    };
+    let g = b.geometry;
+    r.before = Some(g);
+    r.no_format_command = Some(format!("{}: {why}; read from the block layer", b.driver));
+    let at = g.block_size == to && g.pi_type == prot.prot_type();
+    match (at, method) {
+        (true, _) => r.end(Outcome::Already, None),
+        (false, Method::None) => r.end(Outcome::NotAtFormat, None),
+        (false, _) => r.end(
+            Outcome::Refused,
+            Some(format!(
+                "{to} with {} cannot be reached: the drive reads {} and {} takes no FORMAT UNIT ({why})",
+                prot.word(),
+                g.line(),
+                b.driver
+            )),
+        ),
+    }
 }
 
 fn is_illegal(e: &ScsiError) -> bool {
@@ -295,7 +396,11 @@ pub(crate) fn run_scsi(dev: &impl Target, name: &str, want: (u32, Protection), m
     let _ = dev.test_unit_ready();
     match before_format(dev, name, io) {
         Ok(b) => r.before = b,
-        Err(e) => return r.end(Outcome::Failed, Some(e)),
+        Err(Before::NoPassthrough(e)) => {
+            let why = format!("no SCSI passthrough (read capacity: {e})");
+            return block_only(r, (io.block)(), &why, want, method);
+        }
+        Err(Before::Failed(e)) => return r.end(Outcome::Failed, Some(e)),
     }
     let at = r.before.is_some_and(|b| b.block_size == to && b.pi_type == prot.prot_type());
     match (method, at) {
@@ -429,8 +534,9 @@ fn wait_format(dev: &impl Target, name: &str, how: &str, io: &Io) -> (Duration, 
 ///   format it.
 ///
 /// Anything else (another sense key, a transport error) is a failure: the
-/// drive is not one a format would cure.
-fn before_format(dev: &impl Target, name: &str, io: &Io) -> Result<Option<Geometry>, String> {
+/// drive is not one a format would cure. SG_IO refused as "not a tty" is a
+/// drive with no SCSI passthrough (#143), for the block layer to read.
+fn before_format(dev: &impl Target, name: &str, io: &Io) -> Result<Option<Geometry>, Before> {
     let mut acted = false;
     loop {
         let s = match dev.read_capacity16() {
@@ -440,7 +546,8 @@ fn before_format(dev: &impl Target, name: &str, io: &Io) -> Result<Option<Geomet
                 return Ok(None);
             }
             Err(ScsiError::Sense(s)) if s.key == 0x2 => s,
-            Err(e) => return Err(format!("read capacity: {e}")),
+            Err(e) if no_passthrough(&e) => return Err(Before::NoPassthrough(e.to_string())),
+            Err(e) => return Err(Before::Failed(format!("read capacity: {e}"))),
         };
         if acted {
             (io.say)(&format!("{name}: read capacity: {s} (still not ready; formatting it)"));
@@ -467,6 +574,13 @@ fn before_format(dev: &impl Target, name: &str, io: &Io) -> Result<Option<Geomet
             }
         }
     }
+}
+
+/// Why the drive's format before the run is unknown.
+enum Before {
+    /// SG_IO is not there: read the block layer.
+    NoPassthrough(String),
+    Failed(String),
 }
 
 fn e_of(a: &Attempt) -> String {
@@ -499,8 +613,16 @@ fn run_nvme(path: &str, name: &str, want: (u32, Protection), method: Method) -> 
                 _ => {}
             }
         }
-        Err(e) if method == Method::None => return r.end(Outcome::Failed, Some(e)),
-        Err(e) => return r.end(Outcome::Failed, Some(format!("identify: {e}"))),
+        Err(e) => {
+            // No Identify: the block layer still says whether the namespace
+            // is at the format (#143); only then is there nothing to do.
+            let b = block_geometry(std::path::Path::new(&format!("/sys/block/{name}")));
+            let at = b.as_ref().is_ok_and(|b| b.geometry.block_size == to && b.geometry.pi_type == prot.prot_type());
+            if at {
+                return block_only(r, b, &format!("identify: {e}"), want, method);
+            }
+            return r.end(Outcome::Failed, Some(if method == Method::None { e } else { format!("identify: {e}") }));
+        }
     }
     if prot != Protection::None {
         return r.end(Outcome::Refused, Some("PI on an NVMe namespace is not built in this CLI (formats with metadata are not chosen)".into()));
@@ -579,7 +701,8 @@ pub fn main(device: &str, block_size: u32, protection: Prot, method: Method, pol
             Ok(dev) => {
                 let say = |l: &str| eprintln!("{l}");
                 let rescan = || crate::format::rescan(&name);
-                let io = Io { poll: Duration::from_secs(poll_secs.max(1)), sleep: &std::thread::sleep, say: &say, rescan: &rescan };
+                let block = || block_geometry(std::path::Path::new(&format!("/sys/block/{name}")));
+                let io = Io { poll: Duration::from_secs(poll_secs.max(1)), sleep: &std::thread::sleep, say: &say, rescan: &rescan, block: &block };
                 run_scsi(&dev, &name, (block_size, prot), method, &io)
             }
             Err(e) => Report::new(&name, method, (block_size, prot)).end(Outcome::Failed, Some(format!("open {path}: {e}"))),
@@ -624,6 +747,8 @@ mod tests {
         starts: bool,
         /// Polls left of a format already running when the run starts.
         running: Cell<u8>,
+        /// No SCSI passthrough: every command gets ENOTTY (virtio-blk, #143).
+        no_sg: bool,
     }
 
     impl Fake {
@@ -643,7 +768,11 @@ mod tests {
                 key: 2,
                 starts: false,
                 running: Cell::new(0),
+                no_sg: false,
             }
+        }
+        fn virtio() -> Self {
+            Fake { no_sg: true, ..Fake::at(512, 0) }
         }
         fn not_ready(asc: u8, ascq: u8) -> Self {
             Fake { before: None, not_ready: Cell::new(Some((asc, ascq))), ..Fake::at(512, 0) }
@@ -692,6 +821,9 @@ mod tests {
         }
         fn read_capacity16(&self) -> scsi::Result<scsi::Capacity> {
             self.log.borrow_mut().push("read capacity".into());
+            if self.no_sg {
+                return Err(ScsiError::Io(std::io::Error::from_raw_os_error(libc::ENOTTY)));
+            }
             match (self.formatted.get(), self.before) {
                 (Some(f), _) if self.polls.get() >= 3 => {
                     let (b, p) = self.after.unwrap_or((self.selected.get(), if f == 0b10 { 1 } else { 0 }));
@@ -763,12 +895,26 @@ mod tests {
     }
 
     fn run(f: &Fake, want: (u32, Protection), m: Method) -> (Report, Vec<String>) {
+        run_with(f, want, m, Ok(virtio_blk(512, 0)))
+    }
+
+    /// pvetest3's vda: 64 GiB of 512-byte blocks on virtio_blk.
+    fn virtio_blk(block_size: u32, pi_type: u8) -> BlockDev {
+        let bytes = 134_217_728u64 * 512;
+        BlockDev {
+            geometry: Geometry { block_size, pi_type, blocks: bytes / block_size as u64, capacity_bytes: bytes },
+            driver: "virtio_blk".into(),
+        }
+    }
+
+    fn run_with(f: &Fake, want: (u32, Protection), m: Method, block: Result<BlockDev, String>) -> (Report, Vec<String>) {
         let lines = RefCell::new(vec![]);
         let rescans = Cell::new(0);
         let say = |l: &str| lines.borrow_mut().push(l.to_string());
         let sleep = |_: Duration| {};
         let rescan = || rescans.set(rescans.get() + 1);
-        let io = Io { poll: Duration::from_secs(600), sleep: &sleep, say: &say, rescan: &rescan };
+        let block = || block.clone();
+        let io = Io { poll: Duration::from_secs(600), sleep: &sleep, say: &say, rescan: &rescan, block: &block };
         let r = run_scsi(f, "sdd", want, m, &io);
         if r.outcome == Outcome::Formatted {
             assert_eq!(rescans.get(), 1, "the kernel rescans after a format");
@@ -941,6 +1087,64 @@ mod tests {
         assert_eq!(r.outcome, Outcome::Failed, "{r:?}");
         assert!(r.error.as_deref().unwrap().starts_with("read capacity:"), "{r:?}");
         assert!(f.sent().is_empty());
+    }
+
+    #[test]
+    fn virtio_blk_at_the_format_needs_none_for_every_method() {
+        // pvetest3 12.82: stormblock's install runs `--method fast` (#143).
+        for m in [Method::Auto, Method::Fast, Method::Full, Method::None] {
+            let f = Fake::virtio();
+            let (r, _) = run(&f, (512, Protection::None), m);
+            assert_eq!(r.outcome, Outcome::Already, "{m:?}: {r:?}");
+            assert_eq!(r.exit_code, 4);
+            assert!(f.sent().is_empty(), "{m:?}: {:?}", f.sent());
+            let s = r.summary();
+            assert!(s.starts_with("sdd: already 512 with no PI: 512-byte blocks, no PI, 68.72 GB (134217728 blocks)"), "{s}");
+            assert!(s.contains("nothing to format (virtio_blk: no SCSI passthrough"), "{s}");
+            assert!(!s.contains("failed"), "{s}");
+        }
+    }
+
+    #[test]
+    fn virtio_blk_cannot_reach_4096_or_pi_and_says_so() {
+        for want in [(4096, Protection::None), (512, Protection::Type1), PI4K] {
+            let f = Fake::virtio();
+            let (r, _) = run(&f, want, Method::Fast);
+            assert_eq!(r.outcome, Outcome::Refused, "{want:?}: {r:?}");
+            assert_eq!(r.exit_code, 3);
+            let e = r.error.as_deref().unwrap();
+            assert!(e.contains("cannot be reached") && e.contains("virtio_blk takes no FORMAT UNIT"), "{e}");
+            assert!(f.sent().is_empty());
+        }
+        let (r, _) = run(&Fake::virtio(), (4096, Protection::None), Method::None);
+        assert_eq!(r.outcome, Outcome::NotAtFormat);
+    }
+
+    #[test]
+    fn virtio_blk_with_no_block_geometry_fails_naming_both() {
+        let (r, _) = run_with(&Fake::virtio(), (512, Protection::None), Method::Fast, Err("/sys/block/sdd/size: gone".into()));
+        assert_eq!(r.outcome, Outcome::Failed);
+        let e = r.error.unwrap();
+        assert!(e.contains("no SCSI passthrough") && e.contains("/sys/block/sdd/size: gone"), "{e}");
+    }
+
+    #[test]
+    fn block_geometry_from_sysfs() {
+        let d = std::env::temp_dir().join(format!("sd-fmt143-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("queue")).unwrap();
+        std::fs::write(d.join("queue/logical_block_size"), "4096\n").unwrap();
+        std::fs::write(d.join("size"), "134217728\n").unwrap();
+        let b = block_geometry(&d).unwrap();
+        assert_eq!((b.geometry.block_size, b.geometry.pi_type, b.geometry.blocks), (4096, 0, 16_777_216));
+        assert_eq!(b.geometry.capacity_bytes, 68_719_476_736);
+        std::fs::create_dir_all(d.join("integrity")).unwrap();
+        std::fs::write(d.join("integrity/format"), "T10-DIF-TYPE1-CRC\n").unwrap();
+        assert_eq!(block_geometry(&d).unwrap().geometry.pi_type, 1);
+        std::fs::write(d.join("queue/logical_block_size"), "0\n").unwrap();
+        assert!(block_geometry(&d).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(integrity_pi_type("none"), 0);
+        assert_eq!(integrity_pi_type("T10-DIF-TYPE3-IP"), 3);
     }
 
     #[test]
