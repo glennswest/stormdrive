@@ -2008,12 +2008,14 @@ pvetest3 12.82: vda/vdb/vdc (virtio-blk) failed `read capacity: Not a tty`
 ### #140: API format runs formatcli's method (2026-11-14) — P0
 Owner: "try the fast format first, and then do the other"; "i need to be able
 watch progress, and error logs".
-- [ ] `format::run_blocking` calls `formatcli::run_scsi` (one code path), with
+- [x] `format::run_blocking` calls `formatcli::run_scsi` (one code path), with
   the daemon's IOC-reset hold, rescan/re-add, refusal alternatives as its Io
-- [ ] `method` (auto default | fast | full) on drive, batch, shelf format and
+- [x] `method` (auto default | fast | full) on drive, batch, shelf format and
   the worker's format step; auto at the format = "already", nothing sent
-- [ ] run + record: method asked/used, fast_skipped (the drive's sense),
+- [x] run + record: method asked/used, fast_skipped (the drive's sense),
   already; per-run log (time + line, every sense/refusal/fallback/progress)
   also to the node log; `GET /api/v1/drives/{id}/format/log`
-- [ ] batch already parallel (one task per drive): keep, test it
-- [ ] tests, docs, sc-build, release, image
+- [x] batch already parallel (one task per drive): keep, test it
+- [x] tests (format.rs on run_scsi: forge1 #130/#131, X378, auto/fast/full, already, log cap), docs, sc-build (392 tests + clippy -D warnings), v0.47.0, image requested
+- Worker format step: `auto` without a step field (the CRD step's `method` is sanitize's enum)
+- [ ] forge1: `POST /api/v1/format {drives:[sdb,sdc,sdd], block_size:4096, method:auto}` after a release carries 0.47.0 (master/owner)

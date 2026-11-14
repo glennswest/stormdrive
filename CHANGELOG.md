@@ -3,11 +3,15 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-14
-- **feat:** #140: the API's formats (`POST /api/v1/drives/{id}/format`, `POST /api/v1/format`, a shelf's) take `"method": "auto" | "fast" | "full"`, `auto` by default, and run `stormdrive format`'s own code (`formatcli::run_scsi`): nothing on a drive already at the format, else the fast format (FFMT 01b), a full FORMAT UNIT only if the drive refuses it. A worker format step (DriveOperation, DrivePolicy) runs `auto` too. A batch starts every drive at once
-- **feat:** #140: each run says `method`, `method_used` (`fast`, `full`, `full_blocking`), `fast_skipped` (the drive's sense when it refused the fast format) and `already`, with its progress and ETA as before, on the run, the record and `status.format` of the Drive object
-- **feat:** #140: each run keeps a log with times (the method, every sense, a refused fast format and the fall back to full, progress, the end; newest 500 lines), served at `GET /api/v1/drives/{id}/format/log`, kept on the record, its newest 20 lines on the Drive object (`status.format.logTail`); every line also goes to the node's log
-- **refactor:** #140: the daemon's own MODE SELECT + FORMAT UNIT sequence (`begin`, `start_exact`, `current_length`) is gone; its tests (forge1 #130/#131, the NetApp X378 descriptor) now run against `run_scsi`. A refused MODE SELECT in `stormdrive format` also puts the old length back, as the daemon did
+## [v0.47.0] — 2026-11-14
+
+### Added
+- #140: the API's formats (`POST /api/v1/drives/{id}/format`, `POST /api/v1/format`, a shelf's) take `"method": "auto" | "fast" | "full"`, `auto` by default, and run `stormdrive format`'s own code (`formatcli::run_scsi`): nothing on a drive already at the format, else the fast format (FFMT 01b), a full FORMAT UNIT only if the drive refuses it. A worker format step (DriveOperation, DrivePolicy) runs `auto` too. A batch starts every drive at once
+- #140: each run says `method`, `method_used` (`fast`, `full`, `full_blocking`), `fast_skipped` (the drive's sense when it refused the fast format) and `already`, with its progress and ETA as before, on the run, the record and `status.format` of the Drive object
+- #140: each run keeps a log with times (the method, every sense, a refused fast format and the fall back to full, progress, the end; newest 500 lines), served at `GET /api/v1/drives/{id}/format/log`, kept on the record, its newest 20 lines on the Drive object (`status.format.logTail`); every line also goes to the node's log
+
+### Changed
+- #140: the daemon's own MODE SELECT + FORMAT UNIT sequence (`begin`, `start_exact`, `current_length`) is gone; its tests (forge1 #130/#131, the NetApp X378 descriptor) now run against `run_scsi`. A refused MODE SELECT in `stormdrive format` also puts the old length back, as the daemon did
 
 ## [v0.46.3] — 2026-11-14
 
