@@ -3,8 +3,10 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-13
-- **fix:** #142 (for #141): `stormdrive format` no longer gives up on a drive that answers READ CAPACITY with NOT READY. 04/02 gets a START UNIT and is read again; 04/04 (a format still running) and 04/01 are waited for with progress, never stopped, then read again; any other NOT READY (04/00, 04/03, …) is named and formatted (MODE SELECT + FORMAT UNIT, no "before" geometry). Another sense key or a transport error still fails. forge1's three NOT READY SAS drives are what stormblock's install formats through it (stormblock#595)
+## [v0.46.2] — 2026-11-13
+
+### Fixed
+- #142 (for #141): `stormdrive format` no longer gives up on a drive that answers READ CAPACITY with NOT READY. 04/02 gets a START UNIT and is read again; 04/04 (a format still running) and 04/01 are waited for with progress, never stopped, then read again; any other NOT READY (04/00, 04/03, …) is named and formatted (MODE SELECT + FORMAT UNIT, no "before" geometry). Another sense key or a transport error still fails. forge1's three NOT READY SAS drives are what stormblock's install formats through it (stormblock#595)
 
 ## [v0.46.1] — 2026-11-13
 
