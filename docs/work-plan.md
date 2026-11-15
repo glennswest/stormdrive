@@ -1991,6 +1991,9 @@ Nov 7 format on their Drive objects.
   forge1's three drives
 - [ ] proof on forge1's console (bays 3/4/7 formatted to 4096 + PI, layout
   created): the next install with stormblock v24.5.0 + this image
+  - 2026-11-14: the #1275 check ran this forge1-only proof on pvetest3 (a VM
+    without these drives) and reopened it; re-queued `--after-install
+    stormdrive>=0a17f07@forge1`. Verify on forge1's console by hand, then close.
 
 
 ### #143: formatcli on a drive with no SCSI passthrough (2026-11-14) — P0

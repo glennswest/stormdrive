@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-14
+- **docs:** work plan #141: the proof is forge1's console, not pvetest3's; item waits on a forge1 install
+
 ## [v0.47.0] — 2026-11-14
 
 ### Added
