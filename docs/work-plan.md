@@ -1994,6 +1994,12 @@ Nov 7 format on their Drive objects.
   - 2026-11-14: the #1275 check ran this forge1-only proof on pvetest3 (a VM
     without these drives) and reopened it; re-queued `--after-install
     stormdrive>=0a17f07@forge1`. Verify on forge1's console by hand, then close.
+  - 2026-11-15: forge1's 12.86 install (`forge1-1794709478`) passed. Only
+    bay 0 (naa.5000cca2680ab8d8) was formatted to 4096+PI1 and laid. Bays
+    3/4/7 are not on the HBA330: not in the installer inventory, not in
+    stormdrive (no sg node). Their assets were last seen 2026-11-06, behind
+    the PERC. A person's step (cabling/seating), `wait-owner --action`; the
+    proof follows at the next forge1 install
 
 
 ### #143: formatcli on a drive with no SCSI passthrough (2026-11-14) — P0

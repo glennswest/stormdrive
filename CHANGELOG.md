@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-15
+- **docs:** work plan #141: on forge1's 12.86 install bays 3/4/7 are not on the HBA330 (only bay 0); waits on a person's check of cabling/seating
+
 ### 2026-11-14
 - **docs:** work plan #141: the proof is forge1's console, not pvetest3's; item waits on a forge1 install
 
