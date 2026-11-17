@@ -2032,15 +2032,16 @@ watch progress, and error logs".
 ### #147: Drive status.pages + DriveOperation `op: details` (2026-11-17) — P0
 stormblock#636 (owner on forge1 bay 3 vs the Sun HGSTs: "lets get the mode
 pages. and any way to parse vpd pages"). Supersedes #146's `status.modePages`.
-- [ ] `pages.rs`: every VPD page listed in 0x00 (whole, ≤ 4 KiB) → `{page,
+- [x] `pages.rs`: every VPD page listed in 0x00 (whole, ≤ 4 KiB) → `{page,
   hex, said, strings, error}`; mode pages 0x03 0x08 0x0A 0x19 0x1A 0x1C,
   current + changeable → `{page, hex, changeable, said, error}`; named bits
   `control` (0x0A), `extInquiry` (0x86), `caching` (0x08). Decoders portable
   and unit-tested; vendor pages (≥ 0xC0) raw + printable strings only
-- [ ] read in discovery for every SCSI drive, own cache (1 h), kept in memory
+- [x] read in discovery for every SCSI drive, own cache (1 h), kept in memory
   by drive id (not in inventory.json: bytes of every page × 160 drives);
   `status.pages` on the Drive object, CRD schema + printer columns
-- [ ] `op: details` step: reads pages + a health sample now (no lane, any
+- [x] `op: details` step: reads pages + a health sample now (no lane, any
   activity but missing/formatting/sanitizing, fleet drives too)
-- [ ] tests, docs (architecture, README, CRD), changelog, sc-build, version
+- [x] tests (pages.rs 11, worker details_only_asks), docs (architecture, README, CRD), changelog, sc-build (403 lib tests + clippy -D warnings), v0.48.0, image requested
+- stormcos's copy of the CRDs (v0.31.0) lacks `op: details`: stormcos#1005 (with #683)
 - [ ] proof: forge1's Drive objects carry status.pages (bay 3 vs bay 0)
