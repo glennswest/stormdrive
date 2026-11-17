@@ -146,6 +146,14 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
     if let Some(r) = d.link_rate_mbps {
         metrics.push(Metric::new("link", crate::transport::rate_label(r)).tone("muted"));
     }
+    // The link's errors moving (#149): the alarm before writes fail.
+    if let Some(st) = crate::link::state(&d.id) {
+        match st.level {
+            crate::link::Level::Degraded => metrics.push(Metric::new("link errors", "degraded").tone("warn")),
+            crate::link::Level::Failing => metrics.push(Metric::new("link errors", "failing").tone("error")),
+            _ => {}
+        }
+    }
     if let Some(h) = d.location.controller.as_ref().and_then(controller_name) {
         metrics.push(Metric::new("hba", h).tone("muted"));
     }

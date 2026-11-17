@@ -836,6 +836,33 @@ async fn apply_outcome(
     if let Some(msg) = wear_event {
         state.events.write().await.push(Some(id), Severity::Warning, "wear", msg);
     }
+    // The SAS link, both sides (#149): a change of level is the alarm,
+    // raised on the counters before a write fails.
+    if let Some(r) = sample.link.as_ref().filter(|r| out.answered() && !r.is_empty()) {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let (st, changed) = crate::link::observe(id, r, now);
+        if let Some(from) = changed {
+            let mut msg = format!(
+                "{} ({} {}): link {} → {}: {}",
+                drive.name,
+                drive.model,
+                drive.serial,
+                from.map_or("unknown", crate::link::Level::word),
+                st.level.word(),
+                st.message
+            );
+            if let Some(rec) = &st.recommendation {
+                msg.push_str(&format!(" — {rec}"));
+            }
+            tracing::warn!("{msg}");
+            let sev = match st.level {
+                crate::link::Level::Failing => Severity::Error,
+                crate::link::Level::Degraded => Severity::Warning,
+                _ => Severity::Info,
+            };
+            state.events.write().await.push(Some(id), sev, "link", msg);
+        }
+    }
 
     if effective != current {
         let sev = match effective {

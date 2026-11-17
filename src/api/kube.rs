@@ -185,6 +185,8 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
         Membership::Fleet => "fleet",
         Membership::Out => "out",
     };
+    // The SAS link, both sides, and its two conditions (#149).
+    let (link, conditions) = crate::link::status(&d.id);
     json!({
         "apiVersion": api_version(),
         "kind": "Drive",
@@ -227,6 +229,8 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "bayNumbering": d.location.bay_numbering,
             "position": d.location.position,
             "linkRateMbps": d.link_rate_mbps,
+            "link": link,
+            "conditions": conditions,
             "healthAck": d.health_ack,
             "sasAddress": d.location.sas_address,
             "location": d.location,

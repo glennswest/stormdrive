@@ -47,6 +47,7 @@ pub fn decode_smart_page(page: &[u8; 512]) -> Sample {
         }),
         smart: None,
         ata_attributes: Vec::new(),
+        link: None,
     }
 }
 

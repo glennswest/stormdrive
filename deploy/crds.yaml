@@ -47,9 +47,11 @@ spec:
         - { name: Enclosure, type: string, jsonPath: .status.enclosure, priority: 1 }
         - { name: Bay, type: integer, jsonPath: .status.bay }
         - { name: Health, type: string, jsonPath: .status.health.status }
+        - { name: Link, type: string, jsonPath: .status.link.level }
         - { name: Owner, type: string, jsonPath: .status.owner }
         - { name: Prep, type: string, jsonPath: .status.prep.phase }
         - { name: SAS, type: string, jsonPath: .status.sasAddress, priority: 1 }
+        - { name: Rate, type: string, jsonPath: .status.link.maximum, priority: 1 }
         - { name: Firmware, type: string, jsonPath: .status.firmware, priority: 1 }
         - { name: WCE, type: integer, jsonPath: .status.pages.caching.wce, priority: 1 }
         - { name: ATO, type: integer, jsonPath: .status.pages.control.ato, priority: 1 }
@@ -63,8 +65,13 @@ spec:
           properties:
             spec:
               type: object
-              description: "The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here. Set `format: {blockSize: 4096|512, protection: none|type1}` to ask for a format: the node plans it into status.plannedFormat (status.formatFrom says whether the drive's own format, its Shelf's defaultFormat or the 4096+PI1 preference decided it); a DriveOperation with that format step runs it (#85). Set `identify: true|false` for the drive's locate LED (#83)."
+              description: "The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here. Set `format: {blockSize: 4096|512, protection: none|type1}` to ask for a format: the node plans it into status.plannedFormat (status.formatFrom says whether the drive's own format, its Shelf's defaultFormat or the 4096+PI1 preference decided it); a DriveOperation with that format step runs it (#85). Set `identify: true|false` for the drive's locate LED (#83). Set `linkRate: 6` (3, 6, 12 Gbit; \"1.5\", \"22.5\" and \"6 Gbit\" as strings) to hold the SAS phy facing a marginal drive at that rate: the node writes the phy's maximum_linkrate and resets the link, on every boot, and status.link.maximum says `maximum 6 Gbit (policy)`; `hw` puts the hardware maximum back. Removing it changes nothing until the next boot. Never set by stormdrive itself (#149)."
               x-kubernetes-preserve-unknown-fields: true
+              properties:
+                linkRate:
+                  x-kubernetes-int-or-string: true
+                  description: "Hold the drive's SAS link at most at this rate (Gbit: 1.5, 3, 6, 12, 22.5), or `hw` (#149)."
+                identify: { type: boolean }
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true
@@ -93,6 +100,29 @@ spec:
                     caching: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true }
                     readAt: { type: integer }
                     error: { type: string, nullable: true }
+                link:
+                  type: object
+                  nullable: true
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: "The SAS link, both sides, read on every health sample (#149, stormblock#642): drive (log page 0x18: phys [{phy, rateMbps, attachedSas, invalidDwords, disparityErrors, lossOfSync, phyResets}] and rates [{phy, … per minute}]), host (the sysfs phy facing it, the HBA's or the shelf expander's: the same), hostPhy, negotiatedMbps, hostMaximumMbps, hostMaximumHwMbps, maximum (\"maximum 6 Gbit (policy)\"), policy (spec.linkRate as applied), level (settling: the first reading or the counters went back; ok; degraded: anything moving; failing: loss of sync or phy resets moving two samples running), since, streak, syncStreak, message, recommendation (drive side only: the drive's receiver or its slot; both sides: the cable or the expander port), at."
+                  properties:
+                    level: { type: string, enum: [settling, ok, degraded, failing] }
+                    maximum: { type: string, nullable: true }
+                    policy: { type: string, nullable: true }
+                    message: { type: string }
+                    recommendation: { type: string, nullable: true }
+                conditions:
+                  type: array
+                  description: "LinkDegraded (link errors moving, failing included) and LinkFailing (loss of sync or phy resets moving two samples running), each with reason, message and lastTransitionTime (#149). A change raises a Kubernetes Event on the Drive."
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    properties:
+                      type: { type: string }
+                      status: { type: string }
+                      reason: { type: string }
+                      message: { type: string }
+                      lastTransitionTime: { type: string }
                 controllerState:
                   type: object
                   nullable: true

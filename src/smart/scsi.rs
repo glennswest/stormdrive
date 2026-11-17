@@ -348,6 +348,10 @@ mod linux {
             apply_ata_smart(&parse_smart_attributes(&data), &thresholds, ssd, s);
             return;
         }
+        // The SAS link, the drive's side (#149): what its receiver saw.
+        if let Some(phys) = crate::link::read_drive(&dev) {
+            s.link.get_or_insert_with(Default::default).drive = Some(phys);
+        }
         let mut c = SmartCounters { source: "log_sense".into(), ..Default::default() };
         let mut any = false;
         if let Some(ie) = log_sense(&dev, 0x2F).and_then(|r| parse_ie(&r)) {
@@ -416,6 +420,13 @@ mod linux {
         };
         if kernel_ok {
             from_drive(name, &dev, ssd, &mut s);
+        }
+        // The SAS link, the host's side (#149): the phy facing the drive.
+        let (host, host_rates) = crate::link::read_host(Path::new("/sys"), name);
+        if !host.is_empty() {
+            let l = s.link.get_or_insert_with(Default::default);
+            l.host = host;
+            l.host_rates = host_rates;
         }
         // Read after this sample's own commands, so they are on both sides.
         s.io_errors = read_trim(&dev.join("ioerr_cnt")).map(|c| parse_ioerr(&c));

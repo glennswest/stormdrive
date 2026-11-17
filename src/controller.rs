@@ -43,9 +43,11 @@
 //!   (`storage-admin`): the LEDs change nothing on the data, and a format
 //!   still needs a DriveOperation with a stamped requester.
 //!
-//! On a Drive, two `spec` fields are the user's and never written by the
-//! node: `format` (#85) and `identify` (#83, the drive's locate LED, sent
-//! when it changes).
+//! On a Drive, three `spec` fields are the user's and never written by the
+//! node: `format` (#85), `identify` (#83, the drive's locate LED, sent
+//! when it changes) and `linkRate` (#149, the SAS phy facing the drive held
+//! at a rate, applied once per run: every boot). A change of the link's
+//! level (`status.link.level`) is an Event on the Drive.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -105,13 +107,29 @@ pub fn apiserver_drive_with(d: &crate::drive::Drive, node: &str, want: Option<(u
     v
 }
 
-/// What decides a rewrite: everything but `lastSeen`.
+/// What decides a rewrite: everything but `lastSeen` and the link's sample
+/// time (#149: an ok link is read every minute and nothing on it moves).
 fn drive_fingerprint(v: &Value) -> String {
     let mut v = v.clone();
     if let Some(st) = v["status"].as_object_mut() {
         st.remove("lastSeen");
+        if let Some(l) = st.get_mut("link").and_then(Value::as_object_mut) {
+            l.remove("at");
+        }
     }
     v.to_string()
+}
+
+/// A link level as the Drive object spells it.
+fn link_level(v: &Value) -> Option<crate::link::Level> {
+    use crate::link::Level;
+    match v["status"]["link"]["level"].as_str()? {
+        "ok" => Some(Level::Ok),
+        "degraded" => Some(Level::Degraded),
+        "failing" => Some(Level::Failing),
+        "settling" => Some(Level::Settling),
+        _ => None,
+    }
 }
 
 /// The requester the apiserver stamped, if it did.
@@ -195,6 +213,12 @@ pub struct Controller {
     shelf_defaults: HashMap<String, (u32, crate::pi::Protection)>,
     /// Drive `spec.identify` last applied, per Drive object.
     drive_ident: HashMap<String, bool>,
+    /// Drive `spec.linkRate` last applied (or refused), per Drive object:
+    /// (what was asked, the kernel name it went to). Once per daemon run —
+    /// that is, every boot — and again when either changes (#149).
+    drive_link_rate: HashMap<String, (String, String)>,
+    /// The last link level (not settling) each Drive's Event was judged by.
+    drive_link: HashMap<String, crate::link::Level>,
 }
 
 /// Run the controller until the process ends. One pass every
@@ -213,6 +237,8 @@ pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
         shelf_led_sent: HashMap::new(),
         shelf_defaults: HashMap::new(),
         drive_ident: HashMap::new(),
+        drive_link_rate: HashMap::new(),
+        drive_link: HashMap::new(),
     };
     let mut last_err = String::new();
     loop {
@@ -253,6 +279,9 @@ impl Controller {
             .flatten()
             .filter_map(|i| Some((i["metadata"]["name"].as_str()?.to_string(), crate::api::kube::wanted_format(&i["spec"])?)))
             .collect();
+        // `spec.linkRate` first: its policy shows in the status written below.
+        self.link_rates(&list).await;
+        let items: HashMap<String, &Value> = list["items"].as_array().into_iter().flatten().filter_map(|i| Some((i["metadata"]["name"].as_str()?.to_string(), i))).collect();
         let objs: Vec<Value> = {
             let inv = self.state.inventory.read().await;
             inv.drives
@@ -274,6 +303,26 @@ impl Controller {
         let mine: HashSet<String> = objs.iter().filter_map(|o| o["metadata"]["name"].as_str().map(str::to_string)).collect();
         for o in objs {
             let name = o["metadata"]["name"].as_str().unwrap_or_default().to_string();
+            // The link's level changed: an Event on the Drive (#149).
+            if let Some(now) = link_level(&o).filter(|l| *l != crate::link::Level::Settling) {
+                let from = self.drive_link.get(&name).copied().or_else(|| items.get(&name).and_then(|i| link_level(i)).filter(|l| *l != crate::link::Level::Settling));
+                if crate::link::noteworthy(from, now) {
+                    if let Some(item) = items.get(&name) {
+                        let (kind, reason) = match now {
+                            crate::link::Level::Failing => ("Warning", "LinkFailing"),
+                            crate::link::Level::Degraded => ("Warning", "LinkDegraded"),
+                            _ => ("Normal", "LinkOk"),
+                        };
+                        let l = &o["status"]["link"];
+                        let mut msg = format!("{}: link {} → {}: {}", o["status"]["name"].as_str().unwrap_or(&name), from.map_or("unknown", |f| f.word()), now.word(), l["message"].as_str().unwrap_or(""));
+                        if let Some(r) = l["recommendation"].as_str() {
+                            msg.push_str(&format!(" — {r}"));
+                        }
+                        self.event_on("Drive", item, kind, reason, &msg).await;
+                    }
+                }
+                self.drive_link.insert(name.clone(), now);
+            }
             let fp = drive_fingerprint(&o);
             if let Some((prev, at)) = self.written.get(&name) {
                 if *prev == fp && at.elapsed() < REFRESH {
@@ -326,6 +375,67 @@ impl Controller {
             self.drive_ident.insert(name.to_string(), on);
         }
         Ok(())
+    }
+
+    /// `spec.linkRate` (#149): the owner's word for a marginal drive's link.
+    /// The phys facing it are held at that rate (`maximum_linkrate` + a link
+    /// reset) once per daemon run — every boot — and again when the value or
+    /// the drive's kernel name changes. Removing it holds nothing new and
+    /// changes nothing now (`hw` puts the hardware maximum back). Never set
+    /// by stormdrive itself.
+    async fn link_rates(&mut self, list: &Value) {
+        let mut seen = HashSet::new();
+        for item in list["items"].as_array().into_iter().flatten() {
+            let Some(name) = item["metadata"]["name"].as_str() else { continue };
+            let drive = {
+                let inv = self.state.inventory.read().await;
+                inv.resolve(name).map(|d| (d.id, d.name.clone()))
+            };
+            let Some((id, dname)) = drive else { continue };
+            seen.insert(name.to_string());
+            let raw = &item["spec"]["linkRate"];
+            let want = match crate::link::parse_wanted(raw) {
+                Ok(w) => w,
+                Err(why) => {
+                    crate::link::set_policy(id, None);
+                    let key = (format!("invalid {raw}"), dname.clone());
+                    if self.drive_link_rate.get(name) != Some(&key) {
+                        self.event_on("Drive", item, "Warning", "LinkRateInvalid", &format!("{dname}: {why}")).await;
+                        self.drive_link_rate.insert(name.to_string(), key);
+                    }
+                    continue;
+                }
+            };
+            crate::link::set_policy(id, want);
+            let Some(w) = want else {
+                self.drive_link_rate.remove(name);
+                continue;
+            };
+            let key = (w.word(), dname.clone());
+            if self.drive_link_rate.get(name) == Some(&key) {
+                continue;
+            }
+            let n = dname.clone();
+            let r = tokio::task::spawn_blocking(move || crate::link::apply(std::path::Path::new("/sys"), &n, w)).await;
+            let r = match r {
+                Ok(r) => r,
+                Err(e) => Err(e.to_string()),
+            };
+            match r {
+                Ok(done) => {
+                    self.event_on("Drive", item, "Normal", "LinkRateSet", &format!("{dname}: linkRate {}: {done}", w.word())).await;
+                    self.state.events.write().await.push(Some(id), crate::events::Severity::Info, "link", format!("{dname}: linkRate {} (Drive spec.linkRate): {done}", w.word()));
+                }
+                Err(e) => {
+                    self.event_on("Drive", item, "Warning", "LinkRateFailed", &format!("{dname}: linkRate {}: {e}", w.word())).await;
+                    self.state.events.write().await.push(Some(id), crate::events::Severity::Warning, "link", format!("{dname}: linkRate {} (Drive spec.linkRate) not applied: {e}", w.word()));
+                }
+            }
+            // Once per change either way: a refused rate is not retried every
+            // pass (set it again, or restart, to retry).
+            self.drive_link_rate.insert(name.to_string(), key);
+        }
+        self.drive_link_rate.retain(|k, _| seen.contains(k));
     }
 
     /// Keep a Shelf object per enclosure this node sees (#83), act on its

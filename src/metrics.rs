@@ -258,6 +258,25 @@ fn drive(o: &mut Out, d: &Drive) {
             o.counter("stormdrive_drive_io_errors_total", "Commands that failed on the drive since boot (sysfs ioerr_cnt).", &l, n as f64);
         }
     }
+    // The SAS link, both sides (#149).
+    if let Some(st) = crate::link::state(&d.id) {
+        o.gauge("stormdrive_drive_link_level", "SAS link level (#149): 0 ok or settling, 1 degraded, 2 failing.", &l, st.level.gauge());
+        if let Some(m) = st.negotiated_mbps {
+            o.gauge("stormdrive_drive_link_rate_mbps", "The rate the drive's SAS link negotiated, Mb/s.", &l, f64::from(m));
+        }
+        for (side, s) in [("drive", &st.drive), ("host", &st.host)] {
+            for p in s.iter().flat_map(|s| &s.phys) {
+                for (counter, v) in [("invalid_dwords", p.invalid_dwords), ("disparity_errors", p.disparity_errors), ("loss_of_sync", p.loss_of_sync), ("phy_resets", p.phy_resets)] {
+                    o.counter(
+                        "stormdrive_drive_link_errors_total",
+                        "SAS phy error counters (SPL), the drive's side (log page 0x18) and the host phy facing it (sysfs).",
+                        &with(&l, &[("side", side.into()), ("phy", p.phy.clone()), ("counter", counter.into())]),
+                        v as f64,
+                    );
+                }
+            }
+        }
+    }
     if let Some(u) = &d.usage {
         o.gauge("stormdrive_drive_used_bytes", "Bytes allocated in stormblock slabs on the drive.", &l, u.used_bytes as f64);
         o.gauge("stormdrive_drive_free_bytes", "Capacity minus used.", &l, u.free_bytes as f64);

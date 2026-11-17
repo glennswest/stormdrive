@@ -38,6 +38,9 @@ pub struct Sample {
     /// A SATA drive's whole SMART attribute table (#64): kept in the drive
     /// history, not served with health.
     pub ata_attributes: Vec<AtaAttribute>,
+    /// The SAS link, both sides (#149): the drive's log page 0x18 and the
+    /// sysfs phy facing it. None where there is neither.
+    pub link: Option<crate::link::Reading>,
 }
 
 /// A drive's own temperature limits (#125): NVMe WCTEMP/CCTEMP and
