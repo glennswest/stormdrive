@@ -956,7 +956,7 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   size, sector size (`blockSize`, 520 = needs reformat), enclosure, bay, SAS
   address, health, owner, prep. `kubectl get drives`. Writing one changes
   nothing (the node puts its report back), except two `spec` fields that
-  are yours: `format {blockSize, protection}` (#85: planned into
+  are yours (three, with `linkRate`, below): `format {blockSize, protection}` (#85: planned into
   `status.plannedFormat`, with `status.formatFrom` = `drive`, `shelf` or
   `preference`; a DriveOperation runs it) and `identify` (#83: the drive's
   locate LED, sent when you change it, an Event on the Drive either way).
@@ -965,6 +965,17 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   plus named bits: `kubectl get drives -o wide` shows firmware, WCE, ATO,
   QERR, DPICZ, GRD_CHK; any other with
   `-o custom-columns=NAME:.status.name,TAS:.status.pages.control.tas,REF:.status.pages.extInquiry.refChk`.
+  A SAS drive's `status.link` (#149) has both sides of its link, read on
+  every health sample — the drive's log page 0x18 and the sysfs phy facing
+  it: totals and per-minute rates of invalid DWORDs, disparity errors, loss
+  of sync and phy resets, the negotiated and maximum rates, and a `level`
+  (`settling`, `ok`, `degraded`: anything moving, `failing`: loss of sync or
+  phy resets moving two samples running) with a `recommendation`; the
+  conditions `LinkDegraded` / `LinkFailing` and an Event when the level
+  changes; the Link column in `kubectl get drives`. Set `spec.linkRate: 6`
+  (`3`, `12`, `"1.5"`, `hw`) to hold a marginal drive's phy at a rate on
+  every boot (`status.link.maximum: maximum 6 Gbit (policy)`); stormdrive
+  never sets one itself.
 - **`DriveOperation`**: a drive-worker job as an object (`node`, `select`,
   `steps`, `destroy`, `dryRun`, `resume`) — see
   `deploy/driveoperation.example.yaml`. Only storage-admin can create one.

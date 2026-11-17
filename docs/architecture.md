@@ -632,6 +632,56 @@ its Drive object, readable with no token and no shell.
 The shapes are stormblock's (`GET /api/v1/storage/hba/{sas}/details`), so a
 console reads either.
 
+### A drive's SAS link (`link.rs`, #149)
+stormblock#642 (owner, forge1 bay 3: "We need to monitor the sas metrics on
+the sas buss", "alarms when something is not normal, instead of when writes
+fail"). Bay 3's writes failed for a week on its link — loss of DWORD sync
+climbing about 500 a minute at 12 Gbit — and nobody read the counter.
+
+- **Both sides, every health sample.** The SCSI collector reads the
+  drive's Protocol-Specific Port log page (0x18, only when the drive lists
+  it in 0x00): per phy, the negotiated rate, the attached SAS address and
+  SPL's four counters — invalid DWORDs, running disparity errors, loss of
+  DWORD synchronization, phy reset problems: what the drive's receiver saw.
+  And the `sas_phy` facing it in sysfs — the phy(s) of the port its
+  `end_device-` hangs off: the HBA's when direct-attached, the shelf
+  expander's behind one — the same four counters (what the host's receiver
+  saw), `negotiated_linkrate`, `maximum_linkrate`, `maximum_linkrate_hw`.
+  A SATA drive has only the host side; NVMe has none.
+- **Level** (`link::step`), per sample, from the counters' rates per
+  minute: `settling` (the first reading, or a counter went back: a power
+  cycle, a new phy), `ok` (nothing moving), `degraded` (anything moving),
+  `failing` (loss of sync or phy resets moving two samples running). With
+  `since`, `streak`, `syncStreak` and the moving counters in words.
+- **Recommendation** when not ok: the drive's side alone → "the drive's
+  receiver or its slot: reseat; if it continues, swap bays or replace";
+  both sides → "the cable or the expander port"; the host's alone → the
+  drive's transmitter or its slot.
+- **The alarm.** A change into degraded or failing, or back to ok from
+  either, is an event in the ring (`kind: link`, error when failing) and a
+  WARN line, and a Kubernetes Event on the Drive (`LinkDegraded`,
+  `LinkFailing`, `LinkOk`). A settling sample (counters reset) between two
+  equal levels raises nothing and does not clear the conditions.
+- **Drive object:** `status.link` (both sides' `phys` and `rates`,
+  `hostPhy`, `negotiatedMbps`, `hostMaximumMbps`, `hostMaximumHwMbps`,
+  `maximum` in words, `policy`, `level`, `message`, `recommendation`) and
+  `status.conditions` `LinkDegraded` / `LinkFailing`; `kubectl get drives`
+  has a Link column (and Rate, `-o wide`). The sample time `link.at` is
+  left out of the rewrite fingerprint, so an ok link costs no writes.
+  `/metrics`: `stormdrive_drive_link_level`, `…_link_rate_mbps`,
+  `…_link_errors_total{side,phy,counter}`.
+- **`spec.linkRate`** — the owner's word for a marginal drive, never set
+  by stormdrive: `6` (or `3`, `12`, `"1.5"`, `"22.5"`, `"6 Gbit"`) holds
+  the facing phys at that rate (`maximum_linkrate`, then `link_reset`, as
+  `stormblock hba linkrate` does), once per daemon run — so on every boot —
+  and again when the value or the drive's kernel name changes; a phy
+  already there is left alone. `hw` puts the hardware maximum back;
+  removing the field changes nothing until the next boot. An Event says
+  what was done (`LinkRateSet`) or why not (`LinkRateFailed`,
+  `LinkRateInvalid`); `status.link.maximum` reads `maximum 6 Gbit
+  (policy)`.
+- State is in memory by drive id (like the pages): a restart settles once.
+
 ### HBAs (`hba.rs`)
 
 Inventory only — stormdrive reports an HBA's firmware and never flashes
