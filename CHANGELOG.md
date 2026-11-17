@@ -3,16 +3,18 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-17
-- **feat:** #149 (stormblock#642): a SAS drive's link, both sides, on every health sample: the drive's log page 0x18 (per phy: rate, attached SAS address, invalid DWORDs, disparity errors, loss of DWORD sync, phy reset problems) and the sysfs phy facing it (HBA or shelf expander: the same counters, negotiated/maximum/hardware rates). Rates per minute and a level: `settling`, `ok`, `degraded` (anything moving), `failing` (loss of sync or phy resets moving two samples running), with a recommendation (drive side only: its receiver or slot; both sides: the cable or the expander port)
-- **feat:** #149: Drive `status.link`, `status.conditions` `LinkDegraded` / `LinkFailing`, a Kubernetes Event (`LinkDegraded`, `LinkFailing`, `LinkOk`) and an event-ring entry + WARN line when the level changes; `kubectl get drives` Link column (Rate with `-o wide`); `/metrics` `stormdrive_drive_link_level`, `_link_rate_mbps`, `_link_errors_total`; the stormview feed flags a degraded/failing link
-- **feat:** #149: Drive `spec.linkRate` (`6`, `3`, `12`, `"1.5"`, `"22.5"`, `"6 Gbit"`, `hw`): the owner's hold on a marginal drive's link — the facing phy's `maximum_linkrate` + a link reset, once per daemon run (every boot) and on a change, shown as `maximum 6 Gbit (policy)`; Events `LinkRateSet` / `LinkRateFailed` / `LinkRateInvalid`. Never set automatically
-
 ### 2026-11-15
 - **docs:** work plan #141: on forge1's 12.86 install bays 3/4/7 are not on the HBA330 (only bay 0); waits on a person's check of cabling/seating
 
 ### 2026-11-14
 - **docs:** work plan #141: the proof is forge1's console, not pvetest3's; item waits on a forge1 install
+
+## [v0.49.0] — 2026-11-17
+
+### Added
+- #149 (stormblock#642): a SAS drive's link, both sides, on every health sample: the drive's log page 0x18 (per phy: rate, attached SAS address, invalid DWORDs, disparity errors, loss of DWORD sync, phy reset problems) and the sysfs phy facing it (HBA or shelf expander: the same counters, negotiated/maximum/hardware rates). Rates per minute and a level: `settling`, `ok`, `degraded` (anything moving), `failing` (loss of sync or phy resets moving two samples running), with a recommendation (drive side only: its receiver or slot; both sides: the cable or the expander port)
+- #149: Drive `status.link`, `status.conditions` `LinkDegraded` / `LinkFailing`, a Kubernetes Event (`LinkDegraded`, `LinkFailing`, `LinkOk`) and an event-ring entry + WARN line when the level changes; `kubectl get drives` Link column (Rate with `-o wide`); `/metrics` `stormdrive_drive_link_level`, `_link_rate_mbps`, `_link_errors_total`; the stormview feed flags a degraded/failing link
+- #149: Drive `spec.linkRate` (`6`, `3`, `12`, `"1.5"`, `"22.5"`, `"6 Gbit"`, `hw`): the owner's hold on a marginal drive's link — the facing phy's `maximum_linkrate` + a link reset, once per daemon run (every boot) and on a change, shown as `maximum 6 Gbit (policy)`; Events `LinkRateSet` / `LinkRateFailed` / `LinkRateInvalid`. Never set automatically
 
 ## [v0.48.0] — 2026-11-17
 
