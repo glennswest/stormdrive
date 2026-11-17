@@ -42,6 +42,9 @@ pub struct Observed {
     pub supports: Option<crate::pi::Supports>,
     /// The rate its link negotiated, in Mb/s (#105).
     pub link_rate_mbps: Option<u32>,
+    /// SCSI: every VPD page and the mode pages (#147), read once per
+    /// `pages::REFRESH`.
+    pub pages: Option<crate::pages::Pages>,
     /// Seen through its sg node only, with no block node (#131): why it
     /// needs a format (an interrupted one answers 31/00).
     pub format_reason: Option<String>,
@@ -417,8 +420,17 @@ mod linux {
             let firmware = read_trim(&dev.join("firmware_rev"))
                 .or_else(|| read_trim(&dev.join("rev")))
                 .unwrap_or_default();
+            // Every VPD page and the mode pages (#147): their own cache, an
+            // hour, whatever the probe's.
+            let pages_of = |key: &ProbeKey| {
+                let sg = crate::scsi::sg_path_in(&sys.join("block").join(&key.name).join("device/scsi_generic").to_string_lossy())
+                    .unwrap_or_else(|| node(&key.name));
+                crate::pages::cached_or_read(&crate::pages::key(&key.name, &key.dev, key.wwid.as_deref()), &sg)
+            };
             if let Some(p) = cache.get(&key, now) {
+                let pages = name.starts_with("sd").then(|| pages_of(&key));
                 out.push(Observed {
+                    pages,
                     path: format!("/dev/{name}"),
                     kind: crate::pi::kind_by_rotation(classify(&base, &name, p.link), p.supports.as_ref()),
                     link_rate_mbps: p.link.rate_mbps,
@@ -509,6 +521,7 @@ mod linux {
             } else {
                 None
             };
+            let pages = (answered && name.starts_with("sd")).then(|| pages_of(&key));
             if answered {
                 cache.put(
                     key,
@@ -543,6 +556,7 @@ mod linux {
                 slabs,
                 mounted: super::mounted_in(mounts, &name),
                 supports,
+                pages,
                 format_reason: not_ready,
                 name,
             });
@@ -551,6 +565,7 @@ mod linux {
         // an interrupted format answers 31/00 and sd makes nothing of it.
         // It is still the drive (same WWID, so the same id), and a format
         // through its sg node is the cure.
+        let mut pages_seen = std::collections::HashSet::new();
         for sg in super::sg_only_disks(sys) {
             if !name_eligible(cfg, &sg) {
                 continue;
@@ -600,7 +615,12 @@ mod linux {
                 _ => None,
             };
             tracing::info!(%sg, "{reason}");
+            // A NOT READY drive still answers INQUIRY and MODE SENSE.
+            let wwid = read_trim(&dev.join("wwid")).or_else(|| d.vpd(0x83).ok().and_then(|r| crate::transport::vpd83_naa(&r)));
+            let pages = crate::pages::cached_or_read(&crate::pages::key(&sg, "sg", wwid.as_deref()), &path);
+            pages_seen.insert(sg.clone());
             out.push(Observed {
+                pages: Some(pages),
                 path: format!("/dev/{sg}"),
                 kind,
                 link_rate_mbps: link.rate_mbps,
@@ -609,7 +629,7 @@ mod linux {
                 firmware: read_trim(&dev.join("rev")).unwrap_or_default(),
                 // No sysfs wwid for a drive sd never took: VPD 0x83, which
                 // a NOT READY drive still answers (#141), so it keeps its id.
-                wwid: read_trim(&dev.join("wwid")).or_else(|| d.vpd(0x83).ok().and_then(|r| crate::transport::vpd83_naa(&r))),
+                wwid,
                 vendor,
                 capacity_bytes,
                 block_size,
@@ -625,6 +645,10 @@ mod linux {
             });
         }
         cache.retain_names(&seen);
+        crate::pages::cache().lock().unwrap_or_else(|e| e.into_inner()).retain(|k| {
+            let n = k.split('|').next().unwrap_or("");
+            seen.contains(n) || pages_seen.contains(n)
+        });
         out
     }
 }

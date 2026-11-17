@@ -38,6 +38,7 @@ pub mod kubeauth;
 pub mod megaraid;
 pub mod metrics;
 pub mod monitor;
+pub mod pages;
 pub mod placement;
 pub mod pi;
 pub mod policy;

@@ -660,6 +660,20 @@ pub fn stale_reason(age: Option<u64>, up: u64, interval: u64, stuck: bool) -> Op
     }
 }
 
+/// Drives asked to be sampled now (#147, `op: details`), taken by the
+/// health loop on its next tick through the same sampler and damper.
+static HEALTH_NOW: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<DriveId>>> = std::sync::OnceLock::new();
+
+/// Sample this drive's health on the health loop's next tick (within a
+/// second), whatever its phase.
+pub fn sample_now(id: DriveId) {
+    HEALTH_NOW.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(id);
+}
+
+fn take_sample_now() -> std::collections::HashSet<DriveId> {
+    std::mem::take(&mut *HEALTH_NOW.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// Health polling (#15): every present drive once per interval at its own
 /// phase, through the bounded, timed-out sampler. Wakes each second to
 /// start what is due and to apply what came back.
@@ -681,11 +695,13 @@ async fn health_loop(state: Arc<AppState>) {
                         .filter(|d| d.activity != Activity::Missing)
                         .map(|d| d.id)
                         .collect();
-                    let due: Vec<crate::drive::Drive> = schedule
-                        .take_due(std::time::Instant::now(), &present)
-                        .iter()
-                        .filter_map(|id| inv.drives.get(id).cloned())
-                        .collect();
+                    let mut due_ids = schedule.take_due(std::time::Instant::now(), &present);
+                    for id in take_sample_now() {
+                        if present.contains(&id) && !due_ids.contains(&id) {
+                            due_ids.push(id);
+                        }
+                    }
+                    let due: Vec<crate::drive::Drive> = due_ids.iter().filter_map(|id| inv.drives.get(id).cloned()).collect();
                     (present.len(), due)
                 };
                 state.poller.set_drives(present);
@@ -1022,6 +1038,10 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
         seen.insert(id);
         let paths: Vec<String> = group.iter().map(|o| o.path.clone()).collect();
         let primary = &group[0];
+        // Its pages (#147), from whichever path read them.
+        if let Some(p) = group.iter().find_map(|o| o.pages.clone()) {
+            crate::pages::set(id, p);
+        }
         match inv.drives.get_mut(&id) {
             Some(d) => {
                 if d.paths != paths {
@@ -1699,6 +1719,7 @@ mod tests {
             firmware: "NA02".into(),
             vendor: None,
             supports: None,
+            pages: None,
             link_rate_mbps: None,
             wwid: Some(wwid.into()),
             capacity_bytes: 420 << 30,

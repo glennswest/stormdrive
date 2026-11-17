@@ -237,6 +237,7 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "usage": d.usage,
             "prep": crate::worker::prep(d, None),
             "supports": d.supports,
+            "pages": crate::pages::get(&d.id),
             "history": d.history,
             "currentFormat": current_format,
             "plannedFormat": planned_format,

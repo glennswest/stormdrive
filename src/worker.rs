@@ -108,12 +108,15 @@ pub enum Step {
         #[serde(default)]
         role: Role,
     },
+    /// Read the drive's pages (every VPD page, the mode pages) and its
+    /// health now, into its Drive object (#147). Changes nothing.
+    Details,
 }
 
 impl Step {
     fn rank(&self) -> u8 {
         match self {
-            Step::Format { .. } | Step::Sanitize { .. } | Step::SecurityErase { .. } | Step::Test { .. } => 0,
+            Step::Format { .. } | Step::Sanitize { .. } | Step::SecurityErase { .. } | Step::Test { .. } | Step::Details => 0,
             Step::Partition { .. } => 1,
             Step::Enroll { .. } => 2,
         }
@@ -125,12 +128,18 @@ impl Step {
     pub fn destroys(&self) -> bool {
         match self {
             Step::Test { kind } => kind.is_destructive(),
+            Step::Details => false,
             _ => self.rank() <= 1,
         }
     }
     /// Only reads the drive: a smoke test or a read scan.
     pub fn read_only(&self) -> bool {
-        matches!(self, Step::Test { kind } if !kind.is_destructive())
+        matches!(self, Step::Test { kind } if !kind.is_destructive()) || self.only_asks()
+    }
+    /// Only asks the drive what it is (`details`): no lane, any activity
+    /// but missing, formatting or sanitizing.
+    pub fn only_asks(&self) -> bool {
+        matches!(self, Step::Details)
     }
     pub fn name(&self) -> &'static str {
         match self {
@@ -140,6 +149,7 @@ impl Step {
             Step::Test { .. } => "test",
             Step::Partition { .. } => "partition",
             Step::Enroll { .. } => "enroll",
+            Step::Details => "details",
         }
     }
     pub fn describe(&self) -> String {
@@ -155,6 +165,7 @@ impl Step {
             },
             Step::Partition { role } => format!("partition ({})", role.word()),
             Step::Enroll { tier, role } => format!("enroll ({} slab{})", role.word(), tier.as_ref().map(|t| format!(", tier {t}")).unwrap_or_default()),
+            Step::Details => "details (pages + health)".into(),
         }
     }
 }
@@ -290,6 +301,14 @@ pub struct Context {
 pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Result<(), String> {
     if d.activity == Activity::Missing {
         return Err("missing".into());
+    }
+    // Only asking (#147): a fleet drive, a reserved one, one under test —
+    // any drive that can answer, which a formatting one cannot.
+    if steps.iter().all(Step::only_asks) {
+        return match d.activity {
+            Activity::Formatting | Activity::Sanitizing => Err(format!("busy: {}", serde_json::to_value(d.activity).unwrap_or_default().as_str().unwrap_or("?"))),
+            _ => Ok(()),
+        };
     }
     // Only reading (smoke tests, read scans, #40): allowed where the
     // single-drive test route allows it — fleet, reserved, mounted drives.
@@ -1066,7 +1085,9 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
             return;
         };
         // Wait for a lane: low-level steps per HBA, enroll per failure domain.
-        let permit = if step.low_level() || matches!(step, Step::Partition { .. }) {
+        let permit = if step.only_asks() {
+            None
+        } else if step.low_level() || matches!(step, Step::Partition { .. }) {
             state.worker.progress(&job, idx, None, &format!("waiting ({})", hba_key(&drive)));
             state.worker.lane(&hba_key(&drive), cfg.max_per_hba).acquire_owned().await.ok()
         } else {
@@ -1247,6 +1268,39 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
             set_activity(state, d.id, Activity::Idle).await;
             state.persist().await;
             r.map(|_| format!("{method:?} sanitize complete").to_lowercase())
+        }
+        Step::Details => {
+            // The pages (SCSI): every VPD page and the mode pages, now.
+            let pages = if d.kind == DriveKind::NvmeSsd {
+                "NVMe: no SCSI pages".to_string()
+            } else {
+                progress(None, "details: pages");
+                let path = crate::scsi::sg_path_for_block(&d.name).unwrap_or_else(|| d.path.clone());
+                let p = tokio::task::spawn_blocking(move || crate::pages::read(&path)).await.map_err(|e| format!("task: {e}"))?;
+                let line = crate::pages::summary(&p);
+                let names: Vec<String> = std::iter::once(d.name.clone()).chain(d.paths.iter().map(|x| x.trim_start_matches("/dev/").to_string())).collect();
+                crate::pages::set_read(d.id, &names, p);
+                line
+            };
+            // Health: a sample now, through the poller and its damper.
+            progress(None, "details: health");
+            let before = d.health.collected_at;
+            crate::monitor::sample_now(d.id);
+            let mut health = None;
+            for _ in 0..120 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if let Some(x) = state.inventory.read().await.drives.get(&d.id) {
+                    if x.health.collected_at != before {
+                        health = Some(format!("{:?}", x.health.status()).to_lowercase());
+                        break;
+                    }
+                }
+            }
+            let health = match health {
+                Some(h) => format!("health {h} (sampled now)"),
+                None => "health: no new sample within 60 s (kept the last)".into(),
+            };
+            Ok(format!("{pages}; {health}"))
         }
         Step::Test { kind } => {
             let handle = crate::drivetest::start(state.clone(), d.clone(), *kind).await;
@@ -1772,6 +1826,36 @@ mod tests {
             "select": {"drives": ["sda"]}, "steps": [{"op": "format", "block_size": 4096}], "iKnowInUse": ["S1"]
         })).unwrap();
         assert_eq!(r.i_know_in_use, vec!["S1"]);
+    }
+
+    /// `op: details` (#147) only asks: a fleet drive, a reserved one, one
+    /// under test; never a formatting one, never a missing one.
+    #[test]
+    fn details_only_asks() {
+        let r: Request = serde_json::from_value(json!({ "select": {"drives": ["sdb"]}, "steps": [{"op": "details"}] })).unwrap();
+        assert_eq!(r.steps, vec![Step::Details]);
+        assert!(validate_steps(&r.steps).is_ok());
+        assert!(validate_steps(&[FMT, Step::Details]).is_ok());
+        assert_eq!(serde_json::to_value(Step::Details).unwrap(), json!({ "op": "details" }));
+        let s = Step::Details;
+        assert!(!s.destroys() && s.read_only() && s.only_asks());
+        let fleet = drive(|d| d.membership = Membership::Fleet);
+        assert!(guard(&fleet, &[Step::Details], false, &Context::default()).is_ok());
+        let reserved = drive(|d| d.designation = Designation::Reserved);
+        assert!(guard(&reserved, &[Step::Details], false, &cx()).is_ok());
+        let testing = drive(|d| d.activity = Activity::Testing);
+        assert!(guard(&testing, &[Step::Details], false, &cx()).is_ok());
+        let u = drive(|d| {
+            d.block_size = 520;
+            d.usable = false;
+        });
+        assert!(guard(&u, &[Step::Details], false, &cx()).is_ok(), "a 520-byte drive answers too");
+        let fmt = drive(|d| d.activity = Activity::Formatting);
+        assert!(guard(&fmt, &[Step::Details], false, &cx()).unwrap_err().contains("busy"));
+        let gone = drive(|d| d.activity = Activity::Missing);
+        assert_eq!(guard(&gone, &[Step::Details], false, &cx()).unwrap_err(), "missing");
+        // With a format, the format's guard decides.
+        assert!(guard(&fleet, &[FMT, Step::Details], false, &cx()).unwrap_err().contains("fleet"));
     }
 
     #[test]

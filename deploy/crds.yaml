@@ -50,6 +50,12 @@ spec:
         - { name: Owner, type: string, jsonPath: .status.owner }
         - { name: Prep, type: string, jsonPath: .status.prep.phase }
         - { name: SAS, type: string, jsonPath: .status.sasAddress, priority: 1 }
+        - { name: Firmware, type: string, jsonPath: .status.firmware, priority: 1 }
+        - { name: WCE, type: integer, jsonPath: .status.pages.caching.wce, priority: 1 }
+        - { name: ATO, type: integer, jsonPath: .status.pages.control.ato, priority: 1 }
+        - { name: QERR, type: integer, jsonPath: .status.pages.control.qerr, priority: 1 }
+        - { name: DPICZ, type: integer, jsonPath: .status.pages.control.dpicz, priority: 1 }
+        - { name: GRD_CHK, type: integer, jsonPath: .status.pages.extInquiry.grdChk, priority: 1 }
       schema:
         openAPIV3Schema:
           type: object
@@ -74,6 +80,19 @@ spec:
                 blockSize: { type: integer, description: "Logical sector size: 512, 4096, or 520/528 on a drive that needs a reformat." }
                 needsReformat: { type: boolean }
                 formatReason: { type: string, nullable: true, description: "Why it needs a format when its sectors do not say so (#131): no block node, e.g. an interrupted format answering 31/00." }
+                pages:
+                  type: object
+                  nullable: true
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: "A SCSI drive's pages (#147, stormblock#636), read at discovery (again hourly) and by a DriveOperation op details. vpd: every VPD page the drive lists in 0x00, read whole (up to 4 KiB): [{page: \"0x86\", hex, said, strings, error}]; said for the standard pages (0x00 0x80 0x83 0x86 0x89 0x8F 0x90 0x91 0xB0 0xB1 0xB2 0xB4 0xB7), vendor pages (0xC0 and up) raw with their printable strings only. mode: 0x03 0x08 0x0A 0x19 0x1A 0x1C, [{page, hex (current), changeable (the bits MODE SELECT may set), said, error}]. Named bits for custom columns: control (0x0A: dpicz dSense qam qerr swp ato tas tst …), extInquiry (0x86: activateMicrocode spt grdChk appChk refChk …), caching (0x08: wce rcd dra …). readAt: unix seconds. A page's bytes are data, shown and never trusted."
+                  properties:
+                    vpd: { type: array, items: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+                    mode: { type: array, items: { type: object, x-kubernetes-preserve-unknown-fields: true } }
+                    control: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true }
+                    extInquiry: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true }
+                    caching: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true }
+                    readAt: { type: integer }
+                    error: { type: string, nullable: true }
                 controllerState:
                   type: object
                   nullable: true
@@ -133,7 +152,7 @@ spec:
       schema:
         openAPIV3Schema:
           type: object
-          description: Format, sanitize, partition or enroll a selection of one node's drives. A drive worker job (stormdrive POST /api/v1/worker/jobs) as an object.
+          description: Format, sanitize, partition or enroll a selection of one node's drives, or read their details (op details, non-destructive). A drive worker job (stormdrive POST /api/v1/worker/jobs) as an object.
           required: [spec]
           properties:
             spec:
@@ -154,12 +173,12 @@ spec:
                     unusable: { type: boolean, description: "Drives the kernel cannot use (520/528-byte sectors)." }
                 steps:
                   type: array
-                  description: In order, per drive. format/sanitize/security_erase/test, then partition, then enroll; each at most once.
+                  description: In order, per drive. format/sanitize/security_erase/test/details, then partition, then enroll; each at most once.
                   items:
                     type: object
                     required: [op]
                     properties:
-                      op: { type: string, enum: [format, sanitize, security_erase, test, partition, enroll] }
+                      op: { type: string, enum: [format, sanitize, security_erase, test, partition, enroll, details], description: "details: read the drive's pages (every VPD page, the mode pages) and its health now into its Drive object (status.pages, status.health); changes nothing, runs on any drive that can answer, fleet drives included (#147)." }
                       blockSize: { type: integer, description: "format: 512 or 4096." }
                       block_size: { type: integer }
                       protection: { type: string, enum: [none, type1], description: "format: T10 PI to format with (SCSI; the drive must offer it — Drive status.supports)." }

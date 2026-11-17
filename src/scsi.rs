@@ -503,6 +503,12 @@ pub mod cdb {
         let [hi, lo] = alloc.to_be_bytes();
         [0x5a, if llbaa { 0x10 } else { 0 }, page & 0x3f, 0, 0, 0, 0, hi, lo, 0]
     }
+    /// MODE SENSE(10) of one page, DBD=1 (no block descriptors), with page
+    /// control `pc`: 0 current, 1 changeable, 2 default, 3 saved (#147).
+    pub fn mode_sense10_pc(page: u8, pc: u8, alloc: u16) -> [u8; 10] {
+        let [hi, lo] = alloc.to_be_bytes();
+        [0x5a, 0x08, ((pc & 0x03) << 6) | (page & 0x3f), 0, 0, 0, 0, hi, lo, 0]
+    }
     pub fn mode_select10(len: u16) -> [u8; 10] {
         let [hi, lo] = len.to_be_bytes();
         [0x55, 0x10, 0, 0, 0, 0, 0, hi, lo, 0]
