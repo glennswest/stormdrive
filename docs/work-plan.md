@@ -2068,3 +2068,16 @@ stormblock's row).
 - [x] /metrics link gauges; stormview flag; tests (link.rs 9: page 0x18, sysfs + apply, levels, events, conditions); docs (architecture, README, CRD); changelog; sc-build (412 lib tests + clippy -D warnings); v0.49.0; image requested (build 5a16d892530d)
 - stormcos's CRD copy lacks the Link column: noted on stormcos#1005
 - [ ] proof: forge1 bay 3 `status.link.level: failing`, the HGSTs `ok`
+
+### #146: Drive status.writeTest from stormblock's write-test (2026-11-17) — P1
+stormblock#627 (owner: "can you compare drive settings/options between
+drives"). The mode-pages half is #147's `status.pages.mode` (done, v0.48.0).
+Left here: the last write-test matrix run, from stormblock's card API.
+- [ ] `stormblock.rs`: `GET /api/v1/storage/hba/{sas}/write-test` (404 = no
+  run since the engine started → None)
+- [ ] `writetest.rs`: the run projected for the Drive object (sasAddress, at,
+  passed, stopped, vendor/product/revision, linkBefore, steps, lines; the
+  before/after mode + log pages left on the engine), kept in memory by id
+- [ ] fleet tick: every 5 min, each drive with a SAS address
+- [ ] Drive `status.writeTest`, `-o wide` column WriteTest (passed); CRD,
+  docs, changelog, tests; sc-build; image
