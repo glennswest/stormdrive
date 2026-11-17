@@ -599,6 +599,39 @@ connectors (cabled to what), a one-line multipath verdict, and
 DS224C's element map and every command sent are in
 [netapp-shelf.md](netapp-shelf.md).
 
+### A drive's pages (`pages.rs`, #147)
+stormblock#636 (owner, forge1 bay 3 against the Sun HGSTs: "lets get the
+mode pages. and any way to parse vpd pages"): every SCSI drive's pages, in
+its Drive object, readable with no token and no shell.
+
+- **VPD:** every page the drive lists in 0x00, each read whole (INQUIRY
+  EVPD, up to 4 KiB): `{page: "0x86", hex, said, strings, error}`. `said`
+  covers the standard pages: 0x00, 0x80, 0x83 (every designator: `lu naa …;
+  port naa …; port relative 1`), 0x86 (`extended INQUIRY: ACTIVATE_MICROCODE
+  n SPT n GRD_CHK n APP_CHK n REF_CHK n …`), 0x89 (SAT), 0x8F/0x90/0x91
+  (named, raw), 0xB0, 0xB1, 0xB2, 0xB4, 0xB7. A vendor page (0xC0 and up:
+  Sun 0xC0/0xC1, NetApp 0xD1–0xD3) is raw with its printable `strings`,
+  never interpreted.
+- **Mode:** 0x03 0x08 0x0A 0x19 0x1A 0x1C by MODE SENSE(10) (DBD=1), each
+  with `hex` (current, the page itself), `changeable` (PC=01b: the bits MODE
+  SELECT may set) and `said` (`control: DPICZ n D_SENSE n QAM n QERR n SWP n
+  ATO n TAS n …`); a refused page has `said: "refused: …"` and `error`.
+- **Named bits** for `kubectl get drives -o custom-columns`: `control`
+  (0x0A), `extInquiry` (0x86), `caching` (0x08), as 0/1 (or the field's
+  value). `kubectl get drives -o wide` shows firmware, WCE, ATO, QERR, DPICZ
+  and GRD_CHK.
+- **When:** discovery reads them for every SCSI drive (block node, or sg
+  only for a NOT READY one) and keeps them an hour in its own cache
+  (`pages::REFRESH`; the probe's is 10 min); a DriveOperation `op: details`
+  reads them now. They are kept in memory by drive id, not in
+  inventory.json (rewritten every tick, it would carry every page of every
+  drive), so a restart reads them again at its first pass. Only INQUIRY and
+  MODE SENSE are sent. The bytes are data: nothing decides on them.
+- NVMe namespaces have none (`status.pages` absent).
+
+The shapes are stormblock's (`GET /api/v1/storage/hba/{sas}/details`), so a
+console reads either.
+
 ### HBAs (`hba.rs`)
 
 Inventory only — stormdrive reports an HBA's firmware and never flashes
@@ -689,7 +722,13 @@ worker step runs `auto`.
 ### The drive worker (`worker.rs`, `erase.rs`, `gpt.rs`, #5)
 One request prepares many drives: a **selection** (drives, shelf + bays,
 model, unusable) × a list of **steps** (format → sanitize or
-security_erase → partition → enroll, each at most once, in that order). A job keeps one record per
+security_erase → partition → enroll, each at most once, in that order).
+`details` (#147) only asks: it reads the drive's pages (`pages.rs`) and asks
+the health loop for a sample now (`monitor::sample_now`, through the same
+sampler and damper), waits up to 60 s for it, and says both on the job. It
+takes no lane, and its guard is its own: any drive that can answer (fleet,
+reserved, under test, 520-byte), never a missing, formatting or sanitizing
+one. A job keeps one record per
 drive: state (queued, running, done, failed, refused, interrupted,
 cancelled), the current step, phase and percent, and one line per finished
 step. It persists in `<data_dir>/jobs.json`; the 64 most recent jobs are

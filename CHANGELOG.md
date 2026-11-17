@@ -3,6 +3,10 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-17
+- **feat:** #147 (stormblock#636): the Drive object carries `status.pages` for every SCSI drive: every VPD page the drive lists (whole, up to 4 KiB: `{page, hex, said, strings, error}`; the standard pages said in words, vendor pages raw with their printable strings) and the mode pages 0x03 0x08 0x0A 0x19 0x1A 0x1C (`{page, hex, changeable, said, error}`), plus named bits `control`, `extInquiry`, `caching` for custom columns. Read at discovery, again hourly; kept in memory, not in inventory.json. `kubectl get drives -o wide` adds Firmware, WCE, ATO, QERR, DPICZ, GRD_CHK. Supersedes #146's `status.modePages`
+- **feat:** #147: DriveOperation `op: details` reads a drive's pages and a health sample now into its Drive object; non-destructive, no lane, allowed on fleet/reserved/testing drives, refused only on missing, formatting or sanitizing ones
+
 ### 2026-11-15
 - **docs:** work plan #141: on forge1's 12.86 install bays 3/4/7 are not on the HBA330 (only bay 0); waits on a person's check of cabling/seating
 

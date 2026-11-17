@@ -960,6 +960,11 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   `status.plannedFormat`, with `status.formatFrom` = `drive`, `shelf` or
   `preference`; a DriveOperation runs it) and `identify` (#83: the drive's
   locate LED, sent when you change it, an Event on the Drive either way).
+  A SCSI drive's `status.pages` (#147) holds every VPD page and the mode
+  pages 0x03 0x08 0x0A 0x19 0x1A 0x1C (hex, changeable mask, in words),
+  plus named bits: `kubectl get drives -o wide` shows firmware, WCE, ATO,
+  QERR, DPICZ, GRD_CHK; any other with
+  `-o custom-columns=NAME:.status.name,TAS:.status.pages.control.tas,REF:.status.pages.extInquiry.refChk`.
 - **`DriveOperation`**: a drive-worker job as an object (`node`, `select`,
   `steps`, `destroy`, `dryRun`, `resume`) — see
   `deploy/driveoperation.example.yaml`. Only storage-admin can create one.
@@ -969,6 +974,8 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   and keeps `status` (phase Pending/Refused/Planned/Running/Interrupted/
   Succeeded/Failed/Cancelled, per-drive progress) plus a Kubernetes Event per
   decision. **No stamp → Refused**: the object alone is never trusted.
+  `steps: [{op: details}]` (#147) changes nothing: it reads the drives'
+  pages and health now into their Drive objects, fleet drives included.
   Deleting it cancels the steps not yet started; raising `spec.resume`
   resumes interrupted drives.
 - **`DrivePolicy`** (#50, stormcos#251) says which drives of which nodes

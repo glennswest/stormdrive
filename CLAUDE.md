@@ -88,6 +88,8 @@ src/
                   controller's slots (#134)
   inuse.rs        what a drive is used for (system/data/raid/mounted/free) and
                   why; destructive verbs refuse it (#123)
+  pages.rs        every VPD page + mode pages 0x03/08/0A/19/1A/1C, said in
+                  words, named bits → Drive status.pages; op: details (#147)
   pi.rs           protection-information probe (VPD 0xB4, READ CAPACITY) and
                   the format plan: 4096+PI1 first, alternatives (#82, #130)
   topology.rs     location: SAS/SES/mpt3sas bays, NVMe PCIe slots, locate LEDs,
