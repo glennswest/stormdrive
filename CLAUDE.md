@@ -84,6 +84,8 @@ src/
   events.rs       event ring (4096; newest 512 in events.json, #25)
   transport.rs    SAS or SATA from the drive itself: VPD 0x83, log page 0x18,
                   negotiated link rate (#105)
+  link.rs         the SAS link, both sides (log page 0x18 counters + the facing
+                  sysfs phy): rates, level, recommendation, spec.linkRate (#149)
   bays.rs         `[[bay_map]]`: a platform's physical bay numbering over a
                   controller's slots (#134)
   inuse.rs        what a drive is used for (system/data/raid/mounted/free) and
