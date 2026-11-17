@@ -58,6 +58,7 @@ spec:
         - { name: QERR, type: integer, jsonPath: .status.pages.control.qerr, priority: 1 }
         - { name: DPICZ, type: integer, jsonPath: .status.pages.control.dpicz, priority: 1 }
         - { name: GRD_CHK, type: integer, jsonPath: .status.pages.extInquiry.grdChk, priority: 1 }
+        - { name: WriteTest, type: boolean, jsonPath: .status.writeTest.passed, priority: 1 }
       schema:
         openAPIV3Schema:
           type: object
@@ -123,6 +124,16 @@ spec:
                       reason: { type: string }
                       message: { type: string }
                       lastTransitionTime: { type: string }
+                writeTest:
+                  type: object
+                  nullable: true
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: "The last write-test matrix run on the drive, from stormblock's card API (GET /api/v1/storage/hba/{sas}/write-test, stormblock#627; asked every 5 min for each drive with a SAS address; absent when the engine has none since it started) (#146): sasAddress, at (unix seconds), passed, stopped, via, vendor, product, revision, capacity, linkBefore, steps [{lba, wrprotect, write, read0, read1, readyAfter, linkAfter}], lines. The pages before and after stay on the engine."
+                  properties:
+                    passed: { type: boolean, nullable: true }
+                    at: { type: integer, nullable: true }
+                    revision: { type: string, nullable: true }
+                    lines: { type: array, items: { type: string } }
                 controllerState:
                   type: object
                   nullable: true

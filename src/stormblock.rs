@@ -717,6 +717,18 @@ impl StormBlockClient {
         Ok(Some(resp.error_for_status()?.json().await?))
     }
 
+    /// GET /api/v1/storage/hba/{sas}/write-test — the last write-test matrix
+    /// run on the card's drive (stormblock#627, v24.14+). None: no run since
+    /// the engine started (404; an engine without the route answers the same).
+    pub async fn write_test(&self, sas: &str) -> anyhow::Result<Option<Value>> {
+        let url = self.url(&format!("/api/v1/storage/hba/{}/write-test", urlencode_path(sas.trim())));
+        let resp = self.send(self.http().get(url), Idempotent::Yes).await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(resp.error_for_status()?.json().await?))
+    }
+
     /// DELETE /api/v1/drives/{id}/drain — stop a drain; what moved stays moved.
     /// Ordinary on the engine (detach-like): the node token.
     pub async fn cancel_drain(&self, id_or_path: &str) -> anyhow::Result<()> {

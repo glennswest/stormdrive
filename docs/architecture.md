@@ -632,6 +632,21 @@ its Drive object, readable with no token and no shell.
 The shapes are stormblock's (`GET /api/v1/storage/hba/{sas}/details`), so a
 console reads either.
 
+### The last write test (`writetest.rs`, #146)
+stormblock#627 (owner: "can you compare drive settings/options between
+drives"). stormblock runs the NetApp write-test matrix on a card's drive
+(`POST /api/v1/storage/hba/{sas}/write-test`, admin only) and keeps the
+last run per drive for the engine's life. The fleet tick asks for it
+(`GET …/write-test`) every 5 min for each drive with a SAS address; the
+Drive object carries it as `status.writeTest`: sasAddress, at, passed,
+stopped, via, vendor/product/revision, capacity, linkBefore, the steps
+(`lba`, `wrprotect`, `write`, `read0`, `read1`, `readyAfter`, `linkAfter`)
+and the lines. A 404 (no run since the engine started) clears it; an
+engine that does not answer leaves the last one. The mode and log pages
+before and after stay on the engine — the drive's own pages are
+`status.pages` (#147). `kubectl get drives -o wide` has a WriteTest
+column (passed).
+
 ### A drive's SAS link (`link.rs`, #149)
 stormblock#642 (owner, forge1 bay 3: "We need to monitor the sas metrics on
 the sas buss", "alarms when something is not normal, instead of when writes

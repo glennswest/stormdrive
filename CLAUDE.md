@@ -131,6 +131,8 @@ src/
   fleet.rs        the loop: labels, health push, overcommit push, drains →
                   retire, auto-add
   usage.rs        per-drive used/free joined from stormblock's slabs (#12)
+  writetest.rs    the last write-test matrix stormblock ran on a drive (card
+                  API) → Drive status.writeTest (#146)
   history.rs      drive history in system-data: records, counter rules,
                   findings across installs (#64)
   assets.rs       per-boot hardware assets: DMI, cpuinfo, SMBIOS 17/38, NICs,

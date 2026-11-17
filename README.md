@@ -965,6 +965,10 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   plus named bits: `kubectl get drives -o wide` shows firmware, WCE, ATO,
   QERR, DPICZ, GRD_CHK; any other with
   `-o custom-columns=NAME:.status.name,TAS:.status.pages.control.tas,REF:.status.pages.extInquiry.refChk`.
+  `status.writeTest` (#146) is the last write-test matrix stormblock ran
+  on the drive (its steps, lines, passed; from the engine's
+  `GET /api/v1/storage/hba/{sas}/write-test`, every 5 min); the WriteTest
+  column with `-o wide`.
   A SAS drive's `status.link` (#149) has both sides of its link, read on
   every health sample — the drive's log page 0x18 and the sysfs phy facing
   it: totals and per-minute rates of invalid DWORDs, disparity errors, loss

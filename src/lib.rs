@@ -60,5 +60,6 @@ pub mod transport;
 pub mod usage;
 pub mod wear;
 pub mod worker;
+pub mod writetest;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -50,6 +50,8 @@ pub struct FleetState {
     overcommit_unsupported_until: Option<Instant>,
     /// The same for the thermal push (#125, stormblock#564).
     thermal_unsupported_until: Option<Instant>,
+    /// When the engine's write-test runs were last asked for (#146).
+    write_tests_at: Option<Instant>,
 }
 
 /// Everything, in the order that matters: labels first (a drain places by
@@ -67,8 +69,34 @@ pub async fn tick(state: &Arc<AppState>, fs: &mut FleetState) {
     poll_drains(state).await;
     retry_pending_drains(state).await;
     sync_fault_leds(state).await;
+    sync_write_tests(state, fs).await;
     if state.config.stormblock.auto_add {
         auto_add(state, fs).await;
+    }
+}
+
+/// The last write-test matrix run on each drive with a SAS address (#146,
+/// stormblock#627), from the engine's card API, every
+/// [`crate::writetest::REFRESH`]: kept for its Drive object. A drive the
+/// engine has no run for (404) has none; an engine that does not answer
+/// leaves what was read last.
+async fn sync_write_tests(state: &Arc<AppState>, fs: &mut FleetState) {
+    if fs.write_tests_at.is_some_and(|t| t.elapsed() < crate::writetest::REFRESH) {
+        return;
+    }
+    fs.write_tests_at = Some(Instant::now());
+    let drives: Vec<(DriveId, String)> = {
+        let inv = state.inventory.read().await;
+        inv.drives.values().filter_map(|d| Some((d.id, d.location.sas_address.clone()?))).collect()
+    };
+    for (id, sas) in drives {
+        match state.stormblock.write_test(&sas).await {
+            Ok(v) => crate::writetest::set(id, v.as_ref().and_then(crate::writetest::project)),
+            Err(e) => {
+                tracing::debug!(sas = %sas, "stormblock: write-test: {e}");
+                return; // the engine is not answering: the next round
+            }
+        }
     }
 }
 
