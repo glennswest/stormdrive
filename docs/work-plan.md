@@ -2046,24 +2046,25 @@ pages. and any way to parse vpd pages"). Supersedes #146's `status.modePages`.
 - stormcos's copy of the CRDs (v0.31.0) lacks `op: details`: stormcos#1005 (with #683)
 - [ ] proof: forge1's Drive objects carry status.pages (bay 3 vs bay 0)
 
-### #149: Drive status.link, LinkDegraded/LinkFailing, spec.linkRate (2026-11-17) — P0
+### #149: Drive status.link, LinkDegraded/LinkFailing, spec.linkRate (2026-11-17) — P0, done from our side
 stormblock#642 (owner, forge1 bay 3: "We need to monitor the sas metrics on
 the sas buss", "alarms when something is not normal, instead of when writes
 fail"). We read both sides ourselves on the health tick (no dependency on
 stormblock's row).
-- [ ] `link.rs`: log page 0x18 per-phy counters (invalid dwords, disparity,
+- [x] `link.rs`: log page 0x18 per-phy counters (invalid dwords, disparity,
   loss of dword sync, phy reset problems, rate, attached SAS address); the
   facing sas_phy in sysfs (the port before `end_device-`: HBA phy or the
   shelf expander's), its counters + negotiated/maximum/maximum_hw rates
-- [ ] level per sample: settling (first / counters went back) → ok →
+- [x] level per sample: settling (first / counters went back) → ok →
   degraded (anything moving) → failing (loss of sync or phy resets moving
   two samples running); rates per minute; since, streak; recommendation
   (drive side only: receiver/slot; both sides: cable/expander port)
-- [ ] read in the health collector, kept per drive id in memory; a level
+- [x] read in the health collector, kept per drive id in memory; a level
   change is an event (ring + WARN log) and a Kubernetes Event on the Drive
-- [ ] Drive object: status.link, status.conditions LinkDegraded/LinkFailing,
+- [x] Drive object: status.link, status.conditions LinkDegraded/LinkFailing,
   printer column Link; `spec.linkRate` (6, "6 Gbit", hw) applied to the
   facing phy (maximum_linkrate + link_reset) once per daemon run, shown as
   `maximum 6 Gbit (policy)`; never set automatically
-- [ ] /metrics link gauges; tests; docs (architecture, README, CRD); changelog
+- [x] /metrics link gauges; stormview flag; tests (link.rs 9: page 0x18, sysfs + apply, levels, events, conditions); docs (architecture, README, CRD); changelog; sc-build (412 lib tests + clippy -D warnings); v0.49.0; image requested (build 5a16d892530d)
+- stormcos's CRD copy lacks the Link column: noted on stormcos#1005
 - [ ] proof: forge1 bay 3 `status.link.level: failing`, the HGSTs `ok`
