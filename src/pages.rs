@@ -631,7 +631,13 @@ pub fn mode_page(page: u8, current: Result<Vec<u8>, String>, changeable: Option<
 }
 
 /// The pages and their named bits, from what was read.
-pub fn assemble(vpd: Vec<(u8, Result<Vec<u8>, String>)>, mode: Vec<(u8, Result<Vec<u8>, String>, Option<Vec<u8>>)>, read_at: u64) -> Pages {
+/// What the drive answered for one page: its bytes, or why not.
+pub type Answer = Result<Vec<u8>, String>;
+
+/// One mode page as read: its code, the current values, the changeable mask.
+pub type ModeRead = (u8, Answer, Option<Vec<u8>>);
+
+pub fn assemble(vpd: Vec<(u8, Answer)>, mode: Vec<ModeRead>, read_at: u64) -> Pages {
     let ext_inquiry = vpd.iter().find(|(p, _)| *p == 0x86).and_then(|(_, r)| r.as_ref().ok()).and_then(|raw| ext_inquiry(raw));
     let page = |code: u8| mode.iter().find(|(p, _, _)| *p == code).and_then(|(_, r, _)| r.as_ref().ok()).and_then(|raw| mode_page_of(raw).map(<[u8]>::to_vec));
     let control = page(0x0A).and_then(|p| control(&p));
