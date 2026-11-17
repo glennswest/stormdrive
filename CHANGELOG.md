@@ -3,14 +3,16 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-17
-- **feat:** #146 (stormblock#627): Drive `status.writeTest`: the last write-test matrix run on the drive, from stormblock's `GET /api/v1/storage/hba/{sas}/write-test` (asked every 5 min for each drive with a SAS address): sasAddress, at, passed, stopped, vendor/product/revision, capacity, linkBefore, steps, lines; `-o wide` WriteTest column. The mode-pages half of #146 is #147's `status.pages.mode`
-
 ### 2026-11-15
 - **docs:** work plan #141: on forge1's 12.86 install bays 3/4/7 are not on the HBA330 (only bay 0); waits on a person's check of cabling/seating
 
 ### 2026-11-14
 - **docs:** work plan #141: the proof is forge1's console, not pvetest3's; item waits on a forge1 install
+
+## [v0.50.0] — 2026-11-17
+
+### Added
+- #146 (stormblock#627): Drive `status.writeTest`: the last write-test matrix run on the drive, from stormblock's `GET /api/v1/storage/hba/{sas}/write-test` (asked every 5 min for each drive with a SAS address): sasAddress, at, passed, stopped, vendor/product/revision, capacity, linkBefore, steps, lines; `-o wide` WriteTest column. The mode-pages half of #146 is #147's `status.pages.mode`
 
 ## [v0.49.0] — 2026-11-17
 
