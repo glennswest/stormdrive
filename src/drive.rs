@@ -999,7 +999,10 @@ impl Drive {
             return Some("designated system — a worker job naming it in \"destroy\" may format it".into());
         }
         if self.kind == DriveKind::NvmeSsd {
-            return Some("NVMe: use namespace format (not implemented)".into());
+            // This job is SCSI FORMAT UNIT. An NVMe namespace changes its LBA
+            // format with Format NVM, which the worker's `format` step and
+            // `stormdrive format` both run (erase::nvme_format).
+            return Some("NVMe: this is SCSI FORMAT UNIT; reformat an NVMe namespace with a worker job's \"format\" step (POST /api/v1/worker/jobs, Format NVM)".into());
         }
         None
     }
@@ -1234,7 +1237,8 @@ mod tests {
         assert!(d.format_blocker().is_none(), "an operator-failed drive may be reformatted (out of fleet)");
         let mut d = base_drive();
         d.kind = DriveKind::NvmeSsd;
-        assert!(d.format_blocker().is_some());
+        let why = d.format_blocker().unwrap();
+        assert!(why.contains("worker/jobs") && why.contains("Format NVM"), "names the path that does format NVMe (#154): {why}");
     }
 
     /// forge1 sdb–sdd (#131): a format cut off by a power-off. The drive is

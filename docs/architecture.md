@@ -747,7 +747,7 @@ its sg node afterwards:
    delete + targeted host scan when sd still reports 0 blocks.
 
 Guards: out of the fleet, idle, present, not reserved, no mounted
-partitions, no stormblock slab on it (`in_use_by`); NVMe is refused (namespace format is a different command).
+partitions, no stormblock slab on it (`in_use_by`); NVMe is refused here: its LBA format changes with Format NVM, which the worker's `format` step (`POST /api/v1/worker/jobs`) and `stormdrive format` run, and the refusal names that path (#154).
 Many drives run in parallel — the drive does the work, the host polls.
 A batch request validates every drive before starting any. There is no
 cancel. The result is persisted on the drive (`format`) and reported

@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-18
+- **fix:** #154: the format API's NVMe refusal no longer reads as a stub; it names the path that does reformat an NVMe namespace (the worker's `format` step, Format NVM via `POST /api/v1/worker/jobs`, or `stormdrive format`). No stub markers left in code or docs
+
 ### 2026-11-15
 - **docs:** work plan #141: on forge1's 12.86 install bays 3/4/7 are not on the HBA330 (only bay 0); waits on a person's check of cabling/seating
 
