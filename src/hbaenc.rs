@@ -19,7 +19,7 @@
 //!
 //! An enclosure an SES or RAID report already covers is left to it.
 
-use crate::drive::{Position, Shelf};
+use crate::drive::Shelf;
 use crate::megaraid::Through;
 use crate::ses::ShelfReport;
 use crate::topology::Shelves;
@@ -214,6 +214,7 @@ fn report(sys: &Path, enc: String, devs: &[EndDevice]) -> ShelfReport {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::drive::Position;
 
     struct Tree(PathBuf);
     impl Drop for Tree {
