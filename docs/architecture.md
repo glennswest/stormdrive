@@ -1199,15 +1199,27 @@ The route table, request bodies and handle resolution are in the
   - **Pure decision (`policy.rs`).** The spec is parsed and refused when it
     names no node, has an unknown tier, or asks for a reformat other than
     512/4096. `selects_node` matches by name and/or the Node's labels.
-    `selects_drive` ANDs kind, size, sector size, model, shelf and bays.
+    `selects_drive` ANDs kind, size, sector size, model, shelf, bays and
+    smr; `mismatch` names the first field that differs (#156).
     `requireDataSlab` (#42) holds a node at phase Waiting until the
     engine's slab listing shows a data slab on one of its drives
     (`node_has_data_slab`).
     `verdict` per drive is one of:
     - **Pass:** in the fleet, missing, or already in a job.
     - **Skip, with why:** designated reserved/spare/failed, `in_use_by`,
-      busy, failing, a 520-byte drive with no `reformat` in the policy, or
-      a usable drive with no health verdict yet.
+      busy, failing, hot, host-managed SMR (`blocker`, shared with the
+      drive's own reason), a 520-byte drive with no `reformat` in the
+      policy, or a usable drive with no health verdict yet.
+
+    **membershipReason (#156, `membership.rs`).** After each pass every
+    drive out of the fleet gets a reason (`controller::member_reason`): the
+    first policy selecting it says (its record: skipped and why, queued,
+    failed; or the policy waiting/suspended), else "no DrivePolicy on this
+    node selects it" with each policy's mismatch, else NoPolicy (none
+    selects the node, or no CRD). Without an apiserver the drive's own
+    record (`policy::blocker`) or NotDecided. The Drive object carries it as
+    `status.membershipReason` and condition `Member` (lastTransitionTime
+    kept while its status holds).
     - **Run, with steps:** `format` (only when `needs_reformat()`), then
       `partition` and `enroll {role, tier}`.
 

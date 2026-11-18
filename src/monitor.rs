@@ -1117,6 +1117,12 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                     }
                     d.supports = primary.supports.clone();
                 }
+                // SMR (#156): a pass with no answer keeps the last supports.
+                let smr = crate::smr::detect(primary.zoned.as_deref(), d.supports.as_ref(), &primary.model);
+                if d.smr.as_ref().is_some_and(|was| was.smr != smr.smr) {
+                    events.push((Some(id), Severity::Info, "discovered", format!("{}: smr now {} ({}; was {})", primary.name, smr.smr.word(), smr.source, d.smr.as_ref().map(|w| w.smr.word()).unwrap_or("?"))));
+                }
+                d.smr = Some(smr);
                 if !matches!(d.activity, Activity::Formatting | Activity::Sanitizing) {
                     // Mid-format the drive answers NOT READY and sysfs says
                     // 0 blocks; the format job owns these fields until it
@@ -1249,6 +1255,8 @@ async fn merge_observed(state: &Arc<AppState>, observed: Vec<discovery::Observed
                         fleet_partition: None,
                         format_reason: primary.format_reason.clone(),
                         controller_state: None,
+                        smr: Some(crate::smr::detect(primary.zoned.as_deref(), primary.supports.as_ref(), &primary.model)),
+                        membership_reason: None,
                     },
                 );
             }
@@ -1761,6 +1769,7 @@ mod tests {
             slabs: vec![],
             mounted: false,
             format_reason: None,
+            zoned: None,
         };
         // sdq and sda are the same physical drive through two IOMs.
         let groups = group_observed(vec![ob("sdq", "w1"), ob("sdb", "w2"), ob("sda", "w1")]);

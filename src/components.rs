@@ -872,6 +872,8 @@ mod tests {
             fleet_partition: None,
             format_reason: None,
             controller_state: None,
+            smr: None,
+            membership_reason: None,
         }
     }
 

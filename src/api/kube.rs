@@ -186,7 +186,10 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
         Membership::Out => "out",
     };
     // The SAS link, both sides, and its two conditions (#149).
-    let (link, conditions) = crate::link::status(&d.id);
+    let (link, mut conditions) = crate::link::status(&d.id);
+    // Never a bare `out` (#156): the Member condition says why.
+    conditions.push(crate::membership::condition(d));
+    let member_why = crate::membership::why(d);
     json!({
         "apiVersion": api_version(),
         "kind": "Drive",
@@ -235,6 +238,9 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "sasAddress": d.location.sas_address,
             "location": d.location,
             "membership": d.membership,
+            "membershipReason": member_why.as_ref().map(|w| w.message.clone()),
+            "smr": d.smr.as_ref().map(|i| i.smr),
+            "smrSource": d.smr.as_ref().map(|i| i.source.clone()),
             "activity": d.activity,
             "health": d.health,
             "drain": d.drain,
@@ -736,6 +742,8 @@ mod tests {
             fleet_partition: None,
             format_reason: None,
             controller_state: None,
+            smr: None,
+            membership_reason: None,
         }
     }
 

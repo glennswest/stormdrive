@@ -47,6 +47,9 @@ spec:
         - { name: Enclosure, type: string, jsonPath: .status.enclosure, priority: 1 }
         - { name: Bay, type: integer, jsonPath: .status.bay }
         - { name: Health, type: string, jsonPath: .status.health.status }
+        - { name: Membership, type: string, jsonPath: .status.membership }
+        - { name: SMR, type: string, jsonPath: .status.smr }
+        - { name: Why, type: string, jsonPath: .status.membershipReason, priority: 1 }
         - { name: Link, type: string, jsonPath: .status.link.level }
         - { name: Owner, type: string, jsonPath: .status.owner }
         - { name: Prep, type: string, jsonPath: .status.prep.phase }
@@ -87,6 +90,9 @@ spec:
                 capacityBytes: { type: integer }
                 blockSize: { type: integer, description: "Logical sector size: 512, 4096, or 520/528 on a drive that needs a reformat." }
                 needsReformat: { type: boolean }
+                membershipReason: { type: string, nullable: true, description: "Why the drive is out of the fleet (#156), never a bare out: the DrivePolicy's skip (designated, in use, busy, failed, hot, host-managed SMR, a reformat the policy will not do, no health verdict yet), its job (queued, running, failed: edit the policy to try again), the policy waiting or suspended, or no DrivePolicy selecting it with each policy's first field that differs. The Member condition carries it with a reason word. Null in the fleet." }
+                smr: { type: string, nullable: true, enum: [none, host-managed, host-aware, drive-managed], description: "Shingled recording (#156): the kernel's queue/zoned (host-managed, host-aware), else ATA IDENTIFY DEVICE word 69 bits 1:0 on a SATA drive (10b drive-managed), else VPD 0xB1 ZONED, else a list of known drive-managed models (ST2000DM008 …). A host-managed drive is never enrolled by a DrivePolicy; a drive-managed one is a data drive like any other." }
+                smrSource: { type: string, nullable: true, description: "What said it: queue/zoned, ATA IDENTIFY word 69, VPD 0xB1, known model, nothing reports zoning." }
                 formatReason: { type: string, nullable: true, description: "Why it needs a format when its sectors do not say so (#131): no block node, e.g. an interrupted format answering 31/00." }
                 pages:
                   type: object
@@ -114,7 +120,7 @@ spec:
                     recommendation: { type: string, nullable: true }
                 conditions:
                   type: array
-                  description: "LinkDegraded (link errors moving, failing included) and LinkFailing (loss of sync or phy resets moving two samples running), each with reason, message and lastTransitionTime (#149). A change raises a Kubernetes Event on the Drive."
+                  description: "LinkDegraded (link errors moving, failing included) and LinkFailing (loss of sync or phy resets moving two samples running), each with reason, message and lastTransitionTime (#149). A change raises a Kubernetes Event on the Drive. Member (#156): True (Enrolled) in the fleet; False with the reason (NoPolicy, NotSelected, Designated, InUse, Busy, Failed, Hot, HostManagedSMR, NeedsReformat, NoHealthYet, Enrolling, Planned, EnrollFailed, Waiting, Suspended, Missing, NotDecided) and status.membershipReason as its message."
                   items:
                     type: object
                     x-kubernetes-preserve-unknown-fields: true
@@ -319,6 +325,10 @@ spec:
                     model: { type: string }
                     shelf: { type: string, description: "The enclosure: logical id, serial or sysfs id." }
                     bays: { type: string, description: "Bays on that shelf, e.g. 0-11,14 (needs shelf)." }
+                    smr:
+                      type: array
+                      items: { type: string, enum: [none, drive-managed, host-aware, host-managed] }
+                      description: "The drive's status.smr must be one of these (#156); empty = any. A host-managed drive is never enrolled whatever this says."
                 reformat:
                   type: integer
                   enum: [512, 4096]

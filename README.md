@@ -373,6 +373,18 @@ are listed under [Not yet](#not-yet).
 - **Fleet** (`src/fleet.rs`, `src/stormblock.rs`). A drive's lifecycle is
   three separate fields:
   - `membership`: `out` or `fleet`. `fleet` means handed to stormblock.
+    An `out` drive always says why (#156): the Drive object's
+    `status.membershipReason` and its `Member` condition (False with a
+    reason word: NoPolicy, NotSelected with each policy's first mismatch,
+    Designated, InUse, Busy, Failed, Hot, HostManagedSMR, NeedsReformat,
+    NoHealthYet, Enrolling, EnrollFailed, Waiting, …), from each DrivePolicy
+    pass.
+  - `smr` (#156): `none`, `host-managed`, `host-aware` or `drive-managed`,
+    with `smrSource`. From the kernel's `queue/zoned`, ATA IDENTIFY DEVICE
+    word 69 bits 1:0 (SATA), VPD 0xB1 ZONED, then a list of known
+    drive-managed models (ST2000DM008, WD…EFAX, …) for drives that report
+    nothing. A host-managed drive is never enrolled by a policy; a
+    drive-managed one is a data drive like any other.
   - `designation`: `none`, `reserved`, `spare`, `failed` or `system`. The
     operator sets it.
   - `system` (#66) marks the node's system drive, or each drive of its
@@ -996,11 +1008,13 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
 - **`DrivePolicy`** (#50, stormcos#251) says which drives of which nodes
   become stormblock slabs, and of which tier, without anyone submitting a
   job. See `deploy/drivepolicy.example.yaml`: stormblock1's NetApp shelf
-  becomes `warm`, stormblock2's SAS HDDs `cool`. The spec has:
+  becomes `warm`, stormblock2's SAS HDDs `cool`, and the blades' rotational
+  SATA/SAS data drive (server8's SMR disk beside its SSD) `cool` at its own
+  block size (#156). The spec has:
   - **nodes:** `nodes` and/or `nodeSelector.matchLabels`; one of them is
     required.
   - **drives:** `kinds`, `minBytes`, `maxBytes`, `blockSizes`, `model`,
-    `shelf`, `bays`.
+    `shelf`, `bays`, `smr` (#156).
   - **`reformat`** (512 or 4096): applied only to a drive the kernel cannot
     use, such as a 520-byte NetApp drive.
   - **`enroll`:** `role` (default `data`) and `tier` (`hot`, `warm`, `cool`

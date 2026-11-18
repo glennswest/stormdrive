@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-18 (#156)
+- **feat:** #156 (stormblock#672): a drive out of the fleet always says why: Drive `status.membershipReason` and condition `Member` (False with a reason word and message; True `Enrolled`), from each DrivePolicy pass — the policy's skip, its job, the policy waiting/suspended, or no policy selecting it with each policy's first mismatch
+- **feat:** #156: SMR detected — `smr.rs` decides none/host-managed/host-aware/drive-managed from `queue/zoned`, ATA IDENTIFY DEVICE word 69 bits 1:0 (read in the SCSI probe on a SAT drive), VPD 0xB1 ZONED, then a known drive-managed model list (ST2000DM008 …); Drive `status.smr`, `status.smrSource`, printer columns Membership, SMR and Why (wide)
+- **feat:** #156: DrivePolicy `drives.smr` selector; a host-managed SMR drive is skipped with its reason, a drive-managed one is enrolled like any other; example `blades-hdd-cool` policy (rotational SATA/SAS → cool data slab at its own block size, no format, no PI)
+
 ### 2026-11-18
 - **fix:** #154: the format API's NVMe refusal no longer reads as a stub; it names the path that does reformat an NVMe namespace (the worker's `format` step, Format NVM via `POST /api/v1/worker/jobs`, or `stormdrive format`). No stub markers left in code or docs
 

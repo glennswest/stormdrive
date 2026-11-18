@@ -27,6 +27,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::drive::{Activity, Designation, Drive, DriveKind, HealthStatus, Membership};
+use crate::smr::Smr;
 use crate::worker::{Role, Step};
 
 /// The tiers a stormblock slab can carry (stormblock `placement/topology.rs`).
@@ -60,6 +61,10 @@ pub struct DriveSelector {
     /// Bays on that shelf: `"0-11,14"`.
     #[serde(default)]
     pub bays: Option<String>,
+    /// SMR kinds (`none`, `drive-managed`, `host-aware`; #156); empty = any.
+    /// A host-managed drive is never enrolled whatever this says.
+    #[serde(default)]
+    pub smr: Vec<Smr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -144,36 +149,53 @@ impl PolicySpec {
 
     /// Does the drive selector pick this drive?
     pub fn selects_drive(&self, d: &Drive) -> bool {
+        self.mismatch(d).is_none()
+    }
+
+    /// Why the drive selector does not pick this drive: its first field that
+    /// differs (#156: an out drive's membershipReason names it).
+    pub fn mismatch(&self, d: &Drive) -> Option<String> {
         let s = &self.drives;
+        let word = |v: serde_json::Result<Value>| v.ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         if !s.kinds.is_empty() && !s.kinds.contains(&d.kind) {
-            return false;
+            let want = s.kinds.iter().map(|k| word(serde_json::to_value(k))).collect::<Vec<_>>().join(", ");
+            return Some(format!("kind {} is not one of {want}", word(serde_json::to_value(d.kind))));
         }
-        if s.min_bytes.is_some_and(|m| d.capacity_bytes < m) || s.max_bytes.is_some_and(|m| d.capacity_bytes > m) {
-            return false;
+        if s.min_bytes.is_some_and(|m| d.capacity_bytes < m) {
+            return Some(format!("{} bytes is under minBytes", d.capacity_bytes));
+        }
+        if s.max_bytes.is_some_and(|m| d.capacity_bytes > m) {
+            return Some(format!("{} bytes is over maxBytes", d.capacity_bytes));
         }
         if !s.block_sizes.is_empty() && !s.block_sizes.contains(&d.block_size) {
-            return false;
+            return Some(format!("{}-byte sectors are not in blockSizes", d.block_size));
         }
         if let Some(m) = &s.model {
             if !d.model.trim().eq_ignore_ascii_case(m.trim()) {
-                return false;
+                return Some(format!("model {} is not {}", d.model.trim(), m.trim()));
             }
         }
         if let Some(want) = &s.shelf {
-            let Some(shelf) = &d.location.shelf else { return false };
-            let want = crate::ses::normalize_sas(want);
+            let Some(shelf) = &d.location.shelf else { return Some("not in a shelf".into()) };
+            let want_n = crate::ses::normalize_sas(want);
             let names = [shelf.key(), shelf.logical_id.clone(), shelf.serial.clone(), shelf.id.clone()];
-            if !names.into_iter().flatten().any(|n| crate::ses::normalize_sas(&n) == want) {
-                return false;
+            if !names.into_iter().flatten().any(|n| crate::ses::normalize_sas(&n) == want_n) {
+                return Some(format!("not in shelf {want}"));
             }
         }
         if let Some(b) = &s.bays {
-            let Ok(bays) = crate::worker::parse_bays(b) else { return false };
-            if !d.location.bay.is_some_and(|x| bays.contains(&x)) {
-                return false;
+            let in_bays = crate::worker::parse_bays(b).is_ok_and(|bays| d.location.bay.is_some_and(|x| bays.contains(&x)));
+            if !in_bays {
+                return Some(format!("not in bays {b}"));
             }
         }
-        true
+        if !s.smr.is_empty() {
+            let smr = d.smr.as_ref().map(|i| i.smr).unwrap_or_default();
+            if !s.smr.contains(&smr) {
+                return Some(format!("smr {} is not one of {}", smr.word(), s.smr.iter().map(|x| x.word()).collect::<Vec<_>>().join(", ")));
+            }
+        }
+        None
     }
 
     /// The worker steps for a drive: the reformat when it needs one, then a
@@ -213,24 +235,8 @@ pub fn verdict(p: &PolicySpec, d: &Drive, in_job: bool) -> Verdict {
     if d.membership == Membership::Fleet || d.activity == Activity::Missing || in_job {
         return Verdict::Pass;
     }
-    if d.designation != Designation::None {
-        let word = serde_json::to_value(d.designation).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-        return Verdict::Skip(format!("designated {word}"));
-    }
-    if let Some(who) = &d.in_use_by {
-        return Verdict::Skip(format!("holds data for {who}"));
-    }
-    if d.activity != Activity::Idle {
-        let word = serde_json::to_value(d.activity).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-        return Verdict::Skip(format!("busy: {word}"));
-    }
-    let health = d.health.status();
-    if health >= HealthStatus::Failing {
-        return Verdict::Skip(format!("health is {health:?}"));
-    }
-    // Hot (#125): nothing new goes on it until it is under its warning limit.
-    if d.thermal.as_ref().is_some_and(|t| t.throttle_background) {
-        return Verdict::Skip("running over its warning temperature".into());
+    if let Some(why) = blocker(d) {
+        return Verdict::Skip(why);
     }
     let reformat = d.needs_reformat();
     if reformat && p.reformat.is_none() {
@@ -238,10 +244,40 @@ pub fn verdict(p: &PolicySpec, d: &Drive, in_job: bool) -> Verdict {
     }
     // A drive the kernel cannot read yet may never have had a health verdict;
     // the worker's guard looks again before the enroll.
-    if health == HealthStatus::Unknown && !reformat {
+    if d.health.status() == HealthStatus::Unknown && !reformat {
         return Verdict::Skip("no health verdict yet".into());
     }
     Verdict::Run(p.steps_for(reformat))
+}
+
+/// What keeps any policy off a drive out of the fleet, whatever it says
+/// (#156: also the drive's own `membershipReason` when no pass has run).
+pub fn blocker(d: &Drive) -> Option<String> {
+    if d.designation != Designation::None {
+        let word = serde_json::to_value(d.designation).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        return Some(format!("designated {word}"));
+    }
+    if let Some(who) = &d.in_use_by {
+        return Some(format!("holds data for {who}"));
+    }
+    if d.activity != Activity::Idle {
+        let word = serde_json::to_value(d.activity).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        return Some(format!("busy: {word}"));
+    }
+    let health = d.health.status();
+    if health >= HealthStatus::Failing {
+        return Some(format!("health is {health:?}"));
+    }
+    // Hot (#125): nothing new goes on it until it is under its warning limit.
+    if d.thermal.as_ref().is_some_and(|t| t.throttle_background) {
+        return Some("running over its warning temperature".into());
+    }
+    // Zones written in order only (#156): a slab writes at random. A
+    // drive-managed SMR drive is taken like any other.
+    if d.smr.as_ref().is_some_and(|s| s.smr == Smr::HostManaged) {
+        return Some("host-managed SMR: its zones take only sequential writes, and a stormblock slab writes at random".into());
+    }
+    None
 }
 
 /// A drive's last record in the policy's status, when it says not to try
@@ -387,6 +423,58 @@ mod tests {
         assert!(matches!(verdict(&p, &netapp(0), false), Verdict::Skip(r) if r.contains("no reformat")));
         let d = Drive::test_fixture("sdb");
         assert_eq!(verdict(&p, &d, false), Verdict::Skip("no health verdict yet".into()));
+    }
+
+    /// server8 (#156): the SATA HDD beside the SSD, drive-managed SMR at
+    /// 512e, is enrolled as a cool data slab as is — no format, no PI.
+    fn server8_hdd() -> Drive {
+        let mut d = Drive::test_fixture("sdb");
+        d.kind = DriveKind::SataHdd;
+        d.model = "ST2000DM008-2UB1".into();
+        d.block_size = 512;
+        d.physical_block_size = 4096;
+        d.usable = true;
+        d.capacity_bytes = 2_000_398_934_016;
+        d.health.status = Some(HealthStatus::Good);
+        d.smr = Some(crate::smr::detect(Some("none"), None, &d.model));
+        d
+    }
+
+    fn blades() -> PolicySpec {
+        spec(json!({
+            "nodes": ["server8"],
+            "drives": { "kinds": ["sata_hdd", "sas_hdd"] },
+            "enroll": { "role": "data", "tier": "cool" },
+        }))
+    }
+
+    #[test]
+    fn a_drive_managed_smr_sata_hdd_is_enrolled_cool_at_its_block_size() {
+        let p = blades();
+        let d = server8_hdd();
+        assert_eq!(d.smr.as_ref().map(|s| s.smr), Some(Smr::DriveManaged));
+        assert!(p.selects_drive(&d));
+        let Verdict::Run(steps) = verdict(&p, &d, false) else { panic!("{:?}", verdict(&p, &d, false)) };
+        assert_eq!(steps, vec![Step::Partition { role: Role::Data }, Step::Enroll { tier: Some("cool".into()), role: Role::Data }]);
+        let cx = crate::worker::Context { stormblock: true, ..Default::default() };
+        assert_eq!(crate::worker::guard(&d, &steps, false, &cx), Ok(()));
+        // The SSD beside it is not this policy's: and it says why.
+        let mut ssd = Drive::test_fixture("sda");
+        ssd.kind = DriveKind::SataSsd;
+        assert_eq!(p.mismatch(&ssd), Some("kind sata_ssd is not one of sata_hdd, sas_hdd".into()));
+    }
+
+    #[test]
+    fn host_managed_smr_is_skipped_and_the_smr_selector_leaves_drives() {
+        let p = blades();
+        let mut d = server8_hdd();
+        d.smr = Some(crate::smr::SmrInfo { smr: Smr::HostManaged, source: "queue/zoned".into() });
+        assert!(matches!(verdict(&p, &d, false), Verdict::Skip(r) if r.starts_with("host-managed SMR")));
+        let none_only = spec(json!({ "nodes": ["server8"], "drives": { "smr": ["none"] }, "enroll": { "tier": "cool" } }));
+        let d = server8_hdd();
+        assert_eq!(none_only.mismatch(&d), Some("smr drive-managed is not one of none".into()));
+        let dm = spec(json!({ "nodes": ["server8"], "drives": { "smr": ["drive-managed"] }, "enroll": { "tier": "cool" } }));
+        assert!(dm.selects_drive(&d));
     }
 
     #[test]

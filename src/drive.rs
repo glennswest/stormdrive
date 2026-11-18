@@ -632,6 +632,15 @@ pub struct Drive {
     /// "failed (controller)", not just missing. Set every shelf scan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller_state: Option<crate::raidctl::DriveControllerState>,
+    /// Shingled recording (#156): none, host-managed, host-aware or
+    /// drive-managed, and what said so. Set every discovery pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smr: Option<crate::smr::SmrInfo>,
+    /// Why the drive is out of the fleet (#156), as the DrivePolicy pass
+    /// decided it. None: no pass has said (`membership::why` then says what
+    /// the drive's own record does).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_reason: Option<crate::membership::Why>,
 }
 
 impl Drive {
@@ -1094,6 +1103,8 @@ mod tests {
             fleet_partition: None,
             format_reason: None,
             controller_state: None,
+            smr: None,
+            membership_reason: None,
         }
     }
 

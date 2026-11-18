@@ -90,6 +90,13 @@ pub struct Supports {
     /// probe before this field existed.
     #[serde(default)]
     pub physical_block_size: u32,
+    /// VPD 0xB1 byte 8 bits 5:4, ZONED (#156): 1 host-aware, 2 drive-managed.
+    #[serde(default)]
+    pub vpd_zoned: Option<u8>,
+    /// ATA IDENTIFY DEVICE word 69 bits 1:0 through ATA PASS-THROUGH, on a
+    /// drive whose INQUIRY vendor is `ATA` (#156): 1 host-aware, 2 drive-managed.
+    #[serde(default)]
+    pub ata_zoned: Option<u8>,
 }
 
 /// One format, as `plannedFormat.fallbacks` lists it.
@@ -349,7 +356,19 @@ mod linux {
         let protect = parse_protect(&inq);
         let pi_types = if protect && has(0x86) { dev.vpd(0x86).map(|r| parse_extended_inquiry(&r)).unwrap_or_default() } else { vec![] };
         let block_lengths = if has(0xB4) { dev.vpd(0xB4).map(|r| parse_block_lengths(&r)).unwrap_or_default() } else { vec![] };
-        let (rotation_rpm, non_rotating) = if has(0xB1) { dev.vpd(0xB1).map(|r| parse_rotation(&r)).unwrap_or((None, None)) } else { (None, None) };
+        let b1 = if has(0xB1) { dev.vpd(0xB1).ok() } else { None };
+        let (rotation_rpm, non_rotating) = b1.as_deref().map(parse_rotation).unwrap_or((None, None));
+        let vpd_zoned = b1.as_deref().and_then(crate::smr::b1_zoned);
+        // A SATA drive (SAT: vendor "ATA"): IDENTIFY word 69 says
+        // drive-managed SMR, which the kernel's queue/zoned never does.
+        let ata_zoned = if inq.get(8..16) == Some(b"ATA     ".as_slice()) {
+            let mut id = [0u8; 512];
+            dev.io(&crate::erase::ata_pt16(crate::erase::ATA_IDENTIFY, crate::erase::AtaData::In), Dir::FromDevice, &mut id, crate::scsi::T_SHORT)
+                .ok()
+                .and_then(|_| crate::smr::ata_zoned(&id))
+        } else {
+            None
+        };
         let mode_block_length = dev
             .mode_sense10(0x01)
             .ok()
@@ -365,6 +384,8 @@ mod linux {
             current_prot_type: cap.prot_type,
             mode_block_length,
             physical_block_size: cap.physical_block_len(),
+            vpd_zoned,
+            ata_zoned,
         })
     }
 }

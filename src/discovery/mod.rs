@@ -48,6 +48,9 @@ pub struct Observed {
     /// Seen through its sg node only, with no block node (#131): why it
     /// needs a format (an interrupted one answers 31/00).
     pub format_reason: Option<String>,
+    /// The kernel's `queue/zoned` (`none`, `host-aware`, `host-managed`;
+    /// #156). None with no block node.
+    pub zoned: Option<String>,
 }
 
 /// A disk on a USB host (#106): not a drive of the node. It is left out of the
@@ -449,6 +452,7 @@ mod linux {
                     mounted: super::mounted_in(mounts, &name),
                     supports: p.supports.clone(),
                     format_reason: None,
+                    zoned: read_trim(&base.join("queue/zoned")),
                     name,
                 });
                 continue;
@@ -558,6 +562,7 @@ mod linux {
                 supports,
                 pages,
                 format_reason: not_ready,
+                zoned: read_trim(&base.join("queue/zoned")),
                 name,
             });
         }
@@ -641,6 +646,7 @@ mod linux {
                 mounted: false,
                 supports: crate::pi::probe(&path).ok(),
                 format_reason: Some(reason),
+                zoned: None,
                 name: sg,
             });
         }

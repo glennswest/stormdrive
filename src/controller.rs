@@ -121,6 +121,19 @@ fn drive_fingerprint(v: &Value) -> String {
     v.to_string()
 }
 
+/// The Member condition's `lastTransitionTime` (#156): kept from the object
+/// it replaces while its status is the same, else now.
+pub fn member_transition(o: &mut Value, prev: Option<&Value>, now: &str) {
+    let was = prev.and_then(|p| p["status"]["conditions"].as_array()).and_then(|cs| cs.iter().find(|c| c["type"] == "Member")).cloned();
+    let Some(cs) = o["status"]["conditions"].as_array_mut() else { return };
+    let Some(c) = cs.iter_mut().find(|c| c["type"] == "Member") else { return };
+    let at = match was {
+        Some(w) if w["status"] == c["status"] && w["lastTransitionTime"].is_string() => w["lastTransitionTime"].clone(),
+        _ => json!(now),
+    };
+    c["lastTransitionTime"] = at;
+}
+
 /// A link level as the Drive object spells it.
 fn link_level(v: &Value) -> Option<crate::link::Level> {
     use crate::link::Level;
@@ -204,6 +217,9 @@ pub struct Controller {
     policy_status: HashMap<String, String>,
     /// When a policy last probed a drive's contents and skipped it.
     probed: HashMap<(String, crate::drive::DriveId), Instant>,
+    /// This pass's node status of each policy, written or not: what the
+    /// drives' membershipReason is read from (#156).
+    pass: HashMap<String, Value>,
     /// Shelf status last written (fingerprint, when).
     shelf_written: HashMap<String, (String, Instant)>,
     /// Shelf LED requests sent: (shelf, "identify"|"faultLed") → wanted,
@@ -234,6 +250,7 @@ pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
         op_status: HashMap::new(),
         policy_status: HashMap::new(),
         probed: HashMap::new(),
+        pass: HashMap::new(),
         shelf_written: HashMap::new(),
         shelf_led_sent: HashMap::new(),
         shelf_defaults: HashMap::new(),
@@ -297,6 +314,7 @@ impl Controller {
                     };
                     let mut o = apiserver_drive_with(d, &node, want);
                     o["status"]["formatFrom"] = json!(from);
+                    member_transition(&mut o, items.get(&id).copied(), &chrono_now());
                     o
                 })
                 .collect()
@@ -794,6 +812,33 @@ fn dj_word(s: DjState) -> &'static str {
     }
 }
 
+/// Why `d` is out of the fleet, from the policies selecting its node and
+/// what each said this pass (`pass`: policy → its node status).
+pub fn member_reason(d: &crate::drive::Drive, mine: &[(String, PolicySpec)], pass: &HashMap<String, Value>) -> crate::membership::Why {
+    use crate::membership::{from_record, not_selected, Why};
+    let id = d.id.0.to_string();
+    let mut misses = vec![];
+    for (name, spec) in mine {
+        if let Some(m) = spec.mismatch(d) {
+            misses.push((name.clone(), m));
+            continue;
+        }
+        let st = pass.get(name).cloned().unwrap_or(Value::Null);
+        let phase = st["phase"].as_str().unwrap_or("Active");
+        if let Some(w) = st["drives"].get(id.as_str()).filter(|r| r.is_object()).and_then(|r| from_record(name, r)) {
+            return w;
+        }
+        if !matches!(phase, "Active" | "Planned") {
+            return Why::new(phase, format!("DrivePolicy {name} is {}: {}", phase.to_lowercase(), st["message"].as_str().unwrap_or("")));
+        }
+        if let Some(b) = crate::policy::blocker(d) {
+            return Why::new(crate::membership::code_for(&b), format!("DrivePolicy {name}: {b}"));
+        }
+        return Why::new("Enrolling", format!("DrivePolicy {name}: being enrolled"));
+    }
+    not_selected(&misses)
+}
+
 /// A policy's one-line summary of its drives here.
 pub fn policy_summary(drives: &serde_json::Map<String, Value>) -> String {
     let mut n: BTreeMap<&str, usize> = BTreeMap::new();
@@ -812,12 +857,17 @@ impl Controller {
         let list = match self.kube.get(&path("drivepolicies", None)).await {
             Ok(l) => l,
             // The CRD is not installed: no policy, today's default.
-            Err(e) if e.code() == Some(404) => return Ok(()),
+            Err(e) if e.code() == Some(404) => {
+                self.member_reasons(None).await;
+                return Ok(());
+            }
             Err(e) => return Err(format!("listing DrivePolicies: {e}")),
         };
         let node = self.state.node_name.clone();
         let mut labels: Option<Option<BTreeMap<String, String>>> = None;
         let mut present: HashSet<String> = HashSet::new();
+        let mut mine: Vec<(String, PolicySpec)> = vec![];
+        self.pass.clear();
         for pol in list["items"].as_array().into_iter().flatten() {
             let Some(name) = pol["metadata"]["name"].as_str().map(str::to_string) else { continue };
             present.insert(name.clone());
@@ -849,7 +899,9 @@ impl Controller {
             if let Err(e) = self.policy(&name, pol, &spec).await {
                 tracing::warn!("kubernetes: DrivePolicy {name}: {e}");
             }
+            mine.push((name, spec));
         }
+        self.member_reasons(Some(mine.as_slice())).await;
         // A deleted policy stops: its jobs' queued steps are cancelled.
         for (job, pol) in self.state.worker.policy_jobs() {
             if !present.contains(&pol) && crate::worker::cancel(&self.state, &job).await.is_ok() {
@@ -858,6 +910,19 @@ impl Controller {
             }
         }
         Ok(())
+    }
+
+    /// Every drive out of the fleet gets its reason from this pass (#156):
+    /// `mine` = the policies selecting this node (None: no DrivePolicy CRD).
+    async fn member_reasons(&self, mine: Option<&[(String, PolicySpec)]>) {
+        let mut inv = self.state.inventory.write().await;
+        for d in inv.drives.values_mut() {
+            d.membership_reason = match mine {
+                _ if d.membership == crate::drive::Membership::Fleet => None,
+                None => Some(crate::membership::Why::new("NoPolicy", "no DrivePolicy (the CRD is not installed): a drive is enrolled by hand (POST /api/v1/drives/{id}/enroll, a DriveOperation)")),
+                Some(mine) => Some(member_reason(d, mine, &self.pass)),
+            };
+        }
     }
 
     /// This node's labels, for a policy's nodeSelector; None when the Node
@@ -1069,6 +1134,7 @@ impl Controller {
 
     /// Write this node's part of the policy's status, when it changed.
     async fn put_policy_status(&mut self, name: &str, node: &str, st: Value) -> Result<(), String> {
+        self.pass.insert(name.to_string(), st.clone());
         let s = st.to_string();
         if self.policy_status.get(name) == Some(&s) {
             return Ok(());
@@ -1127,6 +1193,52 @@ mod tests {
     use super::*;
     use crate::drive::DriveId;
     use crate::worker::{DriveJob, Select, Step};
+
+    /// #156: server8's sdb out of the fleet always says why.
+    #[test]
+    fn an_out_drive_gets_its_reason_from_the_pass() {
+        let mut d = crate::drive::Drive::test_fixture("sdb");
+        d.kind = crate::drive::DriveKind::SataHdd;
+        let id = d.id.0.to_string();
+        let sas = PolicySpec::parse(&json!({ "nodes": ["server8"], "drives": { "kinds": ["sas_hdd"] }, "enroll": { "tier": "warm" } })).unwrap();
+        let blades = PolicySpec::parse(&json!({ "nodes": ["server8"], "drives": { "kinds": ["sata_hdd"] }, "enroll": { "tier": "cool" } })).unwrap();
+        let mut pass = HashMap::new();
+        // No policy selects the node.
+        assert_eq!(member_reason(&d, &[], &pass).reason, "NoPolicy");
+        // One does, but not this drive: its mismatch is named.
+        let w = member_reason(&d, &[("sas".into(), sas.clone())], &pass);
+        assert_eq!(w.reason, "NotSelected");
+        assert!(w.message.contains("sas: kind sata_hdd is not one of sas_hdd"), "{}", w.message);
+        // The blades' policy skipped it: its words.
+        pass.insert("blades".to_string(), json!({ "phase": "Active", "drives": { (id.clone()): { "state": "skipped", "reason": "no health verdict yet" } } }));
+        let both = [("sas".to_string(), sas), ("blades".to_string(), blades.clone())];
+        let w = member_reason(&d, &both, &pass);
+        assert_eq!((w.reason.as_str(), w.message.as_str()), ("NoHealthYet", "DrivePolicy blades: no health verdict yet"));
+        // Queued for the worker.
+        pass.insert("blades".to_string(), json!({ "phase": "Active", "drives": { (id.clone()): { "state": "queued", "job": "j1" } } }));
+        assert_eq!(member_reason(&d, &both, &pass).reason, "Enrolling");
+        // requireDataSlab with no data slab yet.
+        pass.insert("blades".to_string(), json!({ "phase": "Waiting", "message": "requireDataSlab: no stormblock data slab on this node yet", "drives": {} }));
+        let w = member_reason(&d, &both, &pass);
+        assert_eq!(w.reason, "Waiting");
+        assert!(w.message.contains("requireDataSlab"));
+    }
+
+    #[test]
+    fn the_member_condition_keeps_its_transition_time() {
+        let d = crate::drive::Drive::test_fixture("sdb");
+        let mut o = apiserver_drive(&d, "server8");
+        let c = o["status"]["conditions"].as_array().unwrap().iter().find(|c| c["type"] == "Member").unwrap().clone();
+        assert_eq!(c["status"], "False");
+        assert!(o["status"]["membershipReason"].is_string(), "never a bare out");
+        let prev = json!({ "status": { "conditions": [{ "type": "Member", "status": "False", "lastTransitionTime": "2026-11-18T00:00:00Z" }] } });
+        member_transition(&mut o, Some(&prev), "2026-11-19T00:00:00Z");
+        let at = |o: &Value| o["status"]["conditions"].as_array().unwrap().iter().find(|c| c["type"] == "Member").unwrap()["lastTransitionTime"].clone();
+        assert_eq!(at(&o), "2026-11-18T00:00:00Z");
+        let prev = json!({ "status": { "conditions": [{ "type": "Member", "status": "True", "lastTransitionTime": "2026-11-18T00:00:00Z" }] } });
+        member_transition(&mut o, Some(&prev), "2026-11-19T00:00:00Z");
+        assert_eq!(at(&o), "2026-11-19T00:00:00Z");
+    }
 
     #[test]
     fn label_values_are_valid() {

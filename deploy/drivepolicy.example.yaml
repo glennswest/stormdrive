@@ -41,3 +41,24 @@ spec:
     role: data
     tier: cool
   dryRun: true
+---
+# The blades' default (#156, stormblock#672/#661): a rotational SATA or SAS
+# data drive beside the node's system drive becomes a `cool` data slab, taken
+# at its block size (512e: no format, no PI). Drive-managed SMR (server8's
+# ST2000DM008) is enrolled too; a host-managed one is skipped (its zones take
+# sequential writes only). The node's system drive is designated system and
+# is never taken. The real manifest is stormcos's (stormcos#1039); a drive
+# this leaves out says why in its Drive object (status.membershipReason,
+# condition Member).
+apiVersion: storage.storm.io/v1
+kind: DrivePolicy
+metadata:
+  name: blades-hdd-cool
+spec:
+  nodes: [server1, server2, server3, server4, server5, server6, server7, server8]
+  drives:
+    kinds: [sata_hdd, sas_hdd]
+    smr: [none, drive-managed, host-aware]
+  enroll:
+    role: data
+    tier: cool
