@@ -2,9 +2,12 @@
 
 ## [Unreleased]
 
-### 2026-11-18
-- **feat(#157):** blades, the owner's final shape (stormblock#672): tier `fast` (stormblock 151230ad) for DrivePolicy and the enroll API; `drives.systemDrive: rotating|solid-state` selects by the node's own system drive; the example `blades-ssd-fast` enrolls the SSD beside a rotating system drive as an empty `{role: data, tier: fast}` slab and no longer takes the HDD as `cool` (it carries the node). Drive objects carry `status.tier` (printer column), and a fast member's `membershipReason` reads "the fast tier: only what asks for fast uses it". SMR stays shown and excludes only a host-managed drive.
 <!-- New unreleased changes go here -->
+
+## [v0.53.0] — 2026-11-18
+
+### Added
+- (#157) blades, the owner's final shape (stormblock#672): tier `fast` (stormblock 151230ad) for DrivePolicy and the enroll API; `drives.systemDrive: rotating|solid-state` selects by the node's own system drive; the example `blades-ssd-fast` enrolls the SSD beside a rotating system drive as an empty `{role: data, tier: fast}` slab and no longer takes the HDD as `cool` (it carries the node). Drive objects carry `status.tier` (printer column), and a fast member's `membershipReason` reads "the fast tier: only what asks for fast uses it". SMR stays shown and excludes only a host-managed drive.
 
 ### 2026-11-15
 - **docs:** work plan #141: on forge1's 12.86 install bays 3/4/7 are not on the HBA330 (only bay 0); waits on a person's check of cabling/seating

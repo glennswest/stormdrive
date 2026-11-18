@@ -2138,12 +2138,14 @@ From stormblock#672 (owner's final shape): every blade runs system + data on
 its HDD; the SSD, where there is one, is an empty `fast` data slab only what
 asks for `fast` uses. Reverses #156's blades example (HDD → cool).
 
-- [ ] Tier `fast` (stormblock 151230ad) in `policy::TIERS` and the CRD enum.
-- [ ] `drives.systemDrive: rotating|solid-state`: the node's own system drive
+- [x] Tier `fast` (stormblock 151230ad) in `policy::TIERS` and the CRD enum.
+- [x] `drives.systemDrive: rotating|solid-state`: the node's own system drive
   (the drive holding its system slab) must be of that media.
-- [ ] Example `blades-ssd-fast`: solid-state drives beside a rotating system
+- [x] Example `blades-ssd-fast`: solid-state drives beside a rotating system
   drive → `{role: data, tier: fast}`; no HDD policy (the HDD carries the node).
-- [ ] Drive object: `status.tier` (its slabs' tier), printer column; a fast
+- [x] Drive object: `status.tier` (its slabs' tier), printer column; a fast
   member's `membershipReason` "the fast tier: only what asks for fast uses it".
-- [ ] SMR stays shown and never excludes a drive-managed/none drive.
-- [ ] sc-build, image, stormcos#1039 told the new shape.
+- [x] SMR stays shown and never excludes a drive-managed/none drive.
+- [x] sc-build (build, unit + suites, clippy -D warnings) passed on 14bd5e7;
+  v0.53.0; image requested; stormcos#1039 has the policy spec. Proof needs
+  server8 wiped with the policy in the blades' manifests: shipped with it.
