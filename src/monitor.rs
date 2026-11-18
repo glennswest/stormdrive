@@ -362,6 +362,9 @@ async fn scan_shelves(state: &Arc<AppState>) -> anyhow::Result<()> {
         let _done = Done;
         let mut shelves = ses::scan();
         shelves.extend(crate::megaraid::scan(&node));
+        // A backplane with no SES behind a plain HBA (#152).
+        let hba = crate::hbaenc::scan(&shelves);
+        shelves.extend(hba);
         shelves
     });
     match tokio::time::timeout(SHELF_SCAN_LIMIT, scan).await {
@@ -537,7 +540,7 @@ async fn apply_bay_maps(state: &Arc<AppState>, shelves: &mut topology::Shelves) 
         let controllers = state.controllers.read().await;
         let old = state.shelves.read().await;
         for r in shelves.values_mut() {
-            let Some(t) = r.through.as_ref() else { continue };
+            let Some(t) = r.through.as_ref().filter(|t| t.is_raid()) else { continue };
             let names = crate::bays::ControllerNames::of(t.pcie_addr.as_deref(), &t.scsi_host, &t.driver, &hbas, &controllers);
             let map = crate::bays::find(&state.config.bay_map, system.as_deref(), &names, r.shelf.model.as_deref());
             let unmapped = crate::bays::apply(r, map);

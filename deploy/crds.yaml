@@ -15,7 +15,7 @@
 #   slabs of which tier, reformatted first when they need it — the node's
 #   stormdrive does it without anyone running an operation. Only
 #   storage-admin can create one; its requester is re-checked the same way.
-# - Shelf (#83): one per SES enclosure, written by the node that sees it
+# - Shelf (#83): one per enclosure, SES or not (#152), written by the node that sees it
 #   (status, conditions; issues are Events on it). Its spec is the user's:
 #   identify, faultLed, defaultFormat. Changing spec is storage-admin's.
 ---
@@ -378,7 +378,7 @@ spec:
       schema:
         openAPIV3Schema:
           type: object
-          description: A disk shelf (SES enclosure) as the stormdrive of the node that sees it reports it (#83). The name is the shelf's key (its SES logical id). Issues are Kubernetes Events on it.
+          description: A disk shelf (any enclosure, SES or not) as the stormdrive of the node that sees it reports it (#83). The name is the shelf's key (its SES logical id; internal-<node>-<controller> read through a RAID controller; the enclosure id the SAS transport gives for a backplane with no SES behind an HBA, #152). A Drive's status.enclosure names it. Issues are Kubernetes Events on it.
           properties:
             spec:
               type: object
@@ -404,7 +404,11 @@ spec:
                 shelfId: { type: string, nullable: true }
                 serial: { type: string, nullable: true }
                 position: { type: string, enum: [internal, front, rear, external], description: "Where the shelf is on the machine, in the engine's words (stormblock#347)." }
-                through: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "Set when no SES device answers for the shelf and its RAID controller does." }
+                through: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "Set when no SES device answers for the shelf: read through its RAID controller (driver megaraid_sas) or its SAS HBA (#152: bay_phys, bay → phy, phy_name, rate_mbps, sas_address)." }
+                bays:
+                  type: array
+                  description: "Every bay known: state occupied (drive, name, wwid, model, health, blockSize, needsReformat; or sasAddress for an end device that is no drive of this node's) or empty; phy and linkRateMbps when read through an HBA (#152)."
+                  items: { type: object, x-kubernetes-preserve-unknown-fields: true }
                 state: { type: string }
                 identify: { type: boolean, nullable: true }
                 faultLed: { type: boolean, nullable: true, description: "Fault requested by a client (spec.faultLed or anyone else)." }

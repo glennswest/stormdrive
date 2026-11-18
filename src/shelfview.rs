@@ -200,7 +200,7 @@ pub fn summarize(rep: &ShelfReport, hba_sas: &BTreeMap<String, String>) -> Summa
     let note = match (ioms_installed, paths) {
         _ if rep.through.is_some() => {
             let t = rep.through.as_ref().expect("checked");
-            let mut n = "read through its RAID controller: no SES path".to_string();
+            let mut n = format!("read through {}: no SES path", t.via());
             if !t.no_enclosure_devices.is_empty() {
                 n.push_str(&format!("; {} drive(s) the controller lists in no enclosure, placed here by slot", t.no_enclosure_devices.len()));
             }

@@ -33,7 +33,8 @@
 //!   per drive: skipped and why, queued, running, enrolled, failed).
 //!   Deleting a policy cancels its jobs' queued steps.
 //!
-//! - **`Shelf`** (#83) — one per SES enclosure this node sees, named by its
+//! - **`Shelf`** (#83) — one per enclosure this node sees (SES, read through
+//!   a RAID controller, or with no SES behind a SAS HBA, #152), named by its
 //!   key: status, conditions and Events from `shelfobj.rs`. Its `spec` is the
 //!   user's: `identify` and `faultLed` are sent to the enclosure when it
 //!   shows otherwise, and `defaultFormat` plans the drives in it whose own
@@ -477,6 +478,7 @@ impl Controller {
                     controller_slot: d.location.controller_slot,
                     drive: d.id.0.to_string(),
                     name: d.name.clone(),
+                    wwid: d.wwid.clone(),
                     model: (!d.model.is_empty()).then(|| d.model.clone()),
                     health: serde_json::to_value(d.health.status()).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
                     block_size: d.block_size,

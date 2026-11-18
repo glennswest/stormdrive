@@ -1,4 +1,4 @@
-//! The `Shelf` object (#83): one per SES enclosure, `storage.storm.io/v1`,
+//! The `Shelf` object (#83): one per enclosure (SES or not, #152), `storage.storm.io/v1`,
 //! cluster-scoped, named by the shelf's key (its logical id).
 //!
 //! The node that sees the shelf writes `status`: identity, IOMs and paths,
@@ -57,6 +57,8 @@ pub struct BayDrive {
     pub controller_slot: Option<u32>,
     pub drive: String,
     pub name: String,
+    /// The drive's world-wide name (`naa.…`), when it has one.
+    pub wwid: Option<String>,
     pub model: Option<String>,
     pub health: String,
     pub block_size: u32,
@@ -130,8 +132,8 @@ pub fn conditions(rep: &ShelfReport, sm: &Summary) -> Vec<Condition> {
         } else {
             format!("{worst:?}")
         },
-        message: if rep.through.is_some() {
-            "read through its RAID controller: the enclosure's elements are not visible".into()
+        message: if let Some(t) = &rep.through {
+            format!("read through {}: the enclosure's elements are not visible", t.via())
         } else if healthy {
             "every element reports OK".into()
         } else if sm.problems.is_empty() {
@@ -262,13 +264,7 @@ pub fn shelf_object(rep: &ShelfReport, sm: &Summary, drives: &[BayDrive], node: 
             "thresholds": e.thresholds, "flags": e.flags,
         }))
         .collect();
-    let bays: Vec<Value> = drives
-        .iter()
-        .map(|d| json!({
-            "bay": d.bay, "controllerSlot": d.controller_slot, "drive": d.drive, "name": d.name, "model": d.model, "health": d.health,
-            "blockSize": d.block_size, "needsReformat": d.needs_reformat,
-        }))
-        .collect();
+    let bays = bays_json(rep, drives);
     let conds = conditions(rep, sm);
     let mut labels = serde_json::Map::new();
     labels.insert("storm.io/component".into(), json!("stormdrive"));
@@ -306,6 +302,39 @@ pub fn shelf_object(rep: &ShelfReport, sm: &Summary, drives: &[BayDrive], node: 
             "conditions": conditions_json(&conds, &previous["conditions"], at),
         },
     })
+}
+
+/// `status.bays`: every drive in the shelf (`state: occupied`), and for a
+/// shelf read through its HBA (#152) the phy facing each bay and its rate,
+/// with the bays no drive is in (`empty`, or `occupied` by an end device
+/// that is no drive of ours: its `sasAddress`). By bay; drives with no bay
+/// last.
+pub fn bays_json(rep: &ShelfReport, drives: &[BayDrive]) -> Vec<Value> {
+    let phys = rep.through.as_ref().map(|t| &t.bay_phys);
+    let phy_of = |b: Option<u32>| b.and_then(|b| phys.and_then(|m| m.get(&b)));
+    let mut out: Vec<(Option<u32>, Value)> = drives
+        .iter()
+        .map(|d| {
+            let p = phy_of(d.bay);
+            (
+                d.bay,
+                json!({
+                    "bay": d.bay, "state": "occupied", "controllerSlot": d.controller_slot, "drive": d.drive, "name": d.name, "wwid": d.wwid,
+                    "model": d.model, "health": d.health, "blockSize": d.block_size, "needsReformat": d.needs_reformat,
+                    "phy": p.and_then(|p| p.phy), "linkRateMbps": p.and_then(|p| p.rate_mbps),
+                }),
+            )
+        })
+        .collect();
+    for (b, p) in phys.into_iter().flatten() {
+        if drives.iter().any(|d| d.bay == Some(*b)) {
+            continue;
+        }
+        let state = if p.sas_address.is_some() { "occupied" } else { "empty" };
+        out.push((Some(*b), json!({ "bay": b, "state": state, "sasAddress": p.sas_address, "phy": p.phy, "linkRateMbps": p.rate_mbps })));
+    }
+    out.sort_by_key(|(b, _)| (b.is_none(), *b));
+    out.into_iter().map(|(_, v)| v).collect()
 }
 
 /// What decides whether status must be rewritten: everything but the
@@ -489,7 +518,7 @@ mod tests {
     #[test]
     fn the_object() {
         let r = report(2);
-        let d = BayDrive { bay: Some(0), controller_slot: None, drive: "ca0aa25f".into(), name: "sdb".into(), model: Some("ST1200MM0098".into()), health: "healthy".into(), block_size: 520, needs_reformat: true };
+        let d = BayDrive { bay: Some(0), controller_slot: None, drive: "ca0aa25f".into(), name: "sdb".into(), wwid: Some("naa.5000c500a1b2c3d4".into()), model: Some("ST1200MM0098".into()), health: "healthy".into(), block_size: 520, needs_reformat: true };
         let o = shelf_object(&r, &summary(&r), &[d], "c2nr0q2", &Value::Null, "t0");
         assert_eq!(o["kind"], "Shelf");
         assert_eq!(o["metadata"]["name"], "500a09800e359135");
@@ -500,6 +529,8 @@ mod tests {
         assert_eq!(st["fans"][0]["speedCode"], 3);
         assert_eq!(st["temperatures"][0]["celsius"], 30);
         assert_eq!(st["bays"][0]["needsReformat"], true);
+        assert_eq!(st["bays"][0]["state"], "occupied");
+        assert_eq!(st["bays"][0]["wwid"], "naa.5000c500a1b2c3d4");
         assert_eq!(st["identify"], false);
         assert_eq!(st["conditions"].as_array().unwrap().len(), 5);
         // Fan speed alone does not make a rewrite due.
@@ -508,5 +539,56 @@ mod tests {
         let o2 = shelf_object(&r2, &summary(&r2), &[], "c2nr0q2", &Value::Null, "t9");
         let o1 = shelf_object(&r, &summary(&r), &[], "c2nr0q2", &Value::Null, "t0");
         assert_eq!(fingerprint(&o1), fingerprint(&o2));
+    }
+
+    /// forge1 (#152): the backplane behind the HBA330, no SES. Each bay with
+    /// its drive, phy and rate; the HBA's other phys are empty bays.
+    #[test]
+    fn a_shelf_read_through_its_hba_lists_every_bay() {
+        use crate::hbaenc::BayPhy;
+        let mut r = report(0);
+        r.key = "52cea7f04e8aa500".into();
+        r.shelf = crate::drive::Shelf { logical_id: Some(r.key.clone()), position: Some(crate::drive::Position::Internal), ..Default::default() };
+        r.elements.clear();
+        let mut bay_phys = BTreeMap::new();
+        for n in 0..8u32 {
+            let linked = n < 4;
+            bay_phys.insert(n, BayPhy { phy: Some(n), phy_name: Some(format!("phy-1:{n}")), rate_mbps: linked.then_some(12000), sas_address: linked.then(|| format!("5000cca26801b64{n}")) });
+        }
+        r.through = Some(crate::megaraid::Through {
+            driver: "mpt3sas".into(),
+            scsi_host: "host1".into(),
+            pcie_addr: Some("0000:c1:00.0".into()),
+            enclosure_device_id: None,
+            device_bays: BTreeMap::new(),
+            no_enclosure_devices: vec![],
+            slot_not_matched: vec![],
+            controller_slots: BTreeMap::new(),
+            bay_numbering: None,
+            bay_map: None,
+            error: None,
+            bay_phys,
+        });
+        // Bay 3's end device is no drive of ours (not in the inventory).
+        let drives: Vec<BayDrive> = [2u32, 0, 1]
+            .iter()
+            .map(|b| BayDrive { bay: Some(*b), controller_slot: None, drive: format!("d{b}"), name: format!("sd{b}"), wwid: Some(format!("naa.5000cca26801b64{b}")), model: None, health: "good".into(), block_size: 4096, needs_reformat: false })
+            .collect();
+        let o = shelf_object(&r, &summary(&r), &drives, "forge1", &Value::Null, "t0");
+        let st = &o["status"];
+        assert_eq!(o["metadata"]["name"], "52cea7f04e8aa500");
+        assert_eq!(st["position"], "internal");
+        assert_eq!(st["through"]["driver"], "mpt3sas");
+        let bays = st["bays"].as_array().unwrap();
+        assert_eq!(bays.len(), 8);
+        assert_eq!(bays.iter().map(|b| b["bay"].as_u64().unwrap()).collect::<Vec<_>>(), (0..8).collect::<Vec<u64>>());
+        assert_eq!((bays[1]["drive"].as_str(), bays[1]["phy"].as_u64(), bays[1]["linkRateMbps"].as_u64()), (Some("d1"), Some(1), Some(12000)));
+        assert_eq!(bays[1]["wwid"], "naa.5000cca26801b641");
+        assert_eq!((bays[3]["state"].as_str(), bays[3]["sasAddress"].as_str()), (Some("occupied"), Some("5000cca26801b643")));
+        assert_eq!((bays[5]["state"].as_str(), bays[5]["phy"].as_u64()), (Some("empty"), Some(5)));
+        assert!(bays[5]["linkRateMbps"].is_null());
+        let healthy = &st["conditions"][0];
+        assert_eq!(healthy["reason"], "ThroughController");
+        assert!(healthy["message"].as_str().unwrap().contains("its HBA (mpt3sas)"), "{healthy}");
     }
 }

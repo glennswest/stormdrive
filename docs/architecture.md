@@ -1250,6 +1250,21 @@ The route table, request bodies and handle resolution are in the
     keeps a requested failure (a zero there would clear it). A request is
     sent once per change; a refused one waits for the spec to change;
   - marks a Shelf it wrote and no longer sees `present: false` (NotSeen).
+- **A backplane with no SES behind a SAS HBA is a shelf (#152,
+  `hbaenc.rs`).** forge1's R730xd: four drives behind an HBA330, no
+  enclosure device. mpt3sas still names the enclosure in the transport
+  (`sas_device/end_device-*/{enclosure_identifier,bay_identifier}`, the
+  HBA's SAS address here) and `topology::locate` placed the drives there, but
+  with no report there was no Shelf. Each shelf scan now adds, after SES and
+  MFI, one `ShelfReport` per enclosure the transport names and no other
+  report covers: `through.driver` the HBA's driver, `through.bay_phys` bay →
+  {phy, phy_name, rate_mbps, sas_address} from the port's facing phy; when
+  not behind an expander and every bay is its phy number, each other HBA phy
+  is an empty bay. Position `internal` (behind an expander: `external`, as
+  the engine). `Through::is_raid` keeps MFI-only paths (`megaraid::place`,
+  bay maps) off it; `Through::via` says "its HBA (mpt3sas)" in conditions and
+  refusals. `status.bays` gives `state` (occupied/empty), `wwid`, `phy`,
+  `linkRateMbps`.
 
   On Drives, `spec.identify` drives `topology::set_locate` once per change.
   `formatFrom` says what planned the format: the Drive's `spec.format`,

@@ -38,7 +38,7 @@ const NO_ENCLOSURE: u16 = 0xffff;
 const DEVICES_PER_CHANNEL: u16 = 128;
 /// Channels 0 and 1 are physical devices; 2 and 3 logical drives.
 const PD_CHANNELS: u16 = 2;
-const DRIVER: &str = "megaraid_sas";
+pub const DRIVER: &str = "megaraid_sas";
 
 /// How a shelf with no SES device was read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +79,28 @@ pub struct Through {
     /// Why the controller could not be read: the shelf has no bays then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// A shelf read through a SAS HBA (#152): bay → the HBA phy facing it and
+    /// the drive's SAS address, empty bays included. Empty for a RAID
+    /// controller's shelf.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bay_phys: BTreeMap<u32, crate::hbaenc::BayPhy>,
+}
+
+impl Through {
+    /// Read through a RAID controller (MFI), not a plain SAS HBA.
+    pub fn is_raid(&self) -> bool {
+        self.driver == DRIVER
+    }
+
+    /// What the shelf is read through, in words: "its RAID controller" or
+    /// "its HBA (mpt3sas)".
+    pub fn via(&self) -> String {
+        if self.is_raid() {
+            "its RAID controller".into()
+        } else {
+            format!("its HBA ({})", self.driver)
+        }
+    }
 }
 
 /// One entry of the physical drive list (struct MR_PD_ADDRESS).
@@ -223,7 +245,7 @@ pub struct Placement {
 /// a controller that was not read) is on the controller's shelf with no bay,
 /// when it has just one to be on.
 pub fn place(shelves: &Shelves, host: &str, addr: (u16, u16)) -> Option<Placement> {
-    let mine: Vec<&ShelfReport> = shelves.values().filter(|r| r.through.as_ref().is_some_and(|t| t.scsi_host == host)).collect();
+    let mine: Vec<&ShelfReport> = shelves.values().filter(|r| r.through.as_ref().is_some_and(|t| t.is_raid() && t.scsi_host == host)).collect();
     let at = |r: &ShelfReport, t: &Through, id: u16, bay: Option<u32>| Placement {
         shelf: r.shelf.clone(),
         bay,
@@ -299,6 +321,7 @@ impl Controller<'_> {
                 bay_numbering: None,
                 bay_map: None,
                 error,
+                bay_phys: BTreeMap::new(),
             }),
             collected_at: SystemTime::now(),
             status_raw: Vec::new(),

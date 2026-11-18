@@ -1966,8 +1966,8 @@ async fn shelf_firmware(
     Json(body): Json<ShelfFirmwareBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let r = resolve_shelf(&s, &key).await?;
-    if r.through.is_some() {
-        return Err(ApiError::conflict(format!("shelf {}: read through its RAID controller, no IOM to update from here", r.key)));
+    if let Some(t) = &r.through {
+        return Err(ApiError::conflict(format!("shelf {}: read through {}, no IOM to update from here", r.key, t.via())));
     }
     if !crate::firmware::valid_image_name(&body.image) {
         return Err(ApiError::bad_request(format!("image name {:?}", body.image)));

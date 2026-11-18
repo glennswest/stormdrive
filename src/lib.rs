@@ -28,6 +28,7 @@ pub mod format;
 pub mod formatcli;
 pub mod gpt;
 pub mod hba;
+pub mod hbaenc;
 pub mod history;
 pub mod hotplug;
 pub mod inuse;

@@ -1031,14 +1031,21 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   (skipped and why, planned, queued, running, enrolled, failed), job and
   steps. Each decision is also a Kubernetes Event on the policy.
 
-- **`Shelf`** (#83), one per SES enclosure this node sees, named by its
-  key (the SES logical id), labelled `storm.io/node` (a shelf cabled to two
+- **`Shelf`** (#83), one per enclosure this node sees, SES or not, named by
+  its key (the SES logical id; a backplane read through its RAID controller
+  is `internal-<node>-<controller>`, one with no SES behind a SAS HBA is the
+  enclosure id mpt3sas gives, #152), labelled `storm.io/node` (a shelf cabled to two
   nodes is written by the first; the other leaves it alone). Status: vendor,
   model, shelf ID, serial, state, SES paths (with IOM firmware), IOMs, PSUs,
   connectors, multipath, fans (rpm, speed code 0–7), temperatures (with page
-  0x05 limits), bays → drives, problems, the LEDs as the enclosure shows
+  0x05 limits), bays (each `occupied` with its drive — id, name, wwid —
+  or `empty`; through an HBA also the phy facing the bay and its
+  `linkRateMbps`, and every HBA phy of a direct-attached backplane is a
+  bay), problems, the LEDs as the enclosure shows
   them (`identify`, `faultLed`, `faultIndicated`), `present` (false once the
   node no longer sees it), and `conditions`:
+  A Drive's `status.enclosure` is the name of its Shelf, `status.bay` its
+  bay there.
   - `Healthy` (every element OK), `SinglePath` (one ESP, or IOMs with no
     path), `PSUDegraded`, `FanDegraded`, `OverTemp` (a sensor's own
     over-temperature flag, critical status, or at/over its page-0x05 high

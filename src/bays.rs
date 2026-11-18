@@ -195,6 +195,7 @@ mod tests {
                 bay_numbering: None,
                 bay_map: None,
                 error: None,
+                bay_phys: BTreeMap::new(),
             }),
             collected_at: std::time::SystemTime::UNIX_EPOCH,
             status_raw: Vec::new(),

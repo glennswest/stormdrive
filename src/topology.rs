@@ -418,7 +418,7 @@ mod linux {
         match (rep, loc.bay) {
             (Some(r), _) if r.through.is_some() => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                format!("{name}: shelf {} is read through its RAID controller: no locate LED from here yet", r.key),
+                format!("{name}: shelf {} is read through {}: no locate LED from here yet", r.key, r.through.as_ref().map(|t| t.via()).unwrap_or_default()),
             )),
             (Some(r), Some(b)) => crate::ses::set_ident(r, Some(b), on),
             _ => Err(std::io::Error::new(
