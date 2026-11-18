@@ -2110,4 +2110,4 @@ no shelf report exists for it, so the controller writes no Shelf.
   marker. Namespace format *is* implemented (worker `format` step and
   `stormdrive format`, `erase::nvme_format`); the refusal now names that path.
   Test pins it. Architecture doc says the same.
-- [ ] sc-build, proof grep empty outside tests, close, image.
+- [x] sc-build (build+test 419 unit + suites, clippy -D warnings) on 9f84e14, proof grep empty, closed, image requested.
