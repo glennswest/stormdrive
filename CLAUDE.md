@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.51.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.52.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -78,6 +78,10 @@ src/
                   partitions on each drive → engine_finding (#58)
   smart/          health samples: NVMe Get Log Page 0x02; SAS/SATA sysfs + LOG
                   SENSE 0x2F/0x0D/0x11 or ATA SMART (#22)
+  smr.rs          SMR: queue/zoned, ATA IDENTIFY w69, VPD 0xB1 ZONED, known
+                  DM-SMR models → Drive status.smr (#156)
+  membership.rs   why a drive is out: membershipReason + the Member condition
+                  (#156)
   poller.rs       health scheduler: per-drive phase, bounded, timed out, costed
   monitor.rs      loop: discovery, SES/HBA scans, threshold engine, trends,
                   usage + reconcile, events
