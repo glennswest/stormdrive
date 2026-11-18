@@ -2101,5 +2101,5 @@ no shelf report exists for it, so the controller writes no Shelf.
   "through its HBA" vs "through its RAID controller"
 - [x] Shelf status.bays: state occupied/empty, wwid, phy, linkRate; CRD text
 - [x] tests (hbaenc 3, shelfobj 1; fake sysfs), docs, changelog, sc-build (419 lib tests + clippy -D warnings), v0.51.0, image
-- [ ] proof once stormcos#683 ships: forge1 `/apis/storage.storm.io/v1/shelves`
+- [ ] (item --after stormcos#683) proof once it ships: forge1 `/apis/storage.storm.io/v1/shelves`
   has the internal shelf with bays
