@@ -2082,3 +2082,24 @@ Left here: the last write-test matrix run, from stormblock's card API.
 - [x] Drive `status.writeTest`, `-o wide` column WriteTest (passed); CRD,
   docs, changelog, tests (writetest.rs 3); sc-build (415 lib tests + clippy -D warnings); v0.50.0; image
 - [ ] proof: forge1's Drive objects carry status.writeTest once stormblock has run the matrix there
+
+### #152: a Shelf for a backplane with no SES; Shelf CRD on the node (2026-11-18) — P0
+forge1 12.91: no `shelves` resource on the node's apiserver, and the four
+drives on the R730xd's backplane behind the HBA330 (no SES device) have no
+Shelf to point at. Their Drives already name the enclosure mpt3sas gives
+(`status.enclosure` 52cea7f04e8aa500 = the HBA's SAS address, bays 0–3), but
+no shelf report exists for it, so the controller writes no Shelf.
+- ask 1 (CRD + role on the node) is stormcos's: its 82-stormdrive-crds.yaml is
+  our v0.31.0 copy, no Shelf; 83-stormdrive.yaml has no shelves rule. Filed
+  there already as stormcos#683 — commented with this P0; ours `--after` it
+- [ ] `hbaenc.rs`: enclosures the SAS transport names (`sas_device`
+  enclosure_identifier/bay_identifier) that no SES or RAID report covers →
+  a ShelfReport read through the HBA (`through.driver` mpt3sas), bays from the
+  end devices, each with its HBA phy and negotiated rate; direct-attached
+  with bay = phy, every HBA phy is a bay (no drive = empty)
+- [ ] keep RAID-only paths RAID-only (megaraid::place, bay maps); words
+  "through its HBA" vs "through its RAID controller"
+- [ ] Shelf status.bays: state occupied/empty, wwid, phy, linkRate; CRD text
+- [ ] tests (fake sysfs), docs, changelog, sc-build, version, image
+- [ ] proof once stormcos#683 ships: forge1 `/apis/storage.storm.io/v1/shelves`
+  has the internal shelf with bays
