@@ -2131,3 +2131,19 @@ From stormblock#672. server8's `sdb` (ST2000DM008, SATA 512e, DM-SMR) reads
 - [x] sc-build (build, 429 unit + suites, clippy -D warnings) passed on
   e6850e7; v0.52.0; image requested. Proof (server8 member, 100 GiB cool PVC)
   needs stormcos#1039's policy in the blades' manifests: shipped with that proof.
+
+### #157: blades — the SSD beside a rotating system drive is tier fast, the HDD never cool (2026-11-18) — P0
+
+From stormblock#672 (owner's final shape): every blade runs system + data on
+its HDD; the SSD, where there is one, is an empty `fast` data slab only what
+asks for `fast` uses. Reverses #156's blades example (HDD → cool).
+
+- [ ] Tier `fast` (stormblock 151230ad) in `policy::TIERS` and the CRD enum.
+- [ ] `drives.systemDrive: rotating|solid-state`: the node's own system drive
+  (the drive holding its system slab) must be of that media.
+- [ ] Example `blades-ssd-fast`: solid-state drives beside a rotating system
+  drive → `{role: data, tier: fast}`; no HDD policy (the HDD carries the node).
+- [ ] Drive object: `status.tier` (its slabs' tier), printer column; a fast
+  member's `membershipReason` "the fast tier: only what asks for fast uses it".
+- [ ] SMR stays shown and never excludes a drive-managed/none drive.
+- [ ] sc-build, image, stormcos#1039 told the new shape.
