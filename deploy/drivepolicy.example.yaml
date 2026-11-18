@@ -42,23 +42,26 @@ spec:
     tier: cool
   dryRun: true
 ---
-# The blades' default (#156, stormblock#672/#661): a rotational SATA or SAS
-# data drive beside the node's system drive becomes a `cool` data slab, taken
-# at its block size (512e: no format, no PI). Drive-managed SMR (server8's
-# ST2000DM008) is enrolled too; a host-managed one is skipped (its zones take
-# sequential writes only). The node's system drive is designated system and
-# is never taken. The real manifest is stormcos's (stormcos#1039); a drive
-# this leaves out says why in its Drive object (status.membershipReason,
-# condition Member).
+# The blades' default (#157, stormblock#672, the owner's final shape): every
+# blade runs system and data on its rotating drive (stormblock's /init takes
+# a rotating drive before a solid-state one), so the HDD is never enrolled
+# here. The SSD beside it, where a blade has one (server8's Patriot P210), is
+# an extra data slab of tier `fast`: empty by default, and only a workload
+# that asks for `fast` uses it (the build VMs' private drive first). A blade
+# with no SSD (server1-7) has nothing this selects. SMR is shown on the Drive
+# object and never a reason to leave a drive out (a host-managed one alone is
+# skipped: its zones take sequential writes only). The real manifest is
+# stormcos's (stormcos#1039); a drive this leaves out says why in its Drive
+# object (status.membershipReason, condition Member).
 apiVersion: storage.storm.io/v1
 kind: DrivePolicy
 metadata:
-  name: blades-hdd-cool
+  name: blades-ssd-fast
 spec:
   nodes: [server1, server2, server3, server4, server5, server6, server7, server8]
   drives:
-    kinds: [sata_hdd, sas_hdd]
-    smr: [none, drive-managed, host-aware]
+    kinds: [sata_ssd, sas_ssd, nvme_ssd]
+    systemDrive: rotating
   enroll:
     role: data
-    tier: cool
+    tier: fast

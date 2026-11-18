@@ -378,7 +378,9 @@ are listed under [Not yet](#not-yet).
     reason word: NoPolicy, NotSelected with each policy's first mismatch,
     Designated, InUse, Busy, Failed, Hot, HostManagedSMR, NeedsReformat,
     NoHealthYet, Enrolling, EnrollFailed, Waiting, …), from each DrivePolicy
-    pass.
+    pass. A member's `status.tier` is its slabs' tier (#157); a `fast`
+    member says so in `membershipReason`: "the fast tier: only what asks
+    for fast uses it".
   - `smr` (#156): `none`, `host-managed`, `host-aware` or `drive-managed`,
     with `smrSource`. From the kernel's `queue/zoned`, ATA IDENTIFY DEVICE
     word 69 bits 1:0 (SATA), VPD 0xB1 ZONED, then a list of known
@@ -1008,17 +1010,21 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
 - **`DrivePolicy`** (#50, stormcos#251) says which drives of which nodes
   become stormblock slabs, and of which tier, without anyone submitting a
   job. See `deploy/drivepolicy.example.yaml`: stormblock1's NetApp shelf
-  becomes `warm`, stormblock2's SAS HDDs `cool`, and the blades' rotational
-  SATA/SAS data drive (server8's SMR disk beside its SSD) `cool` at its own
-  block size (#156). The spec has:
+  becomes `warm`, stormblock2's SAS HDDs `cool`, and on the blades the SSD
+  beside a rotating system drive (server8's Patriot) an empty `fast` data
+  slab (#157, the owner's shape on stormblock#672: system and data both on
+  the HDD, which no policy takes; only what asks for `fast` uses the SSD).
+  The spec has:
   - **nodes:** `nodes` and/or `nodeSelector.matchLabels`; one of them is
     required.
   - **drives:** `kinds`, `minBytes`, `maxBytes`, `blockSizes`, `model`,
-    `shelf`, `bays`, `smr` (#156).
+    `shelf`, `bays`, `smr` (#156), `systemDrive` (`rotating` or
+    `solid-state`: the node's own system drive, the one holding its system
+    slab, #157).
   - **`reformat`** (512 or 4096): applied only to a drive the kernel cannot
     use, such as a 520-byte NetApp drive.
-  - **`enroll`:** `role` (default `data`) and `tier` (`hot`, `warm`, `cool`
-    or `cold`).
+  - **`enroll`:** `role` (default `data`) and `tier` (`hot`, `warm`, `cool`,
+    `cold` or `fast`; `fast` is in no default placement, #157).
   - **`requireDataSlab`** (#42): act only on a node that already has a
     stormblock data slab (phase Waiting until it does).
   - **`suspend`** and **`dryRun`**.

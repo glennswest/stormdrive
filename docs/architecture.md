@@ -1200,7 +1200,11 @@ The route table, request bodies and handle resolution are in the
     names no node, has an unknown tier, or asks for a reformat other than
     512/4096. `selects_node` matches by name and/or the Node's labels.
     `selects_drive` ANDs kind, size, sector size, model, shelf, bays and
-    smr; `mismatch` names the first field that differs (#156).
+    smr, and `systemDrive` against the media of the node's system drive
+    (`system_media`: the drive holding its system slab, else the one
+    designated system; #157); `mismatch` names the first field that
+    differs (#156). Tiers: hot, warm, cool, cold and `fast` (#157, stormblock
+    151230ad: never in a default placement or fallback chain).
     `requireDataSlab` (#42) holds a node at phase Waiting until the
     engine's slab listing shows a data slab on one of its drives
     (`node_has_data_slab`).
@@ -1219,7 +1223,9 @@ The route table, request bodies and handle resolution are in the
     selects the node, or no CRD). Without an apiserver the drive's own
     record (`policy::blocker`) or NotDecided. The Drive object carries it as
     `status.membershipReason` and condition `Member` (lastTransitionTime
-    kept while its status holds).
+    kept while its status holds). A member has `status.tier` (its slabs'
+    tier) and, on `fast`, the reason "the fast tier: only what asks for
+    fast uses it" (#157).
     - **Run, with steps:** `format` (only when `needs_reformat()`), then
       `partition` and `enroll {role, tier}`.
 

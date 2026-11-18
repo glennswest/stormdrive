@@ -31,7 +31,45 @@ use crate::smr::Smr;
 use crate::worker::{Role, Step};
 
 /// The tiers a stormblock slab can carry (stormblock `placement/topology.rs`).
-pub const TIERS: [&str; 4] = ["hot", "warm", "cool", "cold"];
+/// `fast` (stormblock 151230ad, #157) is never in a default placement or
+/// fallback chain: only what asks for `fast` lands on it.
+pub const TIERS: [&str; 5] = ["hot", "warm", "cool", "cold", "fast"];
+
+/// What a drive is made of, as a selector names it (#157).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Media {
+    Rotating,
+    SolidState,
+}
+
+impl Media {
+    pub fn of(kind: DriveKind) -> Option<Media> {
+        match kind {
+            DriveKind::Unknown => None,
+            k if k.is_ssd() => Some(Media::SolidState),
+            _ => Some(Media::Rotating),
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Media::Rotating => "rotating",
+            Media::SolidState => "solid-state",
+        }
+    }
+}
+
+/// The media of the node's own system drive: the drive holding its system
+/// slab (else the one designated system). None: no such drive, or its kind
+/// is not known.
+pub fn system_media(drives: &[Drive]) -> Option<Media> {
+    let sys = drives
+        .iter()
+        .find(|d| d.activity != Activity::Missing && d.in_use().use_ == crate::inuse::Use::System)
+        .or_else(|| drives.iter().find(|d| d.activity != Activity::Missing && d.designation == Designation::System))?;
+    Media::of(sys.kind)
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +103,10 @@ pub struct DriveSelector {
     /// A host-managed drive is never enrolled whatever this says.
     #[serde(default)]
     pub smr: Vec<Smr>,
+    /// The node's own system drive is of this media (#157: the blades' SSD
+    /// is a `fast` slab beside a rotating system drive).
+    #[serde(default)]
+    pub system_drive: Option<Media>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -147,14 +189,15 @@ impl PolicySpec {
         }
     }
 
-    /// Does the drive selector pick this drive?
-    pub fn selects_drive(&self, d: &Drive) -> bool {
-        self.mismatch(d).is_none()
+    /// Does the drive selector pick this drive? `system`: the media of the
+    /// node's system drive (`system_media`).
+    pub fn selects_drive(&self, d: &Drive, system: Option<Media>) -> bool {
+        self.mismatch(d, system).is_none()
     }
 
     /// Why the drive selector does not pick this drive: its first field that
     /// differs (#156: an out drive's membershipReason names it).
-    pub fn mismatch(&self, d: &Drive) -> Option<String> {
+    pub fn mismatch(&self, d: &Drive, system: Option<Media>) -> Option<String> {
         let s = &self.drives;
         let word = |v: serde_json::Result<Value>| v.ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         if !s.kinds.is_empty() && !s.kinds.contains(&d.kind) {
@@ -193,6 +236,13 @@ impl PolicySpec {
             let smr = d.smr.as_ref().map(|i| i.smr).unwrap_or_default();
             if !s.smr.contains(&smr) {
                 return Some(format!("smr {} is not one of {}", smr.word(), s.smr.iter().map(|x| x.word()).collect::<Vec<_>>().join(", ")));
+            }
+        }
+        if let Some(want) = s.system_drive {
+            match system {
+                None => return Some(format!("the node's system drive is not known (systemDrive {})", want.word())),
+                Some(m) if m != want => return Some(format!("the node's system drive is {}, not {}", m.word(), want.word())),
+                _ => {}
             }
         }
         None
@@ -338,7 +388,7 @@ mod tests {
         assert!(p.selects_node("stormblock1", None));
         assert!(!p.selects_node("stormblock2", None));
         let d = netapp(3);
-        assert!(p.selects_drive(&d));
+        assert!(p.selects_drive(&d, None));
         let Verdict::Run(steps) = verdict(&p, &d, false) else { panic!("{:?}", verdict(&p, &d, false)) };
         assert_eq!(
             steps,
@@ -425,8 +475,9 @@ mod tests {
         assert_eq!(verdict(&p, &d, false), Verdict::Skip("no health verdict yet".into()));
     }
 
-    /// server8 (#156): the SATA HDD beside the SSD, drive-managed SMR at
-    /// 512e, is enrolled as a cool data slab as is — no format, no PI.
+    /// server8's SATA HDD (#156), drive-managed SMR at 512e: a policy that
+    /// takes it enrolls it as is — no format, no PI. (On the blades no policy
+    /// does since #157: it carries the node's system and data slabs.)
     fn server8_hdd() -> Drive {
         let mut d = Drive::test_fixture("sdb");
         d.kind = DriveKind::SataHdd;
@@ -453,7 +504,7 @@ mod tests {
         let p = blades();
         let d = server8_hdd();
         assert_eq!(d.smr.as_ref().map(|s| s.smr), Some(Smr::DriveManaged));
-        assert!(p.selects_drive(&d));
+        assert!(p.selects_drive(&d, None));
         let Verdict::Run(steps) = verdict(&p, &d, false) else { panic!("{:?}", verdict(&p, &d, false)) };
         assert_eq!(steps, vec![Step::Partition { role: Role::Data }, Step::Enroll { tier: Some("cool".into()), role: Role::Data }]);
         let cx = crate::worker::Context { stormblock: true, ..Default::default() };
@@ -461,7 +512,70 @@ mod tests {
         // The SSD beside it is not this policy's: and it says why.
         let mut ssd = Drive::test_fixture("sda");
         ssd.kind = DriveKind::SataSsd;
-        assert_eq!(p.mismatch(&ssd), Some("kind sata_ssd is not one of sata_hdd, sas_hdd".into()));
+        assert_eq!(p.mismatch(&ssd, None), Some("kind sata_ssd is not one of sata_hdd, sas_hdd".into()));
+    }
+
+    /// The blades' policy (#157, stormblock#672, the owner's final shape):
+    /// the SSD beside a rotating system drive, an empty `fast` slab.
+    fn blades_fast() -> PolicySpec {
+        spec(json!({
+            "nodes": ["server8"],
+            "drives": { "kinds": ["sata_ssd", "sas_ssd", "nvme_ssd"], "systemDrive": "rotating" },
+            "enroll": { "role": "data", "tier": "fast" },
+        }))
+    }
+
+    /// server8 after its wipe install: sdb (the HDD) holds the system and data
+    /// slabs; sda (Patriot P210) is blank.
+    fn server8() -> (Drive, Drive) {
+        let mut hdd = server8_hdd();
+        let part = |n: usize, name: &str, role: &str| crate::contents::SlabPart { partition: Some(n), name: name.into(), role: role.into(), offset_bytes: n as u64 * (1 << 30) };
+        hdd.slab_parts = vec![part(2, "stormblock", "system"), part(3, "stormblock-data", "data")];
+        hdd.in_use_by = Some("stormblock (slabs in partitions 2 'stormblock', 3 'stormblock-data')".into());
+        let mut ssd = Drive::test_fixture("sda");
+        ssd.kind = DriveKind::SataSsd;
+        ssd.model = "Patriot P210 512GB".into();
+        ssd.block_size = 512;
+        ssd.usable = true;
+        ssd.health.status = Some(HealthStatus::Good);
+        ssd.smr = Some(crate::smr::detect(Some("none"), None, &ssd.model));
+        (hdd, ssd)
+    }
+
+    #[test]
+    fn the_ssd_beside_a_rotating_system_drive_is_a_fast_data_slab() {
+        let p = blades_fast();
+        let (hdd, ssd) = server8();
+        let node = [hdd.clone(), ssd.clone()];
+        assert_eq!(system_media(&node), Some(Media::Rotating));
+        assert!(p.selects_drive(&ssd, system_media(&node)));
+        let Verdict::Run(steps) = verdict(&p, &ssd, false) else { panic!("{:?}", verdict(&p, &ssd, false)) };
+        assert_eq!(steps, vec![Step::Partition { role: Role::Data }, Step::Enroll { tier: Some("fast".into()), role: Role::Data }]);
+        // The HDD is never taken by it: not solid-state, and it carries the node.
+        assert_eq!(p.mismatch(&hdd, system_media(&node)), Some("kind sata_hdd is not one of sata_ssd, sas_ssd, nvme_ssd".into()));
+        assert!(blocker(&hdd).is_some_and(|b| b.starts_with("holds data")), "{:?}", blocker(&hdd));
+        // DM-SMR stays shown and is never the reason.
+        assert_eq!(hdd.smr.as_ref().map(|s| s.smr), Some(Smr::DriveManaged));
+        // A node running from its SSD: the SSD is the system drive, nothing is fast.
+        let mut on_ssd = ssd.clone();
+        on_ssd.slab_parts = hdd.slab_parts.clone();
+        on_ssd.in_use_by = hdd.in_use_by.clone();
+        let mut blank_hdd = hdd.clone();
+        blank_hdd.slab_parts.clear();
+        blank_hdd.in_use_by = None;
+        assert_eq!(system_media(&[blank_hdd, on_ssd.clone()]), Some(Media::SolidState));
+        assert_eq!(p.mismatch(&ssd, Some(Media::SolidState)), Some("the node's system drive is solid-state, not rotating".into()));
+        // No system drive known yet: said, not guessed.
+        assert!(p.mismatch(&ssd, None).unwrap().contains("not known"));
+        // server1–7 have no SSD: the policy selects nothing there.
+        assert!(!p.selects_drive(&hdd, Some(Media::Rotating)));
+    }
+
+    #[test]
+    fn fast_is_a_tier_and_system_drive_takes_two_words() {
+        assert!(PolicySpec::parse(&json!({ "nodes": ["n"], "enroll": { "tier": "fast" } })).is_ok());
+        assert!(PolicySpec::parse(&json!({ "nodes": ["n"], "drives": { "systemDrive": "solid-state" }, "enroll": { "tier": "warm" } })).is_ok());
+        assert!(PolicySpec::parse(&json!({ "nodes": ["n"], "drives": { "systemDrive": "ssd" }, "enroll": { "tier": "warm" } })).is_err());
     }
 
     #[test]
@@ -472,9 +586,9 @@ mod tests {
         assert!(matches!(verdict(&p, &d, false), Verdict::Skip(r) if r.starts_with("host-managed SMR")));
         let none_only = spec(json!({ "nodes": ["server8"], "drives": { "smr": ["none"] }, "enroll": { "tier": "cool" } }));
         let d = server8_hdd();
-        assert_eq!(none_only.mismatch(&d), Some("smr drive-managed is not one of none".into()));
+        assert_eq!(none_only.mismatch(&d, None), Some("smr drive-managed is not one of none".into()));
         let dm = spec(json!({ "nodes": ["server8"], "drives": { "smr": ["drive-managed"] }, "enroll": { "tier": "cool" } }));
-        assert!(dm.selects_drive(&d));
+        assert!(dm.selects_drive(&d, None));
     }
 
     #[test]
@@ -482,27 +596,27 @@ mod tests {
         let p = stormblock1();
         let mut d = netapp(1);
         d.kind = DriveKind::SasSsd;
-        assert!(!p.selects_drive(&d), "kind");
+        assert!(!p.selects_drive(&d, None), "kind");
         let mut d = netapp(1);
         d.location.shelf = Some(Shelf { logical_id: Some("5000a098bbbb0002".into()), ..Default::default() });
-        assert!(!p.selects_drive(&d), "another shelf");
+        assert!(!p.selects_drive(&d, None), "another shelf");
         d.location.shelf = None;
-        assert!(!p.selects_drive(&d), "no shelf");
+        assert!(!p.selects_drive(&d, None), "no shelf");
 
         let p = spec(json!({ "nodes": ["n"], "drives": { "minBytes": 1000, "maxBytes": 2000, "blockSizes": [520],
                                                        "model": " st1200mm0098 ", "shelf": "5000a098aaaa0001", "bays": "0-3" },
                              "reformat": 4096, "enroll": { "tier": "warm" } }));
         let mut d = netapp(2);
         d.capacity_bytes = 1500;
-        assert!(p.selects_drive(&d));
+        assert!(p.selects_drive(&d, None));
         d.location.bay = Some(4);
-        assert!(!p.selects_drive(&d), "bay");
+        assert!(!p.selects_drive(&d, None), "bay");
         d.location.bay = Some(2);
         d.capacity_bytes = 2001;
-        assert!(!p.selects_drive(&d), "size");
+        assert!(!p.selects_drive(&d, None), "size");
         d.capacity_bytes = 1500;
         d.block_size = 512;
-        assert!(!p.selects_drive(&d), "sector size");
+        assert!(!p.selects_drive(&d, None), "sector size");
     }
 
     #[test]

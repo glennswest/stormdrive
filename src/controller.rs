@@ -814,12 +814,13 @@ fn dj_word(s: DjState) -> &'static str {
 
 /// Why `d` is out of the fleet, from the policies selecting its node and
 /// what each said this pass (`pass`: policy → its node status).
-pub fn member_reason(d: &crate::drive::Drive, mine: &[(String, PolicySpec)], pass: &HashMap<String, Value>) -> crate::membership::Why {
+/// `system`: the media of the node's system drive (`policy::system_media`).
+pub fn member_reason(d: &crate::drive::Drive, mine: &[(String, PolicySpec)], pass: &HashMap<String, Value>, system: Option<crate::policy::Media>) -> crate::membership::Why {
     use crate::membership::{from_record, not_selected, Why};
     let id = d.id.0.to_string();
     let mut misses = vec![];
     for (name, spec) in mine {
-        if let Some(m) = spec.mismatch(d) {
+        if let Some(m) = spec.mismatch(d, system) {
             misses.push((name.clone(), m));
             continue;
         }
@@ -916,11 +917,12 @@ impl Controller {
     /// `mine` = the policies selecting this node (None: no DrivePolicy CRD).
     async fn member_reasons(&self, mine: Option<&[(String, PolicySpec)]>) {
         let mut inv = self.state.inventory.write().await;
+        let system = crate::policy::system_media(&inv.drives.values().cloned().collect::<Vec<_>>());
         for d in inv.drives.values_mut() {
             d.membership_reason = match mine {
                 _ if d.membership == crate::drive::Membership::Fleet => None,
                 None => Some(crate::membership::Why::new("NoPolicy", "no DrivePolicy (the CRD is not installed): a drive is enrolled by hand (POST /api/v1/drives/{id}/enroll, a DriveOperation)")),
-                Some(mine) => Some(member_reason(d, mine, &self.pass)),
+                Some(mine) => Some(member_reason(d, mine, &self.pass, system)),
             };
         }
     }
@@ -1004,7 +1006,8 @@ impl Controller {
             let inv = self.state.inventory.read().await;
             let all: Vec<crate::drive::Drive> = inv.drives.values().cloned().collect();
             let has = crate::policy::node_has_data_slab(&all);
-            (all.into_iter().filter(|d| spec.selects_drive(d)).collect::<Vec<_>>(), has)
+            let system = crate::policy::system_media(&all);
+            (all.into_iter().filter(|d| spec.selects_drive(d, system)).collect::<Vec<_>>(), has)
         };
         let waiting = spec.require_data_slab && !has_data_slab;
         let selected: HashSet<String> = drives.iter().map(|d| d.id.0.to_string()).collect();
@@ -1204,22 +1207,22 @@ mod tests {
         let blades = PolicySpec::parse(&json!({ "nodes": ["server8"], "drives": { "kinds": ["sata_hdd"] }, "enroll": { "tier": "cool" } })).unwrap();
         let mut pass = HashMap::new();
         // No policy selects the node.
-        assert_eq!(member_reason(&d, &[], &pass).reason, "NoPolicy");
+        assert_eq!(member_reason(&d, &[], &pass, None).reason, "NoPolicy");
         // One does, but not this drive: its mismatch is named.
-        let w = member_reason(&d, &[("sas".into(), sas.clone())], &pass);
+        let w = member_reason(&d, &[("sas".into(), sas.clone())], &pass, None);
         assert_eq!(w.reason, "NotSelected");
         assert!(w.message.contains("sas: kind sata_hdd is not one of sas_hdd"), "{}", w.message);
         // The blades' policy skipped it: its words.
         pass.insert("blades".to_string(), json!({ "phase": "Active", "drives": { (id.clone()): { "state": "skipped", "reason": "no health verdict yet" } } }));
         let both = [("sas".to_string(), sas), ("blades".to_string(), blades.clone())];
-        let w = member_reason(&d, &both, &pass);
+        let w = member_reason(&d, &both, &pass, None);
         assert_eq!((w.reason.as_str(), w.message.as_str()), ("NoHealthYet", "DrivePolicy blades: no health verdict yet"));
         // Queued for the worker.
         pass.insert("blades".to_string(), json!({ "phase": "Active", "drives": { (id.clone()): { "state": "queued", "job": "j1" } } }));
-        assert_eq!(member_reason(&d, &both, &pass).reason, "Enrolling");
+        assert_eq!(member_reason(&d, &both, &pass, None).reason, "Enrolling");
         // requireDataSlab with no data slab yet.
         pass.insert("blades".to_string(), json!({ "phase": "Waiting", "message": "requireDataSlab: no stormblock data slab on this node yet", "drives": {} }));
-        let w = member_reason(&d, &both, &pass);
+        let w = member_reason(&d, &both, &pass, None);
         assert_eq!(w.reason, "Waiting");
         assert!(w.message.contains("requireDataSlab"));
     }

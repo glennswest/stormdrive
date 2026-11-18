@@ -189,7 +189,6 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
     let (link, mut conditions) = crate::link::status(&d.id);
     // Never a bare `out` (#156): the Member condition says why.
     conditions.push(crate::membership::condition(d));
-    let member_why = crate::membership::why(d);
     json!({
         "apiVersion": api_version(),
         "kind": "Drive",
@@ -238,7 +237,8 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "sasAddress": d.location.sas_address,
             "location": d.location,
             "membership": d.membership,
-            "membershipReason": member_why.as_ref().map(|w| w.message.clone()),
+            "membershipReason": crate::membership::reason_message(d),
+            "tier": crate::membership::tier(d),
             "smr": d.smr.as_ref().map(|i| i.smr),
             "smrSource": d.smr.as_ref().map(|i| i.source.clone()),
             "activity": d.activity,

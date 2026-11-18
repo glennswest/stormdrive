@@ -116,11 +116,32 @@ pub fn why(d: &Drive) -> Option<Why> {
     ))
 }
 
+/// The tier of the drive's slabs as the engine lists them: its data slab's,
+/// else any slab's (#157).
+pub fn tier(d: &Drive) -> Option<String> {
+    let slabs = &d.usage.as_ref()?.slabs;
+    slabs.iter().find(|s| s.role == "data").or_else(|| slabs.first()).map(|s| s.tier.clone()).filter(|t| !t.is_empty())
+}
+
+/// What a member says of itself beyond "in the fleet" (#157): a `fast`
+/// slab holds only what asks for `fast` — never a default placement.
+pub fn member_note(d: &Drive) -> Option<&'static str> {
+    (d.membership == Membership::Fleet && tier(d).as_deref() == Some("fast")).then_some("the fast tier: only what asks for fast uses it")
+}
+
+/// `status.membershipReason`: why it is out, or a member's note.
+pub fn reason_message(d: &Drive) -> Option<String> {
+    why(d).map(|w| w.message).or_else(|| member_note(d).map(str::to_string))
+}
+
 /// The `Member` condition (no `lastTransitionTime`: the controller keeps it
 /// from the object it replaces).
 pub fn condition(d: &Drive) -> Value {
     match why(d) {
-        None => json!({ "type": "Member", "status": "True", "reason": "Enrolled", "message": "in the fleet: the engine places data on it" }),
+        None => match member_note(d) {
+            Some(n) => json!({ "type": "Member", "status": "True", "reason": "Enrolled", "message": format!("in the fleet, {n}") }),
+            None => json!({ "type": "Member", "status": "True", "reason": "Enrolled", "message": "in the fleet: the engine places data on it" }),
+        },
         Some(w) => json!({ "type": "Member", "status": "False", "reason": w.reason, "message": w.message }),
     }
 }
@@ -173,5 +194,31 @@ mod tests {
         d.health.status = Some(HealthStatus::Good);
         assert_eq!(condition(&d)["status"], "True");
         assert_eq!(why(&d), None);
+        assert_eq!(reason_message(&d), None);
+    }
+
+    /// #157: server8's Patriot SSD, enrolled as the blades' `fast` slab.
+    #[test]
+    fn a_fast_member_says_what_its_tier_is_for() {
+        let mut d = Drive::test_fixture("sda");
+        d.membership = Membership::Fleet;
+        d.health.status = Some(HealthStatus::Good);
+        let slab = |role: &str, tier: &str| crate::usage::SlabUsage {
+            id: "s".into(), role: role.into(), tier: tier.into(), slot_size: 1, total_bytes: 1,
+            allocated_bytes: 0, free_bytes: 1, committed_bytes: None,
+        };
+        let mut u = crate::usage::compute(&d, &[], std::time::SystemTime::UNIX_EPOCH);
+        u.slabs = vec![slab("data", "fast")];
+        d.usage = Some(u.clone());
+        assert_eq!(tier(&d).as_deref(), Some("fast"));
+        assert_eq!(reason_message(&d).as_deref(), Some("the fast tier: only what asks for fast uses it"));
+        let c = condition(&d);
+        assert_eq!(c["status"], "True");
+        assert!(c["message"].as_str().unwrap().contains("only what asks for fast"));
+        // The HDD beside it: system + data, warm; no note.
+        u.slabs = vec![slab("system", "warm"), slab("data", "cool")];
+        d.usage = Some(u);
+        assert_eq!(tier(&d).as_deref(), Some("cool"));
+        assert_eq!(reason_message(&d), None);
     }
 }

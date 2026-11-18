@@ -49,6 +49,7 @@ spec:
         - { name: Health, type: string, jsonPath: .status.health.status }
         - { name: Membership, type: string, jsonPath: .status.membership }
         - { name: SMR, type: string, jsonPath: .status.smr }
+        - { name: Tier, type: string, jsonPath: .status.tier }
         - { name: Why, type: string, jsonPath: .status.membershipReason, priority: 1 }
         - { name: Link, type: string, jsonPath: .status.link.level }
         - { name: Owner, type: string, jsonPath: .status.owner }
@@ -90,8 +91,9 @@ spec:
                 capacityBytes: { type: integer }
                 blockSize: { type: integer, description: "Logical sector size: 512, 4096, or 520/528 on a drive that needs a reformat." }
                 needsReformat: { type: boolean }
-                membershipReason: { type: string, nullable: true, description: "Why the drive is out of the fleet (#156), never a bare out: the DrivePolicy's skip (designated, in use, busy, failed, hot, host-managed SMR, a reformat the policy will not do, no health verdict yet), its job (queued, running, failed: edit the policy to try again), the policy waiting or suspended, or no DrivePolicy selecting it with each policy's first field that differs. The Member condition carries it with a reason word. Null in the fleet." }
+                membershipReason: { type: string, nullable: true, description: "Why the drive is out of the fleet (#156), never a bare out: the DrivePolicy's skip (designated, in use, busy, failed, hot, host-managed SMR, a reformat the policy will not do, no health verdict yet), its job (queued, running, failed: edit the policy to try again), the policy waiting or suspended, or no DrivePolicy selecting it with each policy's first field that differs. The Member condition carries it with a reason word. In the fleet: null, except a fast member (#157): 'the fast tier: only what asks for fast uses it'." }
                 smr: { type: string, nullable: true, enum: [none, host-managed, host-aware, drive-managed], description: "Shingled recording (#156): the kernel's queue/zoned (host-managed, host-aware), else ATA IDENTIFY DEVICE word 69 bits 1:0 on a SATA drive (10b drive-managed), else VPD 0xB1 ZONED, else a list of known drive-managed models (ST2000DM008 …). A host-managed drive is never enrolled by a DrivePolicy; a drive-managed one is a data drive like any other." }
+                tier: { type: string, nullable: true, description: "The tier of the drive's slabs as the engine lists them (its data slab's, else any slab's; #157)." }
                 smrSource: { type: string, nullable: true, description: "What said it: queue/zoned, ATA IDENTIFY word 69, VPD 0xB1, known model, nothing reports zoning." }
                 formatReason: { type: string, nullable: true, description: "Why it needs a format when its sectors do not say so (#131): no block node, e.g. an interrupted format answering 31/00." }
                 pages:
@@ -329,6 +331,7 @@ spec:
                       type: array
                       items: { type: string, enum: [none, drive-managed, host-aware, host-managed] }
                       description: "The drive's status.smr must be one of these (#156); empty = any. A host-managed drive is never enrolled whatever this says."
+                    systemDrive: { type: string, enum: [rotating, solid-state], description: "The node's own system drive (the one holding its system slab) must be of this media (#157): the blades' SSD beside a rotating system drive is a fast slab." }
                 reformat:
                   type: integer
                   enum: [512, 4096]
@@ -338,7 +341,7 @@ spec:
                   required: [tier]
                   properties:
                     role: { type: string, enum: [data, system], description: "The slab's role (default data)." }
-                    tier: { type: string, enum: [hot, warm, cool, cold], description: "The slab's tier: what stormstorage pools select by." }
+                    tier: { type: string, enum: [hot, warm, cool, cold, fast], description: "The slab's tier: what stormstorage pools select by. fast (#157) is never in a default placement or fallback chain: only what asks for fast uses it." }
                 requireDataSlab:
                   type: boolean
                   description: Act only on a node that already has a stormblock data slab (phase Waiting until it does) — grow a storage node, never make one.
