@@ -2117,14 +2117,17 @@ no shelf report exists for it, so the controller writes no Shelf.
 From stormblock#672. server8's `sdb` (ST2000DM008, SATA 512e, DM-SMR) reads
 `membership: out` with no reason.
 
-- [ ] An out drive says why: `status.membershipReason` + condition `Member`
+- [x] An out drive says why: `status.membershipReason` + condition `Member`
   (False with a reason word and message; True `Enrolled` in the fleet). From
   the DrivePolicy pass: the policy's skip/queued/failed record, or no policy
   selecting it (with each policy's first mismatch), or no CRD / no apiserver.
-- [ ] SMR: `smr.rs` decides `none|host-managed|host-aware|drive-managed` from
+- [x] SMR: `smr.rs` decides `none|host-managed|host-aware|drive-managed` from
   `queue/zoned`, ATA IDENTIFY word 69 bits 1:0 (SATA), VPD 0xB1 ZONED, then a
   known DM-SMR model list. `status.smr`, `status.smrSource`, printer column.
-- [ ] Policy: host-managed is skipped with its reason (the slab writes at
+- [x] Policy: host-managed is skipped with its reason (the slab writes at
   random); drive-managed is enrolled like any drive. `drives.smr` selector.
   Example `deploy/drivepolicy.blades.yaml`: rotational SATA/SAS → data slab,
   tier cool, no reformat (the blades' manifest is stormcos#1039).
+- [x] sc-build (build, 429 unit + suites, clippy -D warnings) passed on
+  e6850e7; v0.52.0; image requested. Proof (server8 member, 100 GiB cool PVC)
+  needs stormcos#1039's policy in the blades' manifests: shipped with that proof.
