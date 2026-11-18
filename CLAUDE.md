@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.50.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.51.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -102,6 +102,8 @@ src/
                   each disk's state, set good / JBOD over MFI, personality via
                   perccli (#132)
   hba.rs          PCIe SCSI HBA inventory (firmware, BIOS, NVDATA versions)
+  hbaenc.rs       a backplane with no SES behind a SAS HBA as a shelf: bays from
+                  the transport, each with its phy and rate, empty bays (#152)
   scsi.rs         raw SCSI over SG_IO: INQUIRY/VPD, READ CAPACITY(16), MODE SENSE/
                   SELECT, FORMAT UNIT, TUR progress, RECEIVE/SEND DIAGNOSTIC,
                   WRITE BUFFER; sense decoding portable + unit-tested

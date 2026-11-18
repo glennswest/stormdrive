@@ -3,14 +3,19 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
-### 2026-11-18
-- **feat:** #152 a backplane with no SES device behind a SAS HBA is a Shelf: `hbaenc.rs` makes one shelf report per enclosure the SAS transport names (`sas_device` enclosure/bay identifiers) that no SES or RAID report covers, read through the HBA (`through.driver`, `through.bay_phys`: bay → phy, rate, SAS address; every HBA phy is a bay on a direct-attached backplane), so forge1's HBA330 backplane gets a Shelf with its four drives. Shelf `status.bays` adds `state` (occupied/empty), `wwid`, `phy`, `linkRateMbps`. RAID-only paths (`megaraid::place`, bay maps) keep to RAID controllers; messages say what the shelf is read through. The Shelf CRD on the node is stormcos#683
-
 ### 2026-11-15
 - **docs:** work plan #141: on forge1's 12.86 install bays 3/4/7 are not on the HBA330 (only bay 0); waits on a person's check of cabling/seating
 
 ### 2026-11-14
 - **docs:** work plan #141: the proof is forge1's console, not pvetest3's; item waits on a forge1 install
+
+## [v0.51.0] — 2026-11-18
+
+### Added
+- #152 a backplane with no SES device behind a SAS HBA is a Shelf (`hbaenc.rs`): bays from the SAS transport with phy and negotiated rate, empty bays on a direct-attached backplane; Shelf `status.bays` gains `state`, `wwid`, `phy`, `linkRateMbps`
+
+### Fixed
+- #153 unused import in hbaenc (build warning)
 
 ## [v0.50.0] — 2026-11-17
 

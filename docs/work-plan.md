@@ -2092,14 +2092,14 @@ no shelf report exists for it, so the controller writes no Shelf.
 - ask 1 (CRD + role on the node) is stormcos's: its 82-stormdrive-crds.yaml is
   our v0.31.0 copy, no Shelf; 83-stormdrive.yaml has no shelves rule. Filed
   there already as stormcos#683 — commented with this P0; ours `--after` it
-- [ ] `hbaenc.rs`: enclosures the SAS transport names (`sas_device`
+- [x] `hbaenc.rs`: enclosures the SAS transport names (`sas_device`
   enclosure_identifier/bay_identifier) that no SES or RAID report covers →
   a ShelfReport read through the HBA (`through.driver` mpt3sas), bays from the
   end devices, each with its HBA phy and negotiated rate; direct-attached
   with bay = phy, every HBA phy is a bay (no drive = empty)
-- [ ] keep RAID-only paths RAID-only (megaraid::place, bay maps); words
+- [x] keep RAID-only paths RAID-only (megaraid::place, bay maps); words
   "through its HBA" vs "through its RAID controller"
-- [ ] Shelf status.bays: state occupied/empty, wwid, phy, linkRate; CRD text
-- [ ] tests (fake sysfs), docs, changelog, sc-build, version, image
+- [x] Shelf status.bays: state occupied/empty, wwid, phy, linkRate; CRD text
+- [x] tests (hbaenc 3, shelfobj 1; fake sysfs), docs, changelog, sc-build (419 lib tests + clippy -D warnings), v0.51.0, image
 - [ ] proof once stormcos#683 ships: forge1 `/apis/storage.storm.io/v1/shelves`
   has the internal shelf with bays
