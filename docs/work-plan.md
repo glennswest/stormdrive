@@ -2177,3 +2177,17 @@ like plain http:
   v0.54.0; image requested; stormconsole#362 filed; master noted to drop the
   registry's allow_anonymous line once it ships. Shipped with proof
   `get:http://{node}:9092/api/v1/health ~ "tls":\{…"cn":"stormdrive"`.
+
+### #162: a DrivePolicy scoped by its drives alone (stormcos#1039) (2026-11-19) — P0
+
+stormcos ships `blades-ssd-fast` with no machine names (a public repo) and no
+node label marks a blade. Spelling taken: neither `nodes` nor
+`nodeSelector.matchLabels` is allowed when `drives.systemDrive` **and**
+`drives.kinds` are both given — the system drive's media is a fact of the
+node (it stands in for naming nodes), the kinds keep it from taking every
+other drive on such a node. A bare or kinds-only policy is still refused.
+
+- [ ] policy.rs: validate + selects_node (unnamed + drive-scoped = every node).
+- [ ] controller: an invalid policy naming no node is said by every node.
+- [ ] CRD description, example (`blades-ssd-fast` without nodes), README/docs.
+- [ ] Unit tests; sc-build; image; answer on #162 for stormcos#1039.
