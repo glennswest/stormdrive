@@ -73,6 +73,8 @@ src/
   discovery/      sysfs enumeration, classification, probe cache [Linux]; USB
                   disks apart as removable media (#106)
   hotplug.rs      NETLINK_KOBJECT_UEVENT listener → debounced discovery pass
+  rescan.rs       SAS host rescan while a known drive is missing
+                  (`discovery.rescan_missing_secs`, default 60; 0 = never, #141)
   contents.rs     slab probe (STRMSLAB at LBA 0 / GPT partition starts) → in_use_by
   engine.rs       the engine's own slab report (health `slabs`) vs the slab
                   partitions on each drive → engine_finding (#58)
