@@ -2169,5 +2169,7 @@ like plain http:
   allow_anonymous.
 - [x] tests/tls.rs: health names the pair; `none` + why before it appears; a
   client offering h2 gets http/1.1. Test container: short `tls-served`.
-- [ ] sc-build, v0.54.0, image; stormconsole issue; master note for the
-  registry line once stormconsole ships.
+- [x] sc-build (build, unit + suites, clippy -D warnings) passed on ffb0258;
+  v0.54.0; image requested; stormconsole#362 filed; master noted to drop the
+  registry's allow_anonymous line once it ships. Shipped with proof
+  `get:http://{node}:9092/api/v1/health ~ "tls":\{…"cn":"stormdrive"`.
