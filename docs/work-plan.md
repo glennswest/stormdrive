@@ -2187,7 +2187,8 @@ node label marks a blade. Spelling taken: neither `nodes` nor
 node (it stands in for naming nodes), the kinds keep it from taking every
 other drive on such a node. A bare or kinds-only policy is still refused.
 
-- [ ] policy.rs: validate + selects_node (unnamed + drive-scoped = every node).
-- [ ] controller: an invalid policy naming no node is said by every node.
-- [ ] CRD description, example (`blades-ssd-fast` without nodes), README/docs.
-- [ ] Unit tests; sc-build; image; answer on #162 for stormcos#1039.
+- [x] policy.rs: validate + selects_node (unnamed + drive-scoped = every node).
+- [x] controller: an invalid policy naming no node is said by every node.
+- [x] CRD description, example (`blades-ssd-fast` without nodes), README/docs.
+- [x] Unit tests; sc-build (build, test, clippy -D warnings) passed on e474224;
+  image requested; answered on #162 and stormcos#1039 (copy the CRD again).
