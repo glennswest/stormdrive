@@ -2101,8 +2101,12 @@ no shelf report exists for it, so the controller writes no Shelf.
   "through its HBA" vs "through its RAID controller"
 - [x] Shelf status.bays: state occupied/empty, wwid, phy, linkRate; CRD text
 - [x] tests (hbaenc 3, shelfobj 1; fake sysfs), docs, changelog, sc-build (419 lib tests + clippy -D warnings), v0.51.0, image
-- [ ] (item --after stormcos#683) proof once it ships: forge1 `/apis/storage.storm.io/v1/shelves`
-  has the internal shelf with bays
+- [x] stormcos#683 re-copied crds.yaml at d1e1de1 + the shelves role (stormcos
+  9ad819e, 5e802a4; verified there on a real rustkube apiserver)
+- [ ] (item shipped) proof once a release carries both: forge1
+  `/apis/storage.storm.io/v1/shelves` has the internal shelf with bays. Shelf
+  status keys serialize alphabetically (no serde_json preserve_order), so
+  `bays` precedes `position`: the proof regex takes either order
 
 ### #154: no stubs — the format API's NVMe stub marker (2026-11-18) — P-1
 
