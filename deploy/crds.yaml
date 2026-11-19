@@ -303,7 +303,7 @@ spec:
                 nodes:
                   type: array
                   items: { type: string }
-                  description: Node names. At least one of nodes, nodeSelector.matchLabels; both given = both must match.
+                  description: "Node names. At least one of nodes, nodeSelector.matchLabels; both given = both must match. Neither (#162) only when drives.systemDrive and drives.kinds are both given: the policy is then for every node, narrowed by its drives."
                 nodeSelector:
                   type: object
                   properties:

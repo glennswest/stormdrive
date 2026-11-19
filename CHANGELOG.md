@@ -4,6 +4,9 @@
 
 <!-- New unreleased changes go here -->
 
+### 2026-11-19
+- **feat:** (#162, stormcos#1039) a DrivePolicy may name no node (neither `nodes` nor `nodeSelector`) when `drives.systemDrive` and `drives.kinds` are both given: it is then for every node, narrowed by its drives, so stormcos ships `blades-ssd-fast` with no machine names. A bare or kinds-only/systemDrive-only policy is still refused; an invalid policy naming no node is said (phase Invalid) by every node. CRD description, example and README updated
+
 ### 2026-11-18
 - **docs:** #152 work plan: stormcos#683 re-copied the Shelf CRD + role; shipped with an order-independent proof (status keys are alphabetical: `bays` before `position`)
 - **docs:** documentation refreshed from the code since 2026-11-12: `rescan.rs` added to the CLAUDE.md source tree; README, architecture, CRD and example config checked against config keys, health TLS fields, ALPN, tiers and status fields (no other drift found)

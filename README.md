@@ -1024,8 +1024,11 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   slab (#157, the owner's shape on stormblock#672: system and data both on
   the HDD, which no policy takes; only what asks for `fast` uses the SSD).
   The spec has:
-  - **nodes:** `nodes` and/or `nodeSelector.matchLabels`; one of them is
-    required.
+  - **nodes:** `nodes` and/or `nodeSelector.matchLabels`. Neither (#162)
+    is taken only when `drives.systemDrive` and `drives.kinds` are both
+    given: the policy is then for every node, narrowed by its drives (how
+    stormcos ships `blades-ssd-fast` with no machine names). A bare or
+    kinds-only policy is refused.
   - **drives:** `kinds`, `minBytes`, `maxBytes`, `blockSizes`, `model`,
     `shelf`, `bays`, `smr` (#156), `systemDrive` (`rotating` or
     `solid-state`: the node's own system drive, the one holding its system

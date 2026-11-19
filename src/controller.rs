@@ -880,7 +880,11 @@ impl Controller {
                 Err(why) => {
                     // Said only by the nodes it names: whom a broken
                     // selector meant is not known.
-                    let names_me = pol["spec"]["nodes"].as_array().into_iter().flatten().any(|n| n.as_str().is_some_and(|n| same_node(n, &node)));
+                    // One naming no node at all (#162: meant drive-scoped,
+                    // for every node) is said by every node.
+                    let named = pol["spec"]["nodes"].as_array().into_iter().flatten().filter_map(|n| n.as_str()).filter(|n| !n.trim().is_empty()).collect::<Vec<_>>();
+                    let by_labels = pol["spec"]["nodeSelector"]["matchLabels"].as_object().is_some_and(|m| !m.is_empty());
+                    let names_me = named.iter().any(|n| same_node(n, &node)) || (named.is_empty() && !by_labels);
                     if names_me {
                         let st = json!({ "phase": "Invalid", "message": why, "observedGeneration": pol["metadata"]["generation"] });
                         if self.policy_status.get(&name) != Some(&st.to_string()) {

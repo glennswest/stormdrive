@@ -53,12 +53,16 @@ spec:
 # skipped: its zones take sequential writes only). The real manifest is
 # stormcos's (stormcos#1039); a drive this leaves out says why in its Drive
 # object (status.membershipReason, condition Member).
+#
+# It names no node (#162, stormcos#1039): a policy with neither nodes nor
+# nodeSelector is taken when drives.systemDrive and drives.kinds are both
+# given, and is then for every node. A node whose system drive is on an SSD
+# or NVMe selects nothing; nor does a node with no SSD.
 apiVersion: storage.storm.io/v1
 kind: DrivePolicy
 metadata:
   name: blades-ssd-fast
 spec:
-  nodes: [server1, server2, server3, server4, server5, server6, server7, server8]
   drives:
     kinds: [sata_ssd, sas_ssd, nvme_ssd]
     systemDrive: rotating

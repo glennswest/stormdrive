@@ -149,10 +149,8 @@ impl PolicySpec {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        let selects_nodes = self.nodes.iter().any(|n| !n.trim().is_empty())
-            || self.node_selector.as_ref().is_some_and(|s| !s.match_labels.is_empty());
-        if !selects_nodes {
-            return Err("name the nodes: spec.nodes or spec.nodeSelector.matchLabels (a policy for every node is not taken)".into());
+        if !self.names_nodes() && !self.drive_scoped() {
+            return Err("name the nodes: spec.nodes or spec.nodeSelector.matchLabels, or scope it by the drives alone with both drives.systemDrive and drives.kinds (a policy for every drive of every node is not taken)".into());
         }
         if !TIERS.contains(&self.enroll.tier.as_str()) {
             return Err(format!("enroll.tier {:?}: one of {}", self.enroll.tier, TIERS.join(", ")));
@@ -176,9 +174,28 @@ impl PolicySpec {
         crate::worker::validate_steps(&self.steps_for(true))
     }
 
+    /// Does it name nodes (spec.nodes or spec.nodeSelector.matchLabels)?
+    pub fn names_nodes(&self) -> bool {
+        self.nodes.iter().any(|n| !n.trim().is_empty()) || self.node_selector.as_ref().is_some_and(|s| !s.match_labels.is_empty())
+    }
+
+    /// Is it narrowed by the drives alone, enough to be taken with no nodes
+    /// named (#162, stormcos#1039: the product ships the blades' policy
+    /// with no machine names)? The node's system drive media is a fact of
+    /// the node and stands in for naming it; the kinds keep it from taking
+    /// every other drive of such a node.
+    pub fn drive_scoped(&self) -> bool {
+        self.drives.system_drive.is_some() && !self.drives.kinds.is_empty()
+    }
+
     /// Does the policy apply to this node? `labels` = the Node object's,
-    /// when a selector needs them (None: not known, so no).
+    /// when a selector needs them (None: not known, so no). A policy naming
+    /// no node applies to every node (only a drive-scoped one validates);
+    /// its drive selector decides.
     pub fn selects_node(&self, node: &str, labels: Option<&BTreeMap<String, String>>) -> bool {
+        if !self.names_nodes() {
+            return self.drive_scoped();
+        }
         let named = self.nodes.iter().map(|n| n.trim()).filter(|n| !n.is_empty()).collect::<Vec<_>>();
         if !named.is_empty() && !named.iter().any(|n| n.eq_ignore_ascii_case(node.trim())) {
             return false;
@@ -633,9 +650,32 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_scoped_by_its_drives_alone() {
+        // #162, stormcos#1039: the blades' policy as the product ships it.
+        let p = spec(json!({ "drives": { "kinds": ["sata_ssd", "sas_ssd", "nvme_ssd"], "systemDrive": "rotating" },
+                             "enroll": { "role": "data", "tier": "fast" } }));
+        assert!(!p.names_nodes() && p.drive_scoped());
+        assert!(p.selects_node("server8", None), "every node, no labels needed");
+        assert!(p.selects_node("stormblock1", None));
+        let mut ssd = Drive::test_fixture("sdb");
+        ssd.kind = DriveKind::SataSsd;
+        assert!(p.selects_drive(&ssd, Some(Media::Rotating)));
+        assert!(p.mismatch(&ssd, Some(Media::SolidState)).unwrap().contains("system drive is solid-state"));
+        assert!(p.mismatch(&ssd, None).unwrap().contains("not known"));
+        let mut hdd = Drive::test_fixture("sda");
+        hdd.kind = DriveKind::SataHdd;
+        assert!(p.mismatch(&hdd, Some(Media::Rotating)).unwrap().contains("kind"));
+        // Naming nodes as well still narrows it to them.
+        let named = spec(json!({ "nodes": ["server8"], "drives": { "kinds": ["sata_ssd"], "systemDrive": "rotating" }, "enroll": { "tier": "fast" } }));
+        assert!(named.selects_node("server8", None) && !named.selects_node("server1", None));
+    }
+
+    #[test]
     fn a_spec_that_could_hurt_is_refused() {
         let bad = |v: Value| PolicySpec::parse(&v).unwrap_err();
         assert!(bad(json!({ "enroll": { "tier": "warm" } })).contains("name the nodes"));
+        assert!(bad(json!({ "drives": { "kinds": ["sata_ssd"] }, "enroll": { "tier": "fast" } })).contains("name the nodes"), "kinds alone");
+        assert!(bad(json!({ "drives": { "systemDrive": "rotating" }, "enroll": { "tier": "fast" } })).contains("name the nodes"), "systemDrive alone");
         assert!(bad(json!({ "nodes": [" "], "enroll": { "tier": "warm" } })).contains("name the nodes"));
         assert!(bad(json!({ "nodes": ["n"], "enroll": { "tier": "lukewarm" } })).contains("one of hot, warm, cool, cold"));
         assert!(bad(json!({ "nodes": ["n"], "enroll": {} })).contains("tier"));
