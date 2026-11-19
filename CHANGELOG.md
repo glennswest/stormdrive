@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-19
+- **docs:** #157 work plan: stormcos#1039 landed (273cf8a); re-shipped with the proof scoped `on server8`, carried from e474224
 - **docs:** #157 work plan: the proof was checked on pvetest2 (no SSD, so nothing can be `fast` there); re-ship scoped `on server8` after stormcos#1039 puts the policy in the blades' manifests
 - **feat:** (#162, stormcos#1039) a DrivePolicy may name no node (neither `nodes` nor `nodeSelector`) when `drives.systemDrive` and `drives.kinds` are both given: it is then for every node, narrowed by its drives, so stormcos ships `blades-ssd-fast` with no machine names. A bare or kinds-only/systemDrive-only policy is still refused; an invalid policy naming no node is said (phase Invalid) by every node. CRD description, example and README updated
 
