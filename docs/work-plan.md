@@ -2153,6 +2153,11 @@ asks for `fast` uses. Reverses #156's blades example (HDD → cool).
 - [x] sc-build (build, unit + suites, clippy -D warnings) passed on 14bd5e7;
   v0.53.0; image requested; stormcos#1039 has the policy spec. Proof needs
   server8 wiped with the policy in the blades' manifests: shipped with it.
+- [ ] 2026-11-19: the proof was checked on pvetest2 (12.96-flowsdn), a pve VM
+  with one SATA HDD and no SSD: no drive there can be `fast`, so it could not
+  hold. Not a code fault. Re-ship scoped `on server8` once stormcos#1039 (the
+  policy in the blades' manifests) lands: item proposed `--after
+  glennswest/stormcos#1039`.
 
 ### #158: :9092 "plain http" on forge1 — TLS served, said in health (2026-11-18) — P1
 
