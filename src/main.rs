@@ -152,6 +152,8 @@ async fn daemon(args: Args) -> anyhow::Result<()> {
     let history = stormdrive::history::History::new(&config.history, stormdrive::history::Boot::read(&node_name));
     history.available();
     let gate = stormdrive::kubeauth::Gate::new(&config.api, kube.clone(), data_dir.as_deref());
+    // :9092's serving pair (#19), read now so health can say it (#158).
+    let serving = stormdrive::tls::ServingCert::new(config.api.tls_cert_file.clone().into(), config.api.tls_key_file.clone().into());
     let state = Arc::new(AppState {
         config,
         inventory: RwLock::new(inventory),
@@ -179,6 +181,7 @@ async fn daemon(args: Args) -> anyhow::Result<()> {
         system_drives: Arc::new(stormdrive::system::SystemDrives::new(&state_history_dir)),
         thermal: RwLock::new(thermal),
         controllers: RwLock::new(Vec::new()),
+        serving: serving.clone(),
     });
 
     // What was in flight when we stopped — worker jobs, and drives a
@@ -198,7 +201,12 @@ async fn daemon(args: Args) -> anyhow::Result<()> {
     // :9092 (#19): TLS from the stormcert pair, and plain HTTP for health,
     // on one port; the router's guard decides every other request.
     let api = &state.config.api;
-    let cert = stormdrive::tls::ServingCert::new(api.tls_cert_file.clone().into(), api.tls_key_file.clone().into());
+    let cert = serving;
+    if api.allow_anonymous {
+        tracing::warn!(
+            "[api] allow_anonymous is on (#19 transition): plain HTTP and reads with no credential are served on :9092 — /api/v1/health says plain_http"
+        );
+    }
     let cas: Vec<PathBuf> = api.client_ca_files.iter().map(PathBuf::from).collect();
     let tls = stormdrive::tls::server_config(cert, &cas)?;
     let app = stormdrive::api::router(state.clone());

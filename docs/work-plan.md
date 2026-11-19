@@ -2149,3 +2149,25 @@ asks for `fast` uses. Reverses #156's blades example (HDD → cool).
 - [x] sc-build (build, unit + suites, clippy -D warnings) passed on 14bd5e7;
   v0.53.0; image requested; stormcos#1039 has the policy spec. Proof needs
   server8 wiped with the policy in the blades' manifests: shipped with it.
+
+### #158: :9092 "plain http" on forge1 — TLS served, said in health (2026-11-18) — P1
+
+Seen on forge1 12.94 (0.51.0 now) from stormcentral.g8.lo: TLS *is* served,
+with a node-CA pair (CN=stormdrive, issuer forge1-p2.cluster.local, SANs
+forge1-p2, localhost, 192.168.31.204, 127.0.0.1). Two things made it look
+like plain http:
+1. ALPN offered h2, which the server does not speak: a default curl takes h2
+   and the connection drops (exit 56 / 000) — #119. `--http1.1` answers.
+2. Plain http answers every read because the registry's stormdrive config
+   carries `allow_anonymous = true` (the #19 transition line). stormconsole's
+   drive plugin still reads `http://<node>:9092` with no credential, so the
+   line can only go once it reads over TLS (issue filed on stormconsole).
+
+- [x] ALPN `http/1.1` only (closes #119).
+- [x] `/api/v1/health`: `tls {cn, issuer, not_after, sans, cert_file}` or
+  `"none"` + `tls_none`; `plain_http`; log on load, warn while none or while
+  allow_anonymous.
+- [x] tests/tls.rs: health names the pair; `none` + why before it appears; a
+  client offering h2 gets http/1.1. Test container: short `tls-served`.
+- [ ] sc-build, v0.54.0, image; stormconsole issue; master note for the
+  registry line once stormconsole ships.

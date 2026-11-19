@@ -72,6 +72,8 @@ pub struct AppState {
     pub thermal: RwLock<crate::thermal::Runtime>,
     /// RAID controllers as last read (#132): mode, disks, findings.
     pub controllers: RwLock<Vec<crate::raidctl::ControllerReport>>,
+    /// :9092's serving pair (#19), said in `/api/v1/health` (#158).
+    pub serving: Arc<crate::tls::ServingCert>,
 }
 
 impl AppState {
@@ -446,14 +448,24 @@ async fn placement_one(
 }
 
 async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(json!({
+    // #158: the certificate :9092 serves, or "none" and why — never silent.
+    let (tls, none) = s.serving.describe();
+    let mut v = json!({
         "status": "ok",
         "version": crate::VERSION,
         "node": s.node_name,
         "writes": s.gate.describe(),
         // #19: whether reads with no credential (and plain HTTP) are served.
         "reads": { "anonymous": s.gate.anonymous() },
-    }))
+        "tls": tls,
+        // What a plain-HTTP connection is answered: health alone, or every
+        // read (the #19 transition, `[api] allow_anonymous`).
+        "plain_http": if s.gate.anonymous() { "every read (allow_anonymous)" } else { "health only" },
+    });
+    if let Some(why) = none {
+        v["tls_none"] = json!(why);
+    }
+    Json(v)
 }
 
 /// Resolve an API handle to a DriveId under a read lock.

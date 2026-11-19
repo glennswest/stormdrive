@@ -4,6 +4,11 @@
 
 <!-- New unreleased changes go here -->
 
+### 2026-11-18
+- **fix:** (#158, #119) :9092's TLS offers `http/1.1` alone in ALPN: offering h2, which the server does not speak, got a default curl a dropped connection that read as "no TLS on :9092"
+- **feat:** (#158) `/api/v1/health` names the serving certificate (`tls: {cn, issuer, not_after, sans, cert_file}`) or says `tls: "none"` with `tls_none` (why), and `plain_http` (health only, or every read under `allow_anonymous`); the log says which pair loaded and warns while there is none or while `allow_anonymous` is on
+- **test:** (#158) tests/tls.rs: health names the pair, `none` + why before it exists, an h2-first client is answered over HTTP/1.1; test container short suite `tls-served`
+
 ## [v0.53.0] — 2026-11-18
 
 ### Added

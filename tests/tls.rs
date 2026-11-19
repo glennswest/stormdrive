@@ -147,6 +147,15 @@ async fn nothing_answers_anonymously_but_health() {
     assert_eq!(r.json::<Value>().await.unwrap()["code"], "tls_required");
     let h: Value = plain.get(d.http("/api/v1/health")).send().await.unwrap().json().await.unwrap();
     assert_eq!(h["reads"]["anonymous"], false);
+    // #158: with a node CA and a pair, plain HTTP answers health alone, and
+    // health names the certificate being served.
+    assert_eq!(h["plain_http"], "health only", "{h}");
+    assert_eq!(h["tls"]["cn"], "stormdrive", "{h}");
+    assert!(h["tls"]["issuer"].as_str().unwrap().contains("test node CA"), "{h}");
+    let sans: Vec<&str> = h["tls"]["sans"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+    assert!(sans.contains(&"127.0.0.1") && sans.contains(&"localhost"), "{h}");
+    assert!(h["tls"]["not_after"].as_str().unwrap().ends_with('Z'), "{h}");
+    assert!(h.get("tls_none").is_none(), "{h}");
 
     // TLS, no credential: health only. No page any more (#84): "/" and
     // the old asset paths are refused like any read.
@@ -203,13 +212,53 @@ async fn a_pair_that_appears_later_is_served_without_a_restart() {
     std::fs::write(&ca_file, ca.pem()).unwrap();
     let d = start("late", &api, &ca_file, &crt, &key, dir).await;
     let c = common::client(&ca, None);
-    // No pair: the handshake fails, plain health still answers.
+    // No pair: the handshake fails, plain health still answers — and says
+    // so (#158), never silently.
     assert!(c.get(d.https("/api/v1/health")).send().await.is_err());
+    let plain = reqwest::Client::new();
+    let h: Value = plain.get(d.http("/api/v1/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(h["tls"], "none", "{h}");
+    assert!(h["tls_none"].as_str().unwrap().contains("is not there"), "{h}");
     // stormcert-agent writes it: the next handshake has it.
     let (pem, k) = ca.issue("stormdrive", &[], true);
     std::fs::write(&key, k).unwrap();
     std::fs::write(&crt, pem).unwrap();
     assert_eq!(status(&c, &d.https("/api/v1/drives"), Some("root-token")).await, 200);
+    let h: Value = plain.get(d.http("/api/v1/health")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(h["tls"]["cn"], "stormdrive", "{h}");
+}
+
+/// #119/#158: a client that offers h2 first (a default curl) is answered
+/// over HTTP/1.1 — offering h2 got it the protocol and a dropped connection,
+/// which read on forge1 as ":9092 does not speak TLS".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_offering_h2_is_answered_over_http1() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let api = apiserver().await;
+    let dir = scratch("alpn");
+    let ca = common::Ca::new("alpn node CA");
+    let (ca_file, crt, key) = common::node_certs(&dir, &ca);
+    let d = start("alpn", &api, &ca_file, &crt, &key, dir).await;
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(rustls::pki_types::CertificateDer::from(ca.cert.der().to_vec())).unwrap();
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let mut cfg = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", d.port)).await.unwrap();
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+    let mut s = tokio_rustls::TlsConnector::from(std::sync::Arc::new(cfg)).connect(name, tcp).await.expect("TLS handshake");
+    assert_eq!(s.get_ref().1.alpn_protocol(), Some(&b"http/1.1"[..]), "the server picked h2, which it does not speak");
+    s.write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut out = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), s.read_to_end(&mut out)).await.unwrap().ok();
+    let out = String::from_utf8_lossy(&out);
+    assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+    assert!(out.contains("\"cn\":\"stormdrive\""), "{out}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -262,4 +311,5 @@ async fn allow_anonymous_is_the_old_behaviour_with_credentials_still_checked() {
     }
     let h: Value = plain.get(d.http("/api/v1/health")).send().await.unwrap().json().await.unwrap();
     assert_eq!(h["reads"]["anonymous"], true);
+    assert_eq!(h["plain_http"], "every read (allow_anonymous)", "{h}");
 }

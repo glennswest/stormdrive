@@ -18,6 +18,7 @@ const VERDICTS: [&str; 5] = ["good", "warning", "failing", "failed", "unknown"];
 
 pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     crate::api_up(api, r).await?;
+    r.run("tls-served", tls_served(api)).await;
     r.run("drives-listed", drives_listed(api)).await;
     r.run("drive-identity", drive_identity(api)).await;
     r.run("health-verdicts", health_verdicts(api)).await;
@@ -34,6 +35,41 @@ pub async fn run(_env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("metrics", metrics(api)).await;
     r.run("thermal", thermal(api)).await;
     Ok(())
+}
+
+/// :9092 is TLS from the node CA (#19, #158). Fails when a node with its
+/// CA answers only plain HTTP, when health (0.54+) names no certificate,
+/// and when plain HTTP serves reads that health does not declare. Reads
+/// over plain HTTP that health declares (`allow_anonymous`, the #19
+/// transition) are said, not failed: that is the node's configuration.
+async fn tls_served(api: &Api) -> Outcome {
+    let ca = api.tls().ca.is_some();
+    if api.base().starts_with("http://") {
+        ensure(!ca, format!("{} answers plain HTTP only, with a node CA present: no TLS on :9092", api.base()))?;
+        return Err(Why::Skip("no node CA and plain HTTP only: nothing to check TLS against".into()));
+    }
+    let h = api.get("api/v1/health").await?.json("GET /api/v1/health")?;
+    let new = api.has((0, 54, 0));
+    let mut said = String::from("TLS");
+    if new {
+        let t = &h["tls"];
+        ensure(t.is_object(), format!("health tls {t}: {}", h["tls_none"]))?;
+        let sans: Vec<&str> = t["sans"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        ensure(!sans.is_empty(), format!("serving certificate names nothing: {t}"))?;
+        said = format!("TLS: CN={} from {}, until {}, for {}", s(t, "cn"), s(t, "issuer"), s(t, "not_after"), sans.join(","));
+    }
+    // The same node over plain HTTP, with no credential at all.
+    let plain = format!("http://{}", &api.base()["https://".len()..]);
+    let p = Api::new(&plain, &crate::env::Tls::default(), None, None);
+    let reply = match p.get("api/v1/drives").await {
+        Ok(r) => r,
+        Err(_) => return Ok(format!("{said}; plain HTTP not answered")),
+    };
+    if !reply.ok() {
+        return Ok(format!("{said}; plain HTTP reads refused ({})", reply.status));
+    }
+    ensure(h["reads"]["anonymous"] == true, format!("plain HTTP served /api/v1/drives with no credential, and health does not say so: {h}"))?;
+    Err(Why::Skip(format!("{said}; but plain HTTP serves every read: [api] allow_anonymous is on (#19 transition)")))
 }
 
 /// Every drive is well-formed, and no two share an id.

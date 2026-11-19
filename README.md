@@ -674,7 +674,7 @@ stormdrive's suites follow stormcentral's
 
 | Suite | Budget | What it proves |
 |---|---|---|
-| `short` | < 2 min, read-only | up; drives listed with stable ids and resolvable by WWID; health sampled, or the reason it is not; slabs on each disk vs the engine's report (`drive-slabs`, #58); system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); `system-drives` (the designated drives listed and in the install's file, #66); card, placement (+304), feed, kube Drives, events, HBAs, `/metrics` (every drive by serial) |
+| `short` | < 2 min, read-only | up; `tls-served` (#158: fails a node with its CA that answers plain HTTP only, a 0.54+ health that names no certificate, or plain-HTTP reads health does not declare; declared `allow_anonymous` is a skip that says so); drives listed with stable ids and resolvable by WWID; health sampled, or the reason it is not; slabs on each disk vs the engine's report (`drive-slabs`, #58); system-data (this boot's assets, history for every sampled drive; skipped while not mounted, #64); `system-drives` (the designated drives listed and in the install's file, #66); card, placement (+304), feed, kube Drives, events, HBAs, `/metrics` (every drive by serial) |
 | `medium` | < 30 min | 404 envelope, malformed requests refused (400); reads with no or a bogus credential refused (`reads-need-a-credential`, #19); writes without a storage-admin refused (`writes-need-storage-admin`, #45); malformed worker jobs refused, dry run only (`worker-refusals`); join/format/destructive test **refused (409)** on a fleet or stormblock-held drive, which is left unchanged; DELETE refused while present; every handle resolves; designation and overcommit round-trips with events; a smoke test to a verdict; a read scan cancelled; topology, kube watch, placement by WWN; usage read from stormblock (#12/#14); shelves (`requires: [sas-shelf]`), NVMe wear (`requires: [nvme]`), monitor cost |
 | `long` | the night window | waves until the window ends: 4 + drives/8 API readers (4–64) and a smoke test on every idle, usable drive; p50/p95, errors, drives left busy, stuck or timed-out health reads, event growth. A wave slower than 2× the first (+250 ms), or leaving residue, fails |
 
@@ -901,7 +901,16 @@ one port for both (`src/tls.rs`):
   requested and verified against `api.client_ca_files` (the node CA), not
   required; one from another CA fails the handshake;
 - a plain-HTTP connection answers `/api/v1/health` and `/healthz` only
-  (stormd's liveness probe); anything else is 403 `tls_required`.
+  (stormd's liveness probe); anything else is 403 `tls_required`;
+- TLS offers `http/1.1` alone in ALPN (#119, #158): the server speaks no h2,
+  and offering it got a default `curl` (which prefers h2) a dropped
+  connection, which looked like no TLS at all;
+- `/api/v1/health` says what is served (#158): `tls: {cn, issuer,
+  not_after, sans, cert_file}` for the pair in force, or `tls: "none"` and
+  `tls_none: "<why>"` (the file is not there, or does not load), and
+  `plain_http: "health only"` or `"every read (allow_anonymous)"`. The log
+  says the same when a pair loads, and warns at start while there is none
+  or while `allow_anonymous` is on.
 
 **Reads** need one of: the admin token; a client certificate from the node
 CA (the node CA vouches, nothing more is asked); or a Kubernetes bearer the
@@ -1110,7 +1119,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 
 | Method and path | What |
 |---|---|
-| `GET /api/v1/health`, `/healthz` | `{status, version, node, writes, reads}` — liveness, how writes are decided, whether anonymous reads are served; the only paths open over plain HTTP |
+| `GET /api/v1/health`, `/healthz` | `{status, version, node, writes, reads, tls, plain_http}` (+ `tls_none` when no pair is served) — liveness, how writes are decided, whether anonymous reads are served, the serving certificate (#158); the only paths open over plain HTTP |
 | `GET /api/v1/summary` | stormd `RemoteSummary` card from cached state |
 | `GET /api/v1/monitor` | health-poll cost, stuck drives, last discovery pass |
 | `GET /metrics` | Prometheus text: per-drive SMART, temperature, wear, errors, last poll; shelf sensors; the poller (see below) |

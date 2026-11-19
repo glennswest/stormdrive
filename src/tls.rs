@@ -56,12 +56,54 @@ pub struct Peer {
     pub client: Option<ClientIdentity>,
 }
 
+/// What the served certificate says (#158): `/api/v1/health` and the log
+/// name it, so a node serving the wrong one (or none) is plain to see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertInfo {
+    pub cn: String,
+    pub issuer: String,
+    /// RFC 3339, UTC.
+    pub not_after: String,
+    /// Each DNS name and IP address it is good for.
+    pub sans: Vec<String>,
+}
+
+impl CertInfo {
+    /// The leaf of a PEM chain; None when it does not parse.
+    pub fn of(der: &[u8]) -> Option<Self> {
+        use x509_parser::extensions::GeneralName;
+        let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+        let cn = cert.subject().iter_common_name().find_map(|a| a.as_str().ok()).unwrap_or_default().to_string();
+        let issuer = cert.issuer().to_string();
+        let t = cert.validity().not_after.timestamp().max(0) as u64;
+        let mut sans = Vec::new();
+        if let Ok(Some(ext)) = cert.subject_alternative_name() {
+            for n in &ext.value.general_names {
+                match n {
+                    GeneralName::DNSName(d) => sans.push(d.to_string()),
+                    GeneralName::IPAddress(b) => match b.len() {
+                        4 => sans.push(std::net::Ipv4Addr::from(<[u8; 4]>::try_from(*b).ok()?).to_string()),
+                        16 => sans.push(std::net::Ipv6Addr::from(<[u8; 16]>::try_from(*b).ok()?).to_string()),
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
+        Some(Self { cn, issuer, not_after: crate::controller::rfc3339(t), sans })
+    }
+}
+
 /// The serving pair, re-read from its files when they change.
 #[derive(Debug)]
 pub struct ServingCert {
     cert_file: PathBuf,
     key_file: PathBuf,
     current: RwLock<Option<(SystemTime, SystemTime, Arc<CertifiedKey>)>>,
+    /// The pair in force, said in words.
+    info: RwLock<Option<CertInfo>>,
+    /// Why the files did not load, the last time they were tried.
+    error: RwLock<Option<String>>,
 }
 
 fn mtime(p: &Path) -> Option<SystemTime> {
@@ -70,15 +112,47 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 
 impl ServingCert {
     pub fn new(cert_file: PathBuf, key_file: PathBuf) -> Arc<Self> {
-        let me = Arc::new(Self { cert_file, key_file, current: RwLock::new(None) });
+        let me = Arc::new(Self { cert_file, key_file, current: RwLock::new(None), info: RwLock::new(None), error: RwLock::new(None) });
         if me.get().is_none() {
             tracing::warn!(
-                "no serving certificate at {} / {}: a TLS handshake fails, and plain HTTP answers health only, until there is one",
+                "NO TLS on :9092 yet: no serving certificate at {} / {} ({}): a TLS handshake fails until there is one",
                 me.cert_file.display(),
-                me.key_file.display()
+                me.key_file.display(),
+                me.reason()
             );
         }
         me
+    }
+
+    /// Why nothing is served: the load error, or the files not there.
+    fn reason(&self) -> String {
+        if let Some(e) = self.error.read().ok().and_then(|e| e.clone()) {
+            return e;
+        }
+        match (mtime(&self.cert_file), mtime(&self.key_file)) {
+            (None, _) => format!("{} is not there", self.cert_file.display()),
+            (_, None) => format!("{} is not there", self.key_file.display()),
+            _ => "not loaded".into(),
+        }
+    }
+
+    /// What `/api/v1/health` says under `tls` (#158): the certificate being
+    /// served, or `"none"` and, under `tls_none`, why.
+    pub fn describe(&self) -> (serde_json::Value, Option<String>) {
+        let served = self.get().is_some();
+        match self.info.read().ok().and_then(|i| i.clone()) {
+            Some(i) if served => (
+                serde_json::json!({
+                    "cn": i.cn,
+                    "issuer": i.issuer,
+                    "not_after": i.not_after,
+                    "sans": i.sans,
+                    "cert_file": self.cert_file.display().to_string(),
+                }),
+                None,
+            ),
+            _ => (serde_json::json!("none"), Some(self.reason())),
+        }
     }
 
     /// The pair in force: the one loaded, or the files again when they
@@ -94,12 +168,26 @@ impl ServingCert {
         }
         match load_pair(&self.cert_file, &self.key_file) {
             Ok(ck) => {
-                tracing::info!("serving certificate loaded from {}", self.cert_file.display());
+                let info = ck.cert.first().and_then(|leaf| CertInfo::of(leaf.as_ref()));
+                match &info {
+                    Some(i) => tracing::info!(
+                        cn = %i.cn,
+                        issuer = %i.issuer,
+                        not_after = %i.not_after,
+                        sans = %i.sans.join(","),
+                        "serving TLS on :9092 with {}",
+                        self.cert_file.display()
+                    ),
+                    None => tracing::info!("serving TLS on :9092 with {}", self.cert_file.display()),
+                }
                 *self.current.write().ok()? = Some((cm, km, ck.clone()));
+                *self.info.write().ok()? = info;
+                *self.error.write().ok()? = None;
                 Some(ck)
             }
             Err(e) => {
                 tracing::warn!("serving certificate {}: {e:#}", self.cert_file.display());
+                *self.error.write().ok()? = Some(format!("{e:#}"));
                 self.current.read().ok()?.as_ref().map(|c| c.2.clone())
             }
         }
@@ -159,7 +247,10 @@ pub fn server_config(cert: Arc<ServingCert>, client_cas: &[PathBuf]) -> Result<A
         builder.with_client_cert_verifier(verifier)
     };
     let mut config = builder.with_cert_resolver(cert);
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    // HTTP/1.1 only (#119, #158): the server speaks no h2, and offering it
+    // made a default client (curl, anything that prefers h2) take it and get
+    // its connection dropped — which read as "no TLS on :9092".
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }
 
