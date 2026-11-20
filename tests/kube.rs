@@ -10,6 +10,8 @@
 //! - DrivePolicies (#50) the same way, plus one with a spec that could hurt
 //!   (Invalid), one for another node and one whose nodeSelector this node's
 //!   labels do not match (both untouched).
+//! - CardOperations (#166) the same way: unstamped, bob, alice (naming a card
+//!   this node does not have), another node's.
 
 use std::collections::HashMap;
 use std::net::TcpListener;
@@ -78,6 +80,23 @@ async fn operations() -> Json<Value> {
     ] }))
 }
 
+fn card_op(name: &str, node: &str, requester: Option<(&str, &str)>) -> Value {
+    let mut o = op(name, node, requester);
+    o["kind"] = json!("CardOperation");
+    o["spec"] = json!({ "node": node, "card": "forge1-0000-01-00-0", "op": "flash", "region": "firmware",
+        "image": { "name": "hba330.bin", "sha256": "ab".repeat(32), "source": "https://example.invalid/hba330.bin" } });
+    o
+}
+
+async fn card_operations() -> Json<Value> {
+    Json(json!({ "kind": "CardOperationList", "items": [
+        card_op("cop-unstamped", "harness-node", None),
+        card_op("cop-bob", "harness-node", Some(("bob", "system:authenticated"))),
+        card_op("cop-alice", "harness-node", Some(("alice", "storage-admins,system:authenticated"))),
+        card_op("cop-elsewhere", "other-node", Some(("alice", "storage-admins"))),
+    ] }))
+}
+
 fn policy(name: &str, spec: Value, requester: Option<(&str, &str)>) -> Value {
     let mut meta = json!({ "name": name, "uid": format!("uid-{name}"), "generation": 2 });
     if let Some((u, g)) = requester {
@@ -124,6 +143,9 @@ async fn stub() -> (String, S) {
         .route("/apis/storage.storm.io/v1/drives", get(|| async { Json(json!({ "items": [] })) }))
         .route("/apis/storage.storm.io/v1/driveoperations", get(operations))
         .route("/apis/storage.storm.io/v1/driveoperations/{name}/status", patch(op_status))
+        .route("/apis/storage.storm.io/v1/cardoperations", get(card_operations))
+        .route("/apis/storage.storm.io/v1/cardoperations/{name}/status", patch(op_status))
+        .route("/apis/storage.storm.io/v1/hostbusadapters", get(|| async { Json(json!({ "items": [] })) }))
         .route("/apis/storage.storm.io/v1/drivepolicies", get(policies))
         .route("/apis/storage.storm.io/v1/drivepolicies/{name}/status", patch(policy_status))
         .route("/api/v1/nodes/harness-node", get(|| async { Json(json!({ "metadata": { "name": "harness-node", "labels": { "storm.io/storage-tier": "cool" } } })) }))
@@ -280,6 +302,34 @@ async fn writes_and_operations_are_decided_by_the_apiserver() {
         let s = seen.lock().unwrap();
         assert!(s.events.iter().any(|e| e["involvedObject"]["kind"] == "DrivePolicy" && e["involvedObject"]["name"] == "pol-bob" && e["reason"] == "Refused"));
         assert!(s.events.iter().any(|e| e["involvedObject"]["name"] == "pol-invalid" && e["reason"] == "Invalid"));
+    }
+
+    // The CardOperations (#166).
+    let mut statuses = HashMap::new();
+    for _ in 0..100 {
+        statuses = seen.lock().unwrap().status.clone();
+        if ["cop-unstamped", "cop-bob", "cop-alice"].iter().all(|n| statuses.contains_key(*n)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let cp = |n: &str| (statuses[n]["phase"].as_str().unwrap_or("").to_string(), statuses[n]["message"].as_str().unwrap_or("").to_string());
+    let (p, m) = cp("cop-unstamped");
+    assert_eq!(p, "Refused");
+    assert!(m.contains("no requester stamped"), "{m}");
+    let (p, m) = cp("cop-bob");
+    assert_eq!(p, "Refused");
+    assert!(m.contains("bob may no longer create cardoperations"), "{m}");
+    let (p, m) = cp("cop-alice");
+    assert_eq!(p, "Refused", "alice passes the re-check; the node has no such card");
+    assert!(m.contains("no SAS card forge1-0000-01-00-0 on harness-node"), "{m}");
+    assert_eq!(statuses["cop-alice"]["requester"], "kubernetes:alice");
+    assert_eq!(statuses["cop-alice"]["observedGeneration"], 1);
+    assert!(!statuses.contains_key("cop-elsewhere"), "another node's operation is not ours");
+    {
+        let s = seen.lock().unwrap();
+        assert!(s.events.iter().any(|e| e["involvedObject"]["kind"] == "CardOperation" && e["involvedObject"]["name"] == "cop-bob" && e["reason"] == "Refused"));
+        assert!(s.reviews.iter().any(|r| r["spec"]["resourceAttributes"]["resource"] == "cardoperations" && r["spec"]["user"] == "alice"));
     }
 
     let audit = std::fs::read_to_string(d.dir.join("audit.log")).unwrap();
