@@ -578,6 +578,15 @@ impl Region {
             Region::FirmwareBackup | Region::Manufacturing => None,
         }
     }
+    /// In a sentence: `firmware`, `BIOS`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Region::Firmware => "firmware",
+            Region::Bios => "BIOS",
+            Region::FirmwareBackup => "backup firmware",
+            Region::Manufacturing => "manufacturing",
+        }
+    }
     pub fn as_str(self) -> &'static str {
         match self {
             Region::Firmware => "firmware",
@@ -1014,7 +1023,7 @@ pub mod fake {
             let mut s = self.0.lock().unwrap();
             s.resets += 1;
             // The card now runs what is in its flash.
-            if let Some(h) = s.flash.get(&0x01).and_then(|b| parse_fw_header(b)) {
+            if let Some(h) = s.flash.get(&0x01).map(Vec::as_slice).and_then(parse_fw_header) {
                 s.info.firmware_version = h.fw_version;
                 if let Some(f) = s.facts.as_mut() {
                     f[0x20..0x24].copy_from_slice(&h.fw_version.to_le_bytes());
@@ -1116,11 +1125,11 @@ pub mod fake {
         dev[0x0C..0x14].copy_from_slice(&0x5000_cca2_5e8b_1c11u64.to_le_bytes());
         dev[0x16] = 1;
         dev[0x18..0x1A].copy_from_slice(&0x0009u16.to_le_bytes());
-        dev[0x1C..0x20].copy_from_slice(&(0x401u32).to_le_bytes());
+        dev[0x1C..0x20].copy_from_slice(&0x401u32.to_le_bytes());
         dev[0x20..0x22].copy_from_slice(&1u16.to_le_bytes());
         s.pages.insert((PAGETYPE_EXTENDED, EXTPAGE_SAS_DEVICE, 0, 9), dev);
         let mut enc = vec![0u8; 0x24];
-        enc[0x0C..0x14].copy_from_slice(&0x500605b0_0c8e_1200u64.to_le_bytes());
+        enc[0x0C..0x14].copy_from_slice(&0x5006_05b0_0c8e_1200u64.to_le_bytes());
         enc[0x16..0x18].copy_from_slice(&1u16.to_le_bytes());
         enc[0x18..0x1A].copy_from_slice(&8u16.to_le_bytes());
         s.pages.insert((PAGETYPE_EXTENDED, EXTPAGE_ENCLOSURE, 0, 1), enc);
@@ -1137,12 +1146,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ioctl_numbers_match_the_driver() {
-        // _IOWR('L', 20, 72), _IOWR('L', 17, 92), _IOWR('L', 24, 12).
-        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
-        {
-            assert_eq!((3u64 << 30) | (72 << 16) | (0x4C << 8) | 20, 0xC048_4C14);
-        }
+    fn iocinfo_is_parsed_at_the_driver_offsets() {
         let mut b = vec![0u8; 92];
         b[12] = 6;
         b[40..44].copy_from_slice(&0x1000_0100u32.to_le_bytes());
@@ -1195,11 +1199,11 @@ mod tests {
         let set = parse_sas_io_unit1(&ext_page(&c, 0, EXTPAGE_SAS_IO_UNIT, 1, 0).unwrap().unwrap());
         assert_eq!(set[2], (0xA, 0x8, false));
         assert_eq!(set[1], (0xB, 0x8, false));
-        let devs: Vec<Device> = walk(&c, 0, EXTPAGE_SAS_DEVICE, 0x18).unwrap().iter().map(|p| parse_sas_device0(p)).collect();
+        let devs: Vec<Device> = walk(&c, 0, EXTPAGE_SAS_DEVICE, 0x18).unwrap().iter().map(Vec::as_slice).map(parse_sas_device0).collect();
         assert_eq!(devs.len(), 1);
         assert_eq!((devs[0].kind(), devs[0].slot, devs[0].present(), devs[0].access()), ("SAS drive", 1, true, None));
-        let encs: Vec<Enclosure> = walk(&c, 0, EXTPAGE_ENCLOSURE, 0x16).unwrap().iter().map(|p| parse_enclosure0(p)).collect();
-        assert_eq!((encs[0].logical_id, encs[0].num_slots), (0x500605b0_0c8e_1200, 8));
+        let encs: Vec<Enclosure> = walk(&c, 0, EXTPAGE_ENCLOSURE, 0x16).unwrap().iter().map(Vec::as_slice).map(parse_enclosure0).collect();
+        assert_eq!((encs[0].logical_id, encs[0].num_slots), (0x5006_05b0_0c8e_1200, 8));
         // A page the card does not keep.
         assert_eq!(page(&c, 0, PAGETYPE_MANUFACTURING, 0, 7, 0).unwrap(), None);
     }

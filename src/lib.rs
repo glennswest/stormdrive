@@ -12,6 +12,7 @@
 pub mod api;
 pub mod assets;
 pub mod bays;
+pub mod card;
 pub mod components;
 pub mod config;
 pub mod contents;
@@ -41,6 +42,7 @@ pub mod megaraid;
 pub mod membership;
 pub mod metrics;
 pub mod monitor;
+pub mod mpt;
 pub mod pages;
 pub mod placement;
 pub mod pi;
