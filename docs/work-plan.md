@@ -2214,15 +2214,19 @@ drive side is done here too, with stormblock's rules: only raise, capped at
 the hardware maximum, the changeable mask checked, SP when the page is
 savable (PS), read back; then the facing phy, a link reset either way.
 
-- [ ] link.rs: MODE SENSE(10) 0x19/1 (current + changeable) → per-phy
+- [x] link.rs: MODE SENSE(10) 0x19/1 (current + changeable) → per-phy
   programmed/hardware min/max; LinkState `programmedMax`, `hardwareMax`,
   `programmedChangeable`, `drivePhys`, `driveLimit` ("6 of 12 Gbit
   (drive-programmed)").
-- [ ] the MODE SELECT list (PS cleared, byte 33 high nibble only) + set,
+- [x] the MODE SELECT list (PS cleared, byte 33 high nibble only) + set,
   refused by name when not changeable, with the sense when refused.
-- [ ] `apply` raises the drive's side first, then the phy (reset forced
+- [x] `apply` raises the drive's side first, then the phy (reset forced
   when the drive changed); `spec.linkRate` and the new step use it.
-- [ ] worker Step `link_rate {rate: 12|"hw"}`: runs where `details` runs
+- [x] worker Step `link_rate {rate: 12|"hw"}`: runs where `details` runs
   (fleet drives too, like spec.linkRate); says what negotiated after.
-- [ ] CRD, README, architecture, changelog; tests on bay 3's bytes.
-- [ ] sc-build; image; shipped with the proof on forge1.
+- [x] CRD, README, architecture, changelog; tests on bay 3's bytes.
+- [x] sc-build passed on 25639bb (v0.55.0: build, 436 lib tests + the
+  integration suites) and clippy -D warnings on 2dfccc5 (the first clippy run
+  found 4 test lints, #165, closed by the rerun); image requested.
+- [ ] proof on forge1: bay 3's Drive shows `hardwareMax` 12000 (the read);
+  raising it is a DriveOperation `link_rate` the owner runs on bay 3.
