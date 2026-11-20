@@ -2258,21 +2258,24 @@ sdparm `sdparm_data.c`, smp_utils `smp_discover.c` decode_phy_cap):
   is its own follow-up issue.
 
 Plan (option 1):
-- [ ] `ssc.rs`: parse 0x19/3 (per phy: programmed/current/attached caps,
+- [x] `ssc.rs`: parse 0x19/3 (per phy: programmed/current/attached caps,
   negotiated SSC + rate; descriptors stepped by their length), the
   changeable mask, the plan (`off`: every with-SSC bit cleared, its rate's
   without-SSC bit set so no rate is lost; `on`: with-SSC set on every
   enabled rate; `default`: the prior word put back), MODE SELECT (SP when
   savable), read back; then the facing phy's link reset and what negotiated.
-- [ ] Read on every health sample (beside 0x19/1) → `status.link.ssc`: the
+- [x] Read on every health sample (beside 0x19/1) → `status.link.ssc`: the
   drive's setting in words, settable or why not, negotiated SSC, the
   attached (card/expander) phy's advertised SSC, policy, prior.
-- [ ] Controller: `spec.spreadSpectrum: on|off|default`, applied once per
+- [x] Controller: `spec.spreadSpectrum: on|off|default`, applied once per
   daemon run and on change, as `spec.linkRate`; Events; the prior kept on
   the object (status.link.ssc.prior, seeded back at start) so `default` is
   exact.
-- [ ] CRD, README, architecture, changelog; tests on built pages.
-- [ ] sc-build, image; proof on forge1: bay 1's Drive shows
+- [x] CRD, README, architecture, changelog; tests on built pages.
+- [x] sc-build passed on ad65f7e (build, clippy -D warnings, 457 lib
+  tests + the suites; the first run's two clippy `type_complexity` fixed)
+  and on 4abbeb6 (v0.57.0); image build c2e73148ae45 requested; shipped.
+- [ ] proof on forge1: bay 1's Drive shows
   `status.link.ssc` (the read); `off` on bay 1 is the owner's to set, and
   the counters over a day are the measurement (#164 body).
 
