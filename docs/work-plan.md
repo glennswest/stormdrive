@@ -2263,30 +2263,33 @@ on forge1's HBA330), redone here with IOC Facts, FW upload/download and the
 reset. Sources: Linux `drivers/scsi/mpt3sas/` (mpi2_ioc.h, mpi2_cnfg.h,
 mpi2_image.h, mpt3sas_ctl.[ch]).
 
-- **Paused 2026-11-19 for P0 #91 (stormcentral).** State: `src/mpt.rs` is
-  written and pushed (WIP) but **not yet in `src/lib.rs`, never compiled**:
-  next session adds `pub mod mpt;`, runs sc-build, fixes what it finds, then
-  card.rs. Kernel headers used are in `tmp/ref/` (not committed; refetch from
-  torvalds/linux `drivers/scsi/mpt3sas/`).
-- [ ] mpt.rs: a `Port` (the ioctls) behind every request so a fake card runs
+- [x] mpt.rs: a `Port` (the ioctls) behind every request so a fake card runs
   the same code: IOC Facts, standard + extended config pages (Manufacturing
   0, IO Unit 0, BIOS 3, SAS IO Unit 0/1, SAS Device 0, Enclosure 0), FW
   upload (size, then chunks), FW download (MPI2.5 frame; MPI2.0's
   transaction-context SGE), hard reset; image headers (MPI2/2.6 FW, PCI
   option ROM chain: legacy BIOS / UEFI).
-- [ ] card.rs: a card's report (identity, phys with negotiated + programmed
+- [x] card.rs: a card's report (identity, phys with negotiated + programmed
   max/min, devices joined to Drives, enclosures to Shelves, firmware images
   present with size, sha256, version) → the HostBusAdapter object.
-- [ ] flash: image from the store, sha256 = spec's, source given (the
+- [x] flash: image from the store, sha256 = spec's, source given (the
   golden record); header matches the card (vendor/product); refused when a
   drive on the card holds the system half unless the Node is cordoned;
   download, read back and compare, wait for the card's in-flight I/O to
   drain, reset, read the versions again; before/after on the op and object.
-- [ ] CRDs HostBusAdapter (`hba`) + CardOperation (`cop`), controller, RBAC.
-- [ ] tests: the fake MPT device (facts, pages, upload, download, reset).
-- [ ] item 3 (settings write through SAS IO Unit Page 1) filed apart: its
+- [x] CRDs HostBusAdapter (`hba`) + CardOperation (`cop`), controller, RBAC.
+- [x] tests: the fake MPT device (facts, pages, upload, download, reset).
+- [x] item 3 (settings write through SAS IO Unit Page 1) filed apart: its
   users (#163 step-down, #164 SSC) are not built, and #164 found no SSC bit
   in the public pages.
+- [x] Guard choices: "maintenance" = the Node cordoned (`spec.unschedulable`;
+  stormcos defines no other); "recorded as a golden" = the store file's
+  sha256 equals the op's and `source` is the URL (no golden registry for
+  firmware yet: compliance-ops#23, #80).
+- [x] Follow-ups: #167 (settings write, after #163), stormcos#1242 (ship the
+  CRDs + role), sc#156 (the flash verb); stormconsole#376 is the console.
+- [x] sc-build on 81ef1d2 / 9087ae8 (453 lib tests incl. the 17 new); clippy
+  found one lint (#168), fixed.
 - [ ] proof on forge1: the HBA330's HostBusAdapter; a same-version flash.
 
 ### #91: API health probes in the registry (2026-11-19) — P0
