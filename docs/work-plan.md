@@ -2200,3 +2200,29 @@ other drive on such a node. A bare or kinds-only policy is still refused.
 - [x] CRD description, example (`blades-ssd-fast` without nodes), README/docs.
 - [x] Unit tests; sc-build (build, test, clippy -D warnings) passed on e474224;
   image requested; answered on #162 and stormcos#1039 (copy the CRD again).
+
+### #159: the drive's own link limits (mode page 0x19/1) + DriveOperation link_rate (2026-11-19) — P2
+
+The master's ask on #149: `status.link` carries the drive's programmed and
+hardware maximum from mode page 0x19 subpage 1 (forge1 bay 3's EMC HITACHI:
+hardware 12 Gbit, programmed 6, changeable), and a DriveOperation
+`linkRate: 12|hw` sets it. stormblock#646 (v24.23.0, 849a5dc2) built the
+same read and set, but only as its CLI (`hba linkrate`) and install-config
+(`storage.drives[].linkRate`): there is no REST route to drive it from here.
+stormdrive already writes the facing phy for `spec.linkRate` (#149), so the
+drive side is done here too, with stormblock's rules: only raise, capped at
+the hardware maximum, the changeable mask checked, SP when the page is
+savable (PS), read back; then the facing phy, a link reset either way.
+
+- [ ] link.rs: MODE SENSE(10) 0x19/1 (current + changeable) → per-phy
+  programmed/hardware min/max; LinkState `programmedMax`, `hardwareMax`,
+  `programmedChangeable`, `drivePhys`, `driveLimit` ("6 of 12 Gbit
+  (drive-programmed)").
+- [ ] the MODE SELECT list (PS cleared, byte 33 high nibble only) + set,
+  refused by name when not changeable, with the sense when refused.
+- [ ] `apply` raises the drive's side first, then the phy (reset forced
+  when the drive changed); `spec.linkRate` and the new step use it.
+- [ ] worker Step `link_rate {rate: 12|"hw"}`: runs where `details` runs
+  (fleet drives too, like spec.linkRate); says what negotiated after.
+- [ ] CRD, README, architecture, changelog; tests on bay 3's bytes.
+- [ ] sc-build; image; shipped with the proof on forge1.
