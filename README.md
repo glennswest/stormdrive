@@ -1011,6 +1011,22 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   set by `spec.linkRate` or a DriveOperation `link_rate` raises the drive's
   programmed maximum first when it is below (capped at its hardware; never
   lowered: holding a link lower is the phy's job), then the phy.
+  Spread spectrum (#164): `status.link.ssc` reads the drive's enhanced phy
+  control page (0x19/3) on every sample — `drive` (what its linked phy
+  offers: `on`, `off`, `partial`), `negotiated` (what the link runs),
+  `attached` (what the HBA's or expander's phy offered: the card's side,
+  reported only; MPI2 has no SSC control), `settable` (or a `reason`) and
+  `message` (`link 12 Gbit with SSC; drive offers SSC on; attached phy
+  offers SSC on`). Set `spec.spreadSpectrum: off` where emissions do not
+  matter to get link margin back before stepping the rate down: the
+  drive's phys stop offering SSC (every rate kept, without SSC; MODE
+  SELECT, saved when the page is savable), the facing phys' link resets,
+  and speed negotiation runs the link without SSC whatever the card
+  offers. `on` offers it on every rate; `default` puts back what the drive
+  offered before stormdrive first changed it (`status.link.ssc.prior`, kept
+  on the object). On every boot, an Event each time (`SpreadSpectrumSet`,
+  `SpreadSpectrumFailed`, `SpreadSpectrumInvalid`); a drive that does not
+  mark the bits changeable is refused by name.
 - **`DriveOperation`**: a drive-worker job as an object (`node`, `select`,
   `steps`, `destroy`, `dryRun`, `resume`) — see
   `deploy/driveoperation.example.yaml`. Only storage-admin can create one.

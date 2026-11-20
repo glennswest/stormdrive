@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-20
+- **feat:** #164 `spec.spreadSpectrum: on|off|default` on the Drive object: the drive's phys offer SSC or not (mode page 0x19/3, every rate kept, saved when savable), the facing phys' link resets; `status.link.ssc` reads the drive's offer, what the link negotiated and what the HBA/expander phy offered (reported only: MPI2 has no SSC control), with the prior kept on the object so `default` is exact; CRD, README, architecture
 - **docs:** #91 the master set `apis` (drives, shelves) on stormdrive's registry entry; checked in `component export`; image requested, shipped with the node's API health snapshot as the proof
 
 ### 2026-11-19

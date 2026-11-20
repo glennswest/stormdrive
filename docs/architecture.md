@@ -705,6 +705,26 @@ climbing about 500 a minute at 12 Gbit — and nobody read the counter.
   words (`6 of 12 Gbit (drive-programmed)`). A drive programmed below its
   hardware is a WARN and an event once per run (forge1 bay 3's EMC
   HITACHI: hardware 12, programmed 6 — no host setting raises that).
+- **Spread spectrum** (#164, `ssc.rs`). With 0x19/1 the collector reads
+  subpage 3 (enhanced phy control, current and changeable): per phy
+  descriptor (stepped by its length, 20 bytes in SPL-4) the programmed,
+  current and attached SNW-3 phy capabilities (bytes 4/8/12; G1..G5 at
+  bits 23:14, a without-SSC and a with-SSC bit per rate) and the
+  negotiated SSC bit beside the negotiated rate (byte 18). SNW-3 settles
+  SSC from both phys' offers, so the drive offering none gives a link
+  without SSC; the negotiated bit measures it. The card's SSC lives in
+  vendor NVDATA (no MPI2 config page has it), so its side is the attached
+  capabilities, reported. `spec.spreadSpectrum` (`controller::
+  spread_spectrum`, once per run and on change, as `spec.linkRate`):
+  `ssc::plan` copies the page, PS cleared, and rewrites only the
+  programmed words — `off` moves each with-SSC rate to without, `on` adds
+  with-SSC to each offered rate, `default` writes the prior back — refused
+  when a changing bit is outside the changeable mask; SP when savable,
+  read back, then `link::reset_host` on the facing phys and the
+  renegotiated link read (up to 15 s). The prior (each phy's word before
+  the first change) is kept in `status.link.ssc.prior` and read back from
+  the object at start; `default` clears it (`prior: null`, since the status
+  is merge-patched).
 - **Setting it** (`link::set`, for `spec.linkRate` and the DriveOperation
   step `link_rate`): the drive's side first — `plan_select` builds the
   MODE SELECT(10) list from the page as the drive gave it, PS cleared and

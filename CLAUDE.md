@@ -93,6 +93,8 @@ src/
   link.rs         the SAS link, both sides (log page 0x18 counters + the facing
                   sysfs phy): rates, level, recommendation, spec.linkRate (#149);
                   the drive's own limits (mode page 0x19/1) and raising them (#159)
+  ssc.rs          spread spectrum on the drive's phys: mode page 0x19/3
+                  (offered, attached, negotiated SSC), spec.spreadSpectrum (#164)
   bays.rs         `[[bay_map]]`: a platform's physical bay numbering over a
                   controller's slots (#134)
   inuse.rs        what a drive is used for (system/data/raid/mounted/free) and
