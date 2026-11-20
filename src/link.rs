@@ -23,6 +23,15 @@
 //! phy resets moving two samples running). [`recommendation`] names the
 //! likely part. `spec.linkRate` on the Drive object holds the facing phy at
 //! a rate ([`apply`]); nothing here ever sets one by itself.
+//!
+//! The drive's own limits (#159, stormblock#646): its phy control and
+//! discover mode subpage (0x19/1) says, per phy, the minimum and maximum
+//! rate its firmware programs and what its hardware can. forge1 bay 3's
+//! EMC-firmware HITACHI programs 6 Gbit on 12 Gbit hardware, so it
+//! negotiated 6 on a 12 Gbit HBA phy and no host setting could raise it.
+//! [`set`] (`spec.linkRate`, a DriveOperation `link_rate`) raises the
+//! drive's programmed maximum first when it is below the asked rate
+//! ([`plan_select`]), then holds the facing phy and resets the link.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -110,6 +119,162 @@ pub struct Reading {
     /// The facing sysfs phys; empty when there is no SAS transport.
     pub host: Vec<Phy>,
     pub host_rates: HostRates,
+    /// Mode page 0x19/1 (#159); None when not read.
+    pub drive_limits: Option<DriveLimits>,
+}
+
+/// SPL's phy control and discover subpage of the protocol-specific port
+/// mode page.
+pub const MODE_PHY_CONTROL: u8 = 0x19;
+pub const MODE_PHY_CONTROL_SUB: u8 = 0x01;
+/// The first phy descriptor in subpage 0x19/1, and each one's size.
+const PHY_DESC_AT: usize = 8;
+const PHY_DESC_LEN: usize = 48;
+
+/// One phy's rates from mode page 0x19/1, Mb/s (None: no rate, a code
+/// SPL does not name).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhyLimits {
+    pub phy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub negotiated_mbps: Option<u32>,
+    pub programmed_min_mbps: Option<u32>,
+    pub programmed_max_mbps: Option<u32>,
+    pub hardware_min_mbps: Option<u32>,
+    pub hardware_max_mbps: Option<u32>,
+}
+
+/// The drive's own link limits: every phy's, whether MODE SELECT may change
+/// the programmed maximum (the changeable mask; None when it was not read),
+/// and whether the page is savable (PS).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DriveLimits {
+    pub phys: Vec<PhyLimits>,
+    pub changeable: Option<bool>,
+    pub savable: bool,
+}
+
+impl DriveLimits {
+    /// The phy that carries the link (a negotiated rate), else the first.
+    pub fn main(&self) -> Option<&PhyLimits> {
+        self.phys.iter().find(|p| p.negotiated_mbps.is_some()).or_else(|| self.phys.first())
+    }
+}
+
+/// Every phy of subpage 0x19/1, the page from its first byte (SPF header:
+/// page, subpage, 2-byte length; protocol at 5, phys at 7; per 48-byte
+/// descriptor: phy id at 1, negotiated rate at 5, programmed/hardware
+/// minimum at 32 and maximum at 33, high/low nibble). Empty for another
+/// page or protocol.
+pub fn parse_phy_control(p: &[u8]) -> Vec<PhyLimits> {
+    if p.len() < PHY_DESC_AT || p[0] & 0x3f != MODE_PHY_CONTROL || p[0] & 0x40 == 0 || p[1] != MODE_PHY_CONTROL_SUB || p[5] & 0x0f != PROTOCOL_SAS {
+        return Vec::new();
+    }
+    (0..usize::from(p[7]))
+        .map_while(|i| p.get(PHY_DESC_AT + i * PHY_DESC_LEN..PHY_DESC_AT + (i + 1) * PHY_DESC_LEN))
+        .map(|d| PhyLimits {
+            phy: d[1].to_string(),
+            negotiated_mbps: rate_code(d[5] & 0x0f),
+            programmed_min_mbps: rate_code(d[32] >> 4),
+            hardware_min_mbps: rate_code(d[32] & 0x0f),
+            programmed_max_mbps: rate_code(d[33] >> 4),
+            hardware_max_mbps: rate_code(d[33] & 0x0f),
+        })
+        .collect()
+}
+
+/// The limits from the current page and, when read, the changeable one: the
+/// programmed maximum is changeable when every phy's mask has its high
+/// nibble set.
+pub fn limits(current: &[u8], changeable: Option<&[u8]>) -> Option<DriveLimits> {
+    let phys = parse_phy_control(current);
+    if phys.is_empty() {
+        return None;
+    }
+    let changeable = changeable.map(|c| (0..phys.len()).all(|i| c.get(PHY_DESC_AT + i * PHY_DESC_LEN + 33).is_some_and(|m| m & 0xf0 == 0xf0)));
+    Some(DriveLimits { phys, changeable, savable: current[0] & 0x80 != 0 })
+}
+
+/// The rate each phy is to be programmed to: `Max(m)` raises a phy
+/// programmed below `m` to `m`, capped at its hardware maximum (a drive
+/// that already programs at least that is left: holding a link lower is
+/// the facing phy's job); `Hw` puts every phy back to its hardware maximum.
+fn target(p: &PhyLimits, want: Wanted) -> Option<u32> {
+    let hw = p.hardware_max_mbps?;
+    let cur = p.programmed_max_mbps;
+    match want {
+        Wanted::Max(m) => {
+            let t = m.min(hw);
+            match cur {
+                Some(c) if c >= t => None,
+                _ => Some(t),
+            }
+        }
+        Wanted::Hw => (cur != Some(hw)).then_some(hw),
+    }
+}
+
+/// SPL's rate code of a rate in Mb/s.
+fn code_of(mbps: u32) -> Option<u8> {
+    (0x8..=0xc).find(|c| rate_code(*c) == Some(mbps))
+}
+
+/// The MODE SELECT(10) parameter list that programs the drive's maximum for
+/// `want`, or None when no phy needs it: an 8-byte header with no block
+/// descriptor, then the page as the drive gave it with PS cleared and only
+/// the programmed maximum (byte 33's high nibble) changed — every other
+/// field the current value, as SPC asks. Refused by name when the drive
+/// does not mark the programmed maximum changeable.
+pub fn plan_select(page: &[u8], changeable: Option<&[u8]>, want: Wanted) -> Result<Option<Vec<u8>>, String> {
+    let l = limits(page, changeable).ok_or("mode page 0x19/1 lists no SAS phy")?;
+    let targets: Vec<Option<u32>> = l.phys.iter().map(|p| target(p, want)).collect();
+    if targets.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    if l.changeable != Some(true) {
+        let mask = changeable.and_then(|c| c.get(PHY_DESC_AT + 33)).map_or("not read".to_string(), |m| format!("0x{m:02x}"));
+        return Err(format!("the drive does not let its programmed maximum be changed (changeable mask {mask})"));
+    }
+    let mut p = page.to_vec();
+    p[0] &= 0x7f;
+    for (i, t) in targets.iter().enumerate() {
+        let at = PHY_DESC_AT + i * PHY_DESC_LEN + 33;
+        if let Some(code) = t.and_then(code_of) {
+            p[at] = (code << 4) | (p[at] & 0x0f);
+        }
+    }
+    let mut list = vec![0u8; 8];
+    list.extend(p);
+    Ok(Some(list))
+}
+
+/// "6 of 12 Gbit (drive-programmed)" when the drive programs below its
+/// hardware (the rate it runs at, of what it could); "drive programmed 12
+/// Gbit (hardware 12 Gbit)" otherwise.
+pub fn limit_said(l: &DriveLimits, negotiated: Option<u32>) -> Option<String> {
+    let p = l.main()?;
+    let (prog, hw) = (p.programmed_max_mbps?, p.hardware_max_mbps?);
+    Some(if prog < hw {
+        let run = negotiated.or(p.negotiated_mbps).unwrap_or(prog).min(prog);
+        format!("{} of {} (drive-programmed)", num(run), gbit(hw))
+    } else {
+        format!("drive programmed {} (hardware {})", gbit(prog), gbit(hw))
+    })
+}
+
+/// "the drive programs 6 Gbit (hardware 12 Gbit)" when its linked phy is
+/// programmed below what its hardware can.
+pub fn programmed_below(st: &LinkState) -> Option<String> {
+    match (st.programmed_max, st.hardware_max) {
+        (Some(p), Some(h)) if p < h => Some(format!("the drive programs {} (hardware {})", gbit(p), gbit(h))),
+        _ => None,
+    }
+}
+
+/// "6", "1.5".
+fn num(mbps: u32) -> String {
+    format!("{}", f64::from(mbps) / 1000.0)
 }
 
 impl Reading {
@@ -180,6 +345,22 @@ pub struct LinkState {
     pub host_maximum_mbps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_maximum_hw_mbps: Option<u32>,
+    /// The drive's own maximum, Mb/s (mode page 0x19/1, the linked phy,
+    /// #159): what its firmware programs, and what its hardware can.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub programmed_max: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hardware_max: Option<u32>,
+    /// MODE SELECT may change the programmed maximum (every phy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub programmed_changeable: Option<bool>,
+    /// Every phy's limits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drive_limits: Option<Vec<PhyLimits>>,
+    /// "6 of 12 Gbit (drive-programmed)", "drive programmed 12 Gbit
+    /// (hardware 12 Gbit)".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drive_limit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drive: Option<Side>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -280,6 +461,24 @@ impl Wanted {
             Wanted::Max(m) => gbit(m),
             Wanted::Hw => "hw".into(),
         }
+    }
+}
+
+/// A DriveOperation's `rate` (#159): 12 (Gbit), 1.5, or "hw".
+impl Serialize for Wanted {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Wanted::Max(m) if (m / 1000) * 1000 == *m => s.serialize_u32(m / 1000),
+            Wanted::Max(m) => s.serialize_f64(f64::from(*m) / 1000.0),
+            Wanted::Hw => s.serialize_str("hw"),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Wanted {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        parse_wanted(&v).map_err(serde::de::Error::custom)?.ok_or_else(|| serde::de::Error::custom("linkRate: a rate in Gbit (1.5, 3, 6, 12, 22.5) or \"hw\""))
     }
 }
 
@@ -419,6 +618,8 @@ pub fn step(prev: Option<&LinkState>, r: &Reading, now: u64) -> LinkState {
         _ => words.join("; "),
     };
     let drive_rate = r.drive.as_ref().and_then(|p| p.iter().filter_map(|x| x.rate_mbps).max());
+    let negotiated = r.host_rates.negotiated.or(drive_rate);
+    let main = r.drive_limits.as_ref().and_then(DriveLimits::main);
     LinkState {
         at: now,
         level,
@@ -426,9 +627,14 @@ pub fn step(prev: Option<&LinkState>, r: &Reading, now: u64) -> LinkState {
         streak,
         sync_streak,
         host_phy: (!r.host.is_empty()).then(|| r.host.iter().map(|p| p.phy.as_str()).collect::<Vec<_>>().join(",")),
-        negotiated_mbps: r.host_rates.negotiated.or(drive_rate),
+        negotiated_mbps: negotiated,
         host_maximum_mbps: r.host_rates.maximum,
         host_maximum_hw_mbps: r.host_rates.maximum_hw,
+        programmed_max: main.and_then(|p| p.programmed_max_mbps),
+        hardware_max: main.and_then(|p| p.hardware_max_mbps),
+        programmed_changeable: r.drive_limits.as_ref().and_then(|l| l.changeable),
+        drive_limits: r.drive_limits.as_ref().map(|l| l.phys.clone()),
+        drive_limit: r.drive_limits.as_ref().and_then(|l| limit_said(l, negotiated)),
         drive,
         host,
         message,
@@ -613,6 +819,12 @@ pub fn read_host(sys: &std::path::Path, name: &str) -> (Vec<Phy>, HostRates) {
 /// reset so it renegotiates), as `stormblock hba linkrate` does. A phy
 /// already there is left alone. Ok: what was done, in words.
 pub fn apply(sys: &std::path::Path, name: &str, want: Wanted) -> Result<String, String> {
+    apply_host(sys, name, want, false)
+}
+
+/// [`apply`], and with `reset` a phy already at its maximum is reset all
+/// the same: the drive's side changed (#159), so the link must renegotiate.
+pub fn apply_host(sys: &std::path::Path, name: &str, want: Wanted, reset: bool) -> Result<String, String> {
     let real = std::fs::canonicalize(sys.join("block").join(name).join("device")).map_err(|e| format!("{name}: no device: {e}"))?;
     let dirs = facing_phys(&real);
     if dirs.is_empty() {
@@ -635,7 +847,12 @@ pub fn apply(sys: &std::path::Path, name: &str, want: Wanted) -> Result<String, 
             Wanted::Hw => hw.ok_or_else(|| format!("{pname}: no maximum_linkrate_hw"))?,
         };
         if cur == Some(target) {
-            done.push(format!("{pname} already at maximum {}", gbit(target)));
+            if reset {
+                std::fs::write(attrs.join("link_reset"), "1").map_err(|e| format!("{pname}: link_reset: {e}"))?;
+                done.push(format!("{pname} at maximum {}, link reset", gbit(target)));
+            } else {
+                done.push(format!("{pname} already at maximum {}", gbit(target)));
+            }
             continue;
         }
         std::fs::write(attrs.join("maximum_linkrate"), sysfs_rate(target)).map_err(|e| format!("{pname}: maximum_linkrate {}: {e}", sysfs_rate(target)))?;
@@ -643,6 +860,134 @@ pub fn apply(sys: &std::path::Path, name: &str, want: Wanted) -> Result<String, 
         done.push(format!("{pname}: maximum {} → {}, link reset", cur.map_or("?".into(), gbit), gbit(target)));
     }
     Ok(done.join("; "))
+}
+
+/// `spec.linkRate` and a DriveOperation `link_rate` (#159): the drive's
+/// own programmed maximum first, when it is below what is asked (or `hw`
+/// and it is not at its hardware maximum), then the facing phy, its link
+/// reset either way when the drive changed; then what it negotiated, read
+/// after the reset. A drive that refuses (not changeable, a MODE SELECT
+/// refused with its sense) is said, and the phy is still set; the answer
+/// is an error when either side failed.
+pub fn set(sys: &std::path::Path, name: &str, want: Wanted) -> Result<String, String> {
+    let drive = set_drive_side(name, want);
+    let changed = matches!(&drive, Ok(Some((true, _))));
+    let host = apply_host(sys, name, want, changed);
+    let drive_said = match &drive {
+        Ok(Some((_, s))) => format!("drive: {s}"),
+        Ok(None) => "drive: no page 0x19/1 (not a SAS drive), host side only".to_string(),
+        Err(e) => format!("drive: {e}"),
+    };
+    let host_said = match &host {
+        Ok(s) => format!("host: {s}"),
+        Err(e) => format!("host: {e}"),
+    };
+    let mut out = format!("{drive_said}; {host_said}");
+    if host.is_ok() {
+        out.push_str(&format!("; {}", negotiated_after(sys, name)));
+    }
+    if drive.is_err() || host.is_err() {
+        return Err(out);
+    }
+    Ok(out)
+}
+
+/// The link after a reset, once it is up again (up to 15 s): "negotiated
+/// 12 Gbit; drive programmed 12 Gbit (hardware 12 Gbit); host phy-1:2
+/// maximum 12 Gbit".
+fn negotiated_after(sys: &std::path::Path, name: &str) -> String {
+    let mut rates = HostRates::default();
+    let mut phys = Vec::new();
+    for i in 0..15 {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        (phys, rates) = read_host(sys, name);
+        if rates.negotiated.is_some() {
+            break;
+        }
+    }
+    let mut parts = vec![match rates.negotiated {
+        Some(n) => format!("negotiated {}", gbit(n)),
+        None => "no link negotiated within 15 s".to_string(),
+    }];
+    if let Some(l) = read_drive_limits_by_name(name).and_then(|l| l.main().cloned()) {
+        if let (Some(p), Some(h)) = (l.programmed_max_mbps, l.hardware_max_mbps) {
+            parts.push(format!("drive programmed {} (hardware {})", gbit(p), gbit(h)));
+        }
+    }
+    if let (Some(p), Some(m)) = (phys.first(), rates.maximum) {
+        parts.push(format!("host {} maximum {}", p.phy, gbit(m)));
+    }
+    parts.join("; ")
+}
+
+#[cfg(target_os = "linux")]
+fn open_sg(name: &str) -> Option<crate::scsi::Device> {
+    let node = crate::scsi::sg_path_for_block(name).unwrap_or_else(|| format!("/dev/{name}"));
+    crate::scsi::Device::open(&node).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn read_drive_limits_by_name(name: &str) -> Option<DriveLimits> {
+    read_limits(&open_sg(name)?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_drive_limits_by_name(_name: &str) -> Option<DriveLimits> {
+    None
+}
+
+/// Mode page 0x19/1 with page control `pc` (0 current, 1 changeable), the
+/// subpage from its first byte.
+#[cfg(target_os = "linux")]
+fn sense_phy_control(dev: &crate::scsi::Device, pc: u8) -> Result<Vec<u8>, String> {
+    let mut buf = vec![0u8; 1024];
+    let cdb = crate::scsi::cdb::mode_sense10_sub(MODE_PHY_CONTROL, MODE_PHY_CONTROL_SUB, pc, 1024);
+    let n = dev.io(&cdb, crate::scsi::Dir::FromDevice, &mut buf, 10_000).map_err(|e| format!("MODE SENSE 0x19/1: {e}"))?;
+    buf.truncate(n);
+    crate::pages::mode_page_of(&buf).map(<[u8]>::to_vec).ok_or_else(|| "MODE SENSE 0x19/1: an answer with no subpage in it".to_string())
+}
+
+/// The drive's own limits, read now: the current page and its changeable
+/// mask. None when the drive has no such page (not SAS, or it refuses).
+#[cfg(target_os = "linux")]
+pub fn read_limits(dev: &crate::scsi::Device) -> Option<DriveLimits> {
+    let cur = sense_phy_control(dev, 0).ok()?;
+    let chg = sense_phy_control(dev, 1).ok();
+    limits(&cur, chg.as_deref())
+}
+
+/// The drive's side of [`set`]: Ok(None) when it has no page 0x19/1;
+/// Ok(Some((changed, said))) otherwise — `changed` false when it already
+/// programs what is asked.
+#[cfg(target_os = "linux")]
+fn set_drive_side(name: &str, want: Wanted) -> Result<Option<(bool, String)>, String> {
+    let Some(dev) = open_sg(name) else { return Ok(None) };
+    let Ok(page) = sense_phy_control(&dev, 0) else { return Ok(None) };
+    let Some(before) = limits(&page, None) else { return Ok(None) };
+    let chg = sense_phy_control(&dev, 1).ok();
+    let main = before.main().cloned().unwrap_or_default();
+    let rate = |m: Option<u32>| m.map_or("?".into(), gbit);
+    let was = format!("programmed {} (hardware {})", rate(main.programmed_max_mbps), rate(main.hardware_max_mbps));
+    let Some(mut list) = plan_select(&page, chg.as_deref(), want).map_err(|e| format!("{was}: {e}"))? else {
+        return Ok(Some((false, format!("{was}, left as it is"))));
+    };
+    let save = before.savable;
+    let cdb = crate::scsi::cdb::mode_select10_sp(list.len() as u16, save);
+    dev.io(&cdb, crate::scsi::Dir::ToDevice, &mut list, 30_000).map_err(|e| format!("{was}: MODE SELECT 0x19/1 refused: {e}"))?;
+    let now = sense_phy_control(&dev, 0).ok().and_then(|p| limits(&p, None)).and_then(|a| a.main().and_then(|p| p.programmed_max_mbps));
+    let asked = target(&main, want).or(main.programmed_max_mbps);
+    if now != asked {
+        return Err(format!("{was}: MODE SELECT 0x19/1 taken, but the drive now programs {} (asked {})", rate(now), rate(asked)));
+    }
+    let kept = if save { "saved" } else { "current only: the page is not savable, a power cycle loses it" };
+    Ok(Some((true, format!("{was} → {} ({kept})", rate(now)))))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_drive_side(_name: &str, _want: Wanted) -> Result<Option<(bool, String)>, String> {
+    Ok(None)
 }
 
 /// The drive side over SG: log page 0x18, when the drive lists it.
@@ -745,7 +1090,108 @@ mod tests {
             drive: Some(vec![phy("0", drive)]),
             host: vec![phy("phy-1:2", host)],
             host_rates: HostRates { negotiated: Some(12_000), maximum: Some(12_000), maximum_hw: Some(12_000), minimum_hw: Some(1_500) },
+            drive_limits: None,
         }
+    }
+
+    /// Mode page 0x19/1 as forge1 bay 3's EMC HITACHI gave it (stormblock#646):
+    /// two phys, the link on phy 0 at 6 Gbit; byte 32 0x88 (programmed and
+    /// hardware minimum 1.5), byte 33 0xab (programmed 6, hardware 12); PS
+    /// set. `phy_control(0xf0, 0xff, false)` is its changeable page.
+    fn phy_control(b32: u8, b33: u8, ps: bool) -> Vec<u8> {
+        let mut p = vec![0x40 | MODE_PHY_CONTROL | if ps { 0x80 } else { 0 }, MODE_PHY_CONTROL_SUB, 0, 100, 0, PROTOCOL_SAS, 0, 2];
+        for (id, rate) in [(0u8, 0xau8), (1, 0)] {
+            let mut d = vec![0u8; 48];
+            d[1] = id;
+            d[5] = rate;
+            d[32] = b32;
+            d[33] = b33;
+            p.extend(d);
+        }
+        p
+    }
+
+    #[test]
+    fn the_drives_own_limits_from_mode_page_0x19_1() {
+        let cur = phy_control(0x88, 0xab, true);
+        let phys = parse_phy_control(&cur);
+        assert_eq!(phys.len(), 2);
+        assert_eq!(
+            phys[0],
+            PhyLimits { phy: "0".into(), negotiated_mbps: Some(6_000), programmed_min_mbps: Some(1_500), programmed_max_mbps: Some(6_000), hardware_min_mbps: Some(1_500), hardware_max_mbps: Some(12_000) }
+        );
+        assert_eq!(phys[1].negotiated_mbps, None);
+        // Out of a MODE SENSE(10) answer: an 8-byte header, no block descriptors.
+        let mut raw = ((cur.len() + 6) as u16).to_be_bytes().to_vec();
+        raw.extend_from_slice(&[0; 6]);
+        raw.extend_from_slice(&cur);
+        assert_eq!(crate::pages::mode_page_of(&raw), Some(&cur[..]));
+        let l = limits(&cur, Some(&phy_control(0xf0, 0xff, false))).unwrap();
+        assert_eq!((l.changeable, l.savable, l.main().unwrap().phy.as_str()), (Some(true), true, "0"));
+        assert_eq!(limit_said(&l, Some(6_000)).unwrap(), "6 of 12 Gbit (drive-programmed)");
+        assert_eq!(limits(&cur, Some(&phy_control(0x00, 0x0f, false))).unwrap().changeable, Some(false));
+        assert_eq!(limits(&cur, None).unwrap().changeable, None);
+        let at12 = limits(&phy_control(0x88, 0xbb, true), None).unwrap();
+        assert_eq!(limit_said(&at12, Some(12_000)).unwrap(), "drive programmed 12 Gbit (hardware 12 Gbit)");
+        // Another page, another protocol, a short page: nothing.
+        let mut fc = cur.clone();
+        fc[5] = 0;
+        assert!(parse_phy_control(&fc).is_empty());
+        assert!(parse_phy_control(&cur[..6]).is_empty());
+        let mut sub0 = cur.clone();
+        sub0[1] = 0;
+        assert!(parse_phy_control(&sub0).is_empty());
+        // In the Drive object: programmedMax, hardwareMax and the words.
+        let mut r = reading([0; 4], [0; 4]);
+        r.host_rates.negotiated = Some(6_000);
+        r.drive_limits = Some(l);
+        let st = step(None, &r, 1_000);
+        let v = serde_json::to_value(&st).unwrap();
+        assert_eq!((v["programmedMax"].as_u64(), v["hardwareMax"].as_u64()), (Some(6_000), Some(12_000)));
+        assert_eq!(v["programmedChangeable"], serde_json::json!(true));
+        assert_eq!(v["driveLimit"], "6 of 12 Gbit (drive-programmed)");
+        assert_eq!(v["driveLimits"][0]["programmedMaxMbps"], 6_000);
+        assert_eq!(programmed_below(&st).unwrap(), "the drive programs 6 Gbit (hardware 12 Gbit)");
+        assert_eq!(programmed_below(&LinkState::default()), None);
+    }
+
+    #[test]
+    fn programming_the_drives_maximum() {
+        let cur = phy_control(0x88, 0xab, true);
+        let chg = phy_control(0xf0, 0xff, false);
+        // linkRate 12: header, then the page with PS cleared and 0xbb on both phys.
+        let list = plan_select(&cur, Some(&chg), Wanted::Max(12_000)).unwrap().unwrap();
+        assert_eq!(&list[..8], &[0; 8]);
+        let p = &list[8..];
+        assert_eq!(p.len(), cur.len());
+        assert_eq!(p[0], 0x40 | MODE_PHY_CONTROL, "PS cleared");
+        assert_eq!((p[8 + 33], p[8 + 48 + 33]), (0xbb, 0xbb));
+        assert_eq!((p[8 + 32], p[8 + 5]), (0x88, 0x0a), "nothing else changed");
+        let mut rest = p.to_vec();
+        rest[0] = cur[0];
+        rest[8 + 33] = 0xab;
+        rest[8 + 48 + 33] = 0xab;
+        assert_eq!(rest, cur);
+        // Above the hardware: capped at it.
+        let l = plan_select(&cur, Some(&chg), Wanted::Max(22_500)).unwrap().unwrap();
+        assert_eq!(l[8 + 8 + 33], 0xbb);
+        // hw from a programmed 3.
+        let at3 = phy_control(0x88, 0x9b, true);
+        assert_eq!(plan_select(&at3, Some(&chg), Wanted::Hw).unwrap().unwrap()[8 + 8 + 33], 0xbb);
+        // Already at or above the ask: nothing sent (the phy holds it lower).
+        assert_eq!(plan_select(&cur, Some(&chg), Wanted::Max(6_000)).unwrap(), None);
+        assert_eq!(plan_select(&cur, Some(&chg), Wanted::Max(3_000)).unwrap(), None);
+        assert_eq!(plan_select(&phy_control(0x88, 0xbb, true), Some(&chg), Wanted::Hw).unwrap(), None);
+        // Not changeable: refused by name, with the mask.
+        let e = plan_select(&cur, Some(&phy_control(0x00, 0x0f, false)), Wanted::Max(12_000)).unwrap_err();
+        assert!(e.contains("not let its programmed maximum be changed") && e.contains("0x0f"), "{e}");
+        assert!(plan_select(&cur, None, Wanted::Max(12_000)).unwrap_err().contains("not read"));
+        // Not the page.
+        assert!(plan_select(&[0x19, 0, 0, 0], Some(&chg), Wanted::Hw).is_err());
+        // The CDBs: subpage 1, DBD; PF + SP.
+        assert_eq!(crate::scsi::cdb::mode_sense10_sub(0x19, 1, 1, 1024), [0x5a, 0x08, 0x59, 1, 0, 0, 0, 4, 0, 0]);
+        assert_eq!(crate::scsi::cdb::mode_select10_sp(108, true), [0x55, 0x11, 0, 0, 0, 0, 0, 0, 108, 0]);
+        assert_eq!(crate::scsi::cdb::mode_select10_sp(108, false)[1], 0x10);
     }
 
     #[test]
@@ -912,6 +1358,10 @@ mod tests {
         std::fs::remove_file(attrs.join("link_reset")).unwrap();
         assert!(apply(&root, "sdd", Wanted::Max(6_000)).unwrap().contains("already"));
         assert!(!attrs.join("link_reset").exists());
+        // The drive's side changed (#159): reset all the same.
+        assert!(apply_host(&root, "sdd", Wanted::Max(6_000), true).unwrap().contains("link reset"));
+        assert_eq!(std::fs::read_to_string(attrs.join("link_reset")).unwrap(), "1");
+        std::fs::remove_file(attrs.join("link_reset")).unwrap();
         // Back to the hardware's.
         apply(&root, "sdd", Wanted::Hw).unwrap();
         assert_eq!(std::fs::read_to_string(attrs.join("maximum_linkrate")).unwrap(), "12.0 Gbit");

@@ -397,8 +397,9 @@ impl Controller {
     }
 
     /// `spec.linkRate` (#149): the owner's word for a marginal drive's link.
-    /// The phys facing it are held at that rate (`maximum_linkrate` + a link
-    /// reset) once per daemon run — every boot — and again when the value or
+    /// The drive's own programmed maximum is raised first when it is below
+    /// the rate (mode page 0x19/1, #159), then the phys facing it are held
+    /// at that rate (`maximum_linkrate` + a link reset) once per daemon run — every boot — and again when the value or
     /// the drive's kernel name changes. Removing it holds nothing new and
     /// changes nothing now (`hw` puts the hardware maximum back). Never set
     /// by stormdrive itself.
@@ -435,7 +436,7 @@ impl Controller {
                 continue;
             }
             let n = dname.clone();
-            let r = tokio::task::spawn_blocking(move || crate::link::apply(std::path::Path::new("/sys"), &n, w)).await;
+            let r = tokio::task::spawn_blocking(move || crate::link::set(std::path::Path::new("/sys"), &n, w)).await;
             let r = match r {
                 Ok(r) => r,
                 Err(e) => Err(e.to_string()),

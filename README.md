@@ -1002,7 +1002,14 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   changes; the Link column in `kubectl get drives`. Set `spec.linkRate: 6`
   (`3`, `12`, `"1.5"`, `hw`) to hold a marginal drive's phy at a rate on
   every boot (`status.link.maximum: maximum 6 Gbit (policy)`); stormdrive
-  never sets one itself.
+  never sets one itself. The drive's own limits (#159) are there too, from
+  its mode page 0x19/1: `programmedMax` and `hardwareMax` (Mb/s),
+  `programmedChangeable`, per-phy `driveLimits`, and `driveLimit` in words —
+  forge1 bay 3's EMC HITACHI reads `6 of 12 Gbit (drive-programmed)`, its
+  firmware holding 12 Gbit hardware at 6, logged once as a warning. A rate
+  set by `spec.linkRate` or a DriveOperation `link_rate` raises the drive's
+  programmed maximum first when it is below (capped at its hardware; never
+  lowered: holding a link lower is the phy's job), then the phy.
 - **`DriveOperation`**: a drive-worker job as an object (`node`, `select`,
   `steps`, `destroy`, `dryRun`, `resume`) — see
   `deploy/driveoperation.example.yaml`. Only storage-admin can create one.
@@ -1014,6 +1021,15 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   decision. **No stamp → Refused**: the object alone is never trusted.
   `steps: [{op: details}]` (#147) changes nothing: it reads the drives'
   pages and health now into their Drive objects, fleet drives included.
+  `steps: [{op: link_rate, rate: 12}]` (#159; `hw` for the hardware
+  maximum) raises a SAS drive's own programmed maximum when it is below the
+  rate (MODE SELECT of page 0x19/1, saved when the page is savable, read
+  back; refused by name when not changeable, with the sense when the drive
+  refuses), holds the phy facing it at the rate and resets the link, and
+  says what it negotiated: `drive: programmed 6 Gbit (hardware 12 Gbit) →
+  12 Gbit (saved); host: phy-1:2 at maximum 12 Gbit, link reset; negotiated
+  12 Gbit; drive programmed 12 Gbit (hardware 12 Gbit); host phy-1:2
+  maximum 12 Gbit`. It runs where `details` runs, fleet drives included.
   Deleting it cancels the steps not yet started; raising `spec.resume`
   resumes interrupted drives.
 - **`DrivePolicy`** (#50, stormcos#251) says which drives of which nodes

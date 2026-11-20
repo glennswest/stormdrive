@@ -91,7 +91,8 @@ src/
   transport.rs    SAS or SATA from the drive itself: VPD 0x83, log page 0x18,
                   negotiated link rate (#105)
   link.rs         the SAS link, both sides (log page 0x18 counters + the facing
-                  sysfs phy): rates, level, recommendation, spec.linkRate (#149)
+                  sysfs phy): rates, level, recommendation, spec.linkRate (#149);
+                  the drive's own limits (mode page 0x19/1) and raising them (#159)
   bays.rs         `[[bay_map]]`: a platform's physical bay numbering over a
                   controller's slots (#134)
   inuse.rs        what a drive is used for (system/data/raid/mounted/free) and

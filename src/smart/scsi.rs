@@ -350,7 +350,11 @@ mod linux {
         }
         // The SAS link, the drive's side (#149): what its receiver saw.
         if let Some(phys) = crate::link::read_drive(&dev) {
-            s.link.get_or_insert_with(Default::default).drive = Some(phys);
+            let l = s.link.get_or_insert_with(Default::default);
+            l.drive = Some(phys);
+            // Its own limits (#159): what its firmware programs, what its
+            // hardware can.
+            l.drive_limits = crate::link::read_limits(&dev);
         }
         let mut c = SmartCounters { source: "log_sense".into(), ..Default::default() };
         let mut any = false;

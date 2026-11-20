@@ -111,12 +111,19 @@ pub enum Step {
     /// Read the drive's pages (every VPD page, the mode pages) and its
     /// health now, into its Drive object (#147). Changes nothing.
     Details,
+    /// The SAS link's rate (#159, stormblock#646): the drive's own
+    /// programmed maximum raised to `rate` when it is below it (mode page
+    /// 0x19/1, capped at its hardware), then the phy facing it held at
+    /// `rate` and its link reset; `hw` puts both back to their hardware
+    /// maximum. Destroys nothing; runs where `details` runs.
+    #[serde(alias = "linkRate")]
+    LinkRate { rate: crate::link::Wanted },
 }
 
 impl Step {
     fn rank(&self) -> u8 {
         match self {
-            Step::Format { .. } | Step::Sanitize { .. } | Step::SecurityErase { .. } | Step::Test { .. } | Step::Details => 0,
+            Step::Format { .. } | Step::Sanitize { .. } | Step::SecurityErase { .. } | Step::Test { .. } | Step::Details | Step::LinkRate { .. } => 0,
             Step::Partition { .. } => 1,
             Step::Enroll { .. } => 2,
         }
@@ -128,7 +135,7 @@ impl Step {
     pub fn destroys(&self) -> bool {
         match self {
             Step::Test { kind } => kind.is_destructive(),
-            Step::Details => false,
+            Step::Details | Step::LinkRate { .. } => false,
             _ => self.rank() <= 1,
         }
     }
@@ -141,6 +148,13 @@ impl Step {
     pub fn only_asks(&self) -> bool {
         matches!(self, Step::Details)
     }
+    /// Only the link (`link_rate`, #159): it writes the drive's phy page and
+    /// the facing phy and resets the link — an I/O pause the SAS layer
+    /// retries through, as `spec.linkRate` does at every boot — so it runs
+    /// where `details` runs, fleet drives included, with no lane.
+    pub fn link_only(&self) -> bool {
+        matches!(self, Step::LinkRate { .. })
+    }
     pub fn name(&self) -> &'static str {
         match self {
             Step::Format { .. } => "format",
@@ -150,6 +164,7 @@ impl Step {
             Step::Partition { .. } => "partition",
             Step::Enroll { .. } => "enroll",
             Step::Details => "details",
+            Step::LinkRate { .. } => "link_rate",
         }
     }
     pub fn describe(&self) -> String {
@@ -166,6 +181,7 @@ impl Step {
             Step::Partition { role } => format!("partition ({})", role.word()),
             Step::Enroll { tier, role } => format!("enroll ({} slab{})", role.word(), tier.as_ref().map(|t| format!(", tier {t}")).unwrap_or_default()),
             Step::Details => "details (pages + health)".into(),
+            Step::LinkRate { rate } => format!("link rate → {}", rate.word()),
         }
     }
 }
@@ -304,7 +320,7 @@ pub fn guard(d: &Drive, steps: &[Step], destroy_named: bool, cx: &Context) -> Re
     }
     // Only asking (#147): a fleet drive, a reserved one, one under test —
     // any drive that can answer, which a formatting one cannot.
-    if steps.iter().all(Step::only_asks) {
+    if steps.iter().all(|s| s.only_asks() || s.link_only()) {
         return match d.activity {
             Activity::Formatting | Activity::Sanitizing => Err(format!("busy: {}", serde_json::to_value(d.activity).unwrap_or_default().as_str().unwrap_or("?"))),
             _ => Ok(()),
@@ -1085,7 +1101,7 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
             return;
         };
         // Wait for a lane: low-level steps per HBA, enroll per failure domain.
-        let permit = if step.only_asks() {
+        let permit = if step.only_asks() || step.link_only() {
             None
         } else if step.low_level() || matches!(step, Step::Partition { .. }) {
             state.worker.progress(&job, idx, None, &format!("waiting ({})", hba_key(&drive)));
@@ -1301,6 +1317,17 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
                 None => "health: no new sample within 60 s (kept the last)".into(),
             };
             Ok(format!("{pages}; {health}"))
+        }
+        Step::LinkRate { rate } => {
+            progress(None, &format!("link rate {}: the drive's side, then the phy", rate.word()));
+            let (name, w) = (d.name.clone(), *rate);
+            let r = tokio::task::spawn_blocking(move || crate::link::set(std::path::Path::new("/sys"), &name, w)).await.unwrap_or_else(|e| Err(format!("task: {e}")));
+            let sev = if r.is_ok() { Severity::Info } else { Severity::Warning };
+            let said = r.as_ref().unwrap_or_else(|e| e);
+            state.events.write().await.push(Some(d.id), sev, "link", format!("{}: link_rate {} (DriveOperation): {said}", d.name, rate.word()));
+            // status.link from a sample now, so the object shows it.
+            crate::monitor::sample_now(d.id);
+            r
         }
         Step::Test { kind } => {
             let handle = crate::drivetest::start(state.clone(), d.clone(), *kind).await;
@@ -1856,6 +1883,37 @@ mod tests {
         assert_eq!(guard(&gone, &[Step::Details], false, &cx()).unwrap_err(), "missing");
         // With a format, the format's guard decides.
         assert!(guard(&fleet, &[FMT, Step::Details], false, &cx()).unwrap_err().contains("fleet"));
+    }
+
+    /// `op: link_rate` (#159): the rate as the Drive's spec.linkRate takes
+    /// it; runs where details runs (forge1 bay 3 is a fleet drive).
+    #[test]
+    fn link_rate_runs_where_details_runs() {
+        use crate::link::Wanted;
+        let r: Request = serde_json::from_value(json!({ "select": {"drives": ["sdd"]}, "steps": [{"op": "link_rate", "rate": 12}] })).unwrap();
+        assert_eq!(r.steps, vec![Step::LinkRate { rate: Wanted::Max(12_000) }]);
+        for (v, w) in [(json!("hw"), Wanted::Hw), (json!("6 Gbit"), Wanted::Max(6_000)), (json!(1.5), Wanted::Max(1_500))] {
+            let s: Step = serde_json::from_value(json!({ "op": "linkRate", "rate": v })).unwrap();
+            assert_eq!(s, Step::LinkRate { rate: w });
+        }
+        assert!(serde_json::from_value::<Step>(json!({ "op": "link_rate", "rate": 7 })).is_err());
+        assert!(serde_json::from_value::<Step>(json!({ "op": "link_rate" })).is_err());
+        assert_eq!(serde_json::to_value(Step::LinkRate { rate: Wanted::Max(12_000) }).unwrap(), json!({ "op": "link_rate", "rate": 12 }));
+        assert_eq!(serde_json::to_value(Step::LinkRate { rate: Wanted::Max(22_500) }).unwrap(), json!({ "op": "link_rate", "rate": 22.5 }));
+        assert_eq!(serde_json::to_value(Step::LinkRate { rate: Wanted::Hw }).unwrap(), json!({ "op": "link_rate", "rate": "hw" }));
+        let s = Step::LinkRate { rate: Wanted::Max(12_000) };
+        assert!(!s.destroys() && !s.read_only() && !s.only_asks() && s.link_only());
+        assert_eq!((s.name(), s.describe()), ("link_rate", "link rate → 12 Gbit".to_string()));
+        assert!(validate_steps(&[s.clone()]).is_ok());
+        assert!(validate_steps(&[s.clone(), Step::Details]).is_ok());
+        let fleet = drive(|d| d.membership = Membership::Fleet);
+        assert!(guard(&fleet, &[s.clone()], false, &cx()).is_ok());
+        assert!(guard(&fleet, &[s.clone(), Step::Details], false, &cx()).is_ok());
+        let fmt = drive(|d| d.activity = Activity::Formatting);
+        assert!(guard(&fmt, &[s.clone()], false, &cx()).unwrap_err().contains("busy"));
+        let gone = drive(|d| d.activity = Activity::Missing);
+        assert_eq!(guard(&gone, &[s.clone()], false, &cx()).unwrap_err(), "missing");
+        assert!(guard(&fleet, &[FMT, s], false, &cx()).unwrap_err().contains("fleet"));
     }
 
     #[test]

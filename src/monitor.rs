@@ -843,7 +843,15 @@ async fn apply_outcome(
     // raised on the counters before a write fails.
     if let Some(r) = sample.link.as_ref().filter(|r| out.answered() && !r.is_empty()) {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let was_below = crate::link::state(&id).and_then(|s| crate::link::programmed_below(&s));
         let (st, changed) = crate::link::observe(id, r, now);
+        // The drive holds its own link below its hardware (#159): said once
+        // (a change of the programmed rate says it again).
+        if let Some(b) = crate::link::programmed_below(&st).filter(|b| was_below.as_ref() != Some(b)) {
+            let msg = format!("{} ({} {}): link: {b}: Drive spec.linkRate or a DriveOperation link_rate raises it", drive.name, drive.model, drive.serial);
+            tracing::warn!("{msg}");
+            state.events.write().await.push(Some(id), Severity::Warning, "link", msg);
+        }
         if let Some(from) = changed {
             let mut msg = format!(
                 "{} ({} {}): link {} → {}: {}",

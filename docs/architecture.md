@@ -695,6 +695,31 @@ climbing about 500 a minute at 12 Gbit — and nobody read the counter.
   what was done (`LinkRateSet`) or why not (`LinkRateFailed`,
   `LinkRateInvalid`); `status.link.maximum` reads `maximum 6 Gbit
   (policy)`.
+- **The drive's own limits** (#159, stormblock#646). With log page 0x18
+  the collector reads mode page 0x19 subpage 1 (phy control and discover;
+  MODE SENSE(10), DBD, current and changeable): per phy the programmed and
+  hardware minimum and maximum rate (bytes 32/33 of each 48-byte
+  descriptor, high/low nibble). `status.link` carries the linked phy's
+  `programmedMax` / `hardwareMax`, `programmedChangeable` (every phy's
+  mask has byte 33's high nibble), `driveLimits`, and `driveLimit` in
+  words (`6 of 12 Gbit (drive-programmed)`). A drive programmed below its
+  hardware is a WARN and an event once per run (forge1 bay 3's EMC
+  HITACHI: hardware 12, programmed 6 — no host setting raises that).
+- **Setting it** (`link::set`, for `spec.linkRate` and the DriveOperation
+  step `link_rate`): the drive's side first — `plan_select` builds the
+  MODE SELECT(10) list from the page as the drive gave it, PS cleared and
+  only byte 33's high nibble changed, raising each phy programmed below
+  the asked rate to it (capped at its hardware; `hw`: back to the
+  hardware maximum); nothing is sent when the drive already programs at
+  least that, and a programmed maximum not marked changeable is refused
+  by name. SP = 1 when the page is savable (PS), and the page is read back.
+  Then the facing phy (`apply_host`), its link reset even when the phy
+  was already at the rate, since the drive changed; then the negotiated
+  rate, both maxima and the phy's, read once the link is back (up to
+  15 s). A refused drive side is said and the phy is still set; the
+  answer is an error when either side failed. stormblock#646 does the
+  same from its CLI and install-config; it has no REST route, so this is
+  stormdrive's own SG_IO, as the phy side already was.
 - State is in memory by drive id (like the pages): a restart settles once.
 
 ### HBAs (`hba.rs`)

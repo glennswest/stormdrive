@@ -70,7 +70,7 @@ spec:
           properties:
             spec:
               type: object
-              description: "The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here. Set `format: {blockSize: 4096|512, protection: none|type1}` to ask for a format: the node plans it into status.plannedFormat (status.formatFrom says whether the drive's own format, its Shelf's defaultFormat or the 4096+PI1 preference decided it); a DriveOperation with that format step runs it (#85). Set `identify: true|false` for the drive's locate LED (#83). Set `linkRate: 6` (3, 6, 12 Gbit; \"1.5\", \"22.5\" and \"6 Gbit\" as strings) to hold the SAS phy facing a marginal drive at that rate: the node writes the phy's maximum_linkrate and resets the link, on every boot, and status.link.maximum says `maximum 6 Gbit (policy)`; `hw` puts the hardware maximum back. Removing it changes nothing until the next boot. Never set by stormdrive itself (#149)."
+              description: "The node's own settings for the drive (designation, fleet, drain), mirrored. Change them through a DriveOperation or the node's API, not here. Set `format: {blockSize: 4096|512, protection: none|type1}` to ask for a format: the node plans it into status.plannedFormat (status.formatFrom says whether the drive's own format, its Shelf's defaultFormat or the 4096+PI1 preference decided it); a DriveOperation with that format step runs it (#85). Set `identify: true|false` for the drive's locate LED (#83). Set `linkRate: 6` (3, 6, 12 Gbit; \"1.5\", \"22.5\" and \"6 Gbit\" as strings) to hold the SAS phy facing a marginal drive at that rate: the node raises the drive's own programmed maximum first when it is below the rate (mode page 0x19/1, capped at its hardware, #159), writes the phy's maximum_linkrate and resets the link, on every boot, and status.link.maximum says `maximum 6 Gbit (policy)`; `hw` puts the hardware maximum back. Removing it changes nothing until the next boot. Never set by stormdrive itself (#149)."
               x-kubernetes-preserve-unknown-fields: true
               properties:
                 linkRate:
@@ -113,10 +113,13 @@ spec:
                   type: object
                   nullable: true
                   x-kubernetes-preserve-unknown-fields: true
-                  description: "The SAS link, both sides, read on every health sample (#149, stormblock#642): drive (log page 0x18: phys [{phy, rateMbps, attachedSas, invalidDwords, disparityErrors, lossOfSync, phyResets}] and rates [{phy, … per minute}]), host (the sysfs phy facing it, the HBA's or the shelf expander's: the same), hostPhy, negotiatedMbps, hostMaximumMbps, hostMaximumHwMbps, maximum (\"maximum 6 Gbit (policy)\"), policy (spec.linkRate as applied), level (settling: the first reading or the counters went back; ok; degraded: anything moving; failing: loss of sync or phy resets moving two samples running), since, streak, syncStreak, message, recommendation (drive side only: the drive's receiver or its slot; both sides: the cable or the expander port), at."
+                  description: "The SAS link, both sides, read on every health sample (#149, stormblock#642): drive (log page 0x18: phys [{phy, rateMbps, attachedSas, invalidDwords, disparityErrors, lossOfSync, phyResets}] and rates [{phy, … per minute}]), host (the sysfs phy facing it, the HBA's or the shelf expander's: the same), hostPhy, negotiatedMbps, hostMaximumMbps, hostMaximumHwMbps, the drive's own limits from mode page 0x19/1 (#159: programmedMax and hardwareMax in Mb/s for the linked phy, programmedChangeable, driveLimits [{phy, negotiatedMbps, programmedMinMbps, programmedMaxMbps, hardwareMinMbps, hardwareMaxMbps}], driveLimit: \"6 of 12 Gbit (drive-programmed)\" or \"drive programmed 12 Gbit (hardware 12 Gbit)\"), maximum (\"maximum 6 Gbit (policy)\"), policy (spec.linkRate as applied), level (settling: the first reading or the counters went back; ok; degraded: anything moving; failing: loss of sync or phy resets moving two samples running), since, streak, syncStreak, message, recommendation (drive side only: the drive's receiver or its slot; both sides: the cable or the expander port), at."
                   properties:
                     level: { type: string, enum: [settling, ok, degraded, failing] }
                     maximum: { type: string, nullable: true }
+                    programmedMax: { type: integer, nullable: true }
+                    hardwareMax: { type: integer, nullable: true }
+                    driveLimit: { type: string, nullable: true }
                     policy: { type: string, nullable: true }
                     message: { type: string }
                     recommendation: { type: string, nullable: true }
@@ -222,12 +225,13 @@ spec:
                     unusable: { type: boolean, description: "Drives the kernel cannot use (520/528-byte sectors)." }
                 steps:
                   type: array
-                  description: In order, per drive. format/sanitize/security_erase/test/details, then partition, then enroll; each at most once.
+                  description: In order, per drive. format/sanitize/security_erase/test/details/link_rate, then partition, then enroll; each at most once.
                   items:
                     type: object
                     required: [op]
                     properties:
-                      op: { type: string, enum: [format, sanitize, security_erase, test, partition, enroll, details], description: "details: read the drive's pages (every VPD page, the mode pages) and its health now into its Drive object (status.pages, status.health); changes nothing, runs on any drive that can answer, fleet drives included (#147)." }
+                      op: { type: string, enum: [format, sanitize, security_erase, test, partition, enroll, details, link_rate], description: "details: read the drive's pages (every VPD page, the mode pages) and its health now into its Drive object (status.pages, status.health); changes nothing, runs on any drive that can answer, fleet drives included (#147). link_rate (#159): a SAS drive's link rate, `rate`: raises the drive's own programmed maximum when it is below it (mode page 0x19/1, capped at its hardware), then holds the phy facing it at that rate and resets the link; `hw` puts both back to their hardware maximum. Destroys nothing; runs where details runs (fleet drives too); the message says what it negotiated after." }
+                      rate: { x-kubernetes-int-or-string: true, description: "link_rate: Gbit (1.5, 3, 6, 12, 22.5; \"1.5\" as a string) or hw." }
                       blockSize: { type: integer, description: "format: 512 or 4096." }
                       block_size: { type: integer }
                       protection: { type: string, enum: [none, type1], description: "format: T10 PI to format with (SCSI; the drive must offer it — Drive status.supports)." }

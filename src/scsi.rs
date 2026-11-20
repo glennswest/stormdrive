@@ -509,6 +509,17 @@ pub mod cdb {
         let [hi, lo] = alloc.to_be_bytes();
         [0x5a, 0x08, ((pc & 0x03) << 6) | (page & 0x3f), 0, 0, 0, 0, hi, lo, 0]
     }
+    /// MODE SENSE(10) of one subpage, DBD=1, page control `pc` (#159: the
+    /// SAS phy control and discover subpage, 0x19/1).
+    pub fn mode_sense10_sub(page: u8, sub: u8, pc: u8, alloc: u16) -> [u8; 10] {
+        let [hi, lo] = alloc.to_be_bytes();
+        [0x5a, 0x08, ((pc & 0x03) << 6) | (page & 0x3f), sub, 0, 0, 0, hi, lo, 0]
+    }
+    /// MODE SELECT(10), PF=1, SP (save pages) when `save` (#159).
+    pub fn mode_select10_sp(len: u16, save: bool) -> [u8; 10] {
+        let [hi, lo] = len.to_be_bytes();
+        [0x55, 0x10 | u8::from(save), 0, 0, 0, 0, 0, hi, lo, 0]
+    }
     pub fn mode_select10(len: u16) -> [u8; 10] {
         let [hi, lo] = len.to_be_bytes();
         [0x55, 0x10, 0, 0, 0, 0, 0, hi, lo, 0]
