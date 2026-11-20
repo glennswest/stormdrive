@@ -99,6 +99,75 @@ pub fn parse_identify_ctrl(buf: &[u8]) -> Option<NvmeCaps> {
     })
 }
 
+/// Identify CNS 2: the controller's active namespace IDs, ascending,
+/// zero-terminated (up to 1024 in one page).
+pub fn parse_ns_list(buf: &[u8]) -> Vec<u32> {
+    buf.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).take_while(|&n| n != 0).collect()
+}
+
+/// Which NSID a Format NVM of namespace `nsid` goes to (finding
+/// c1b3d071b848, #170). A controller with FNA bit 0 formats every namespace
+/// whatever NSID is sent, so the broadcast is sent only when the selected
+/// namespace is the controller's only one, by the controller's own active
+/// list (`active`: `Err` when it could not be read); every other namespace
+/// would be erased unselected and unguarded, so that is refused, naming
+/// them. An unreadable list is refused unless the controller supports one
+/// namespace at all (NN = 1).
+pub fn format_target(caps: &NvmeCaps, nsid: u32, active: Result<&[u32], &str>) -> Result<u32, String> {
+    if !caps.format_all_namespaces {
+        return Ok(nsid);
+    }
+    match active {
+        // A list without the namespace itself is not the controller's list.
+        Ok(list) if !list.contains(&nsid) => format_target(caps, nsid, Err("the list does not name the namespace")),
+        Ok(list) => {
+            let others: Vec<String> = list.iter().filter(|&&n| n != nsid).map(|n| n.to_string()).collect();
+            if others.is_empty() {
+                Ok(0xFFFF_FFFF)
+            } else {
+                Err(format!(
+                    "refused: this controller's Format NVM formats every namespace (FNA); namespace(s) {} share it and would be erased too",
+                    others.join(", ")
+                ))
+            }
+        }
+        Err(_) if caps.namespaces == 1 => Ok(0xFFFF_FFFF),
+        Err(e) => Err(format!(
+            "refused: this controller's Format NVM formats every namespace (FNA) and its namespace list could not be read ({e})"
+        )),
+    }
+}
+
+/// The namespaces sysfs shows under an NVMe controller: from the names in
+/// `/sys/class/nvme/<ctrl>/` — `<ctrl>n<N>` heads and, with native
+/// multipath, `nvme<S>c<C>n<N>` path nodes. Independent of the inventory,
+/// which leaves namespaces out (#170).
+pub fn sysfs_namespaces<'a>(ctrl: &str, entries: impl IntoIterator<Item = &'a str>) -> std::collections::BTreeSet<u32> {
+    let cnum = ctrl.strip_prefix("nvme").unwrap_or("");
+    entries
+        .into_iter()
+        .filter_map(|e| {
+            let rest = e.strip_prefix("nvme")?;
+            let (head, ns) = rest.rsplit_once('n')?;
+            let ns: u32 = ns.parse().ok()?;
+            let ok = match head.split_once('c') {
+                // nvme<S>c<C>n<N>: the path node of controller C.
+                Some((sub, c)) => !sub.is_empty() && sub.chars().all(|x| x.is_ascii_digit()) && c == cnum,
+                None => head == cnum,
+            };
+            ok.then_some(ns)
+        })
+        .collect()
+}
+
+/// [`sysfs_namespaces`] read from `/sys/class/nvme/<ctrl>`.
+pub fn controller_namespaces(ctrl: &str) -> std::collections::BTreeSet<u32> {
+    let names: Vec<String> = std::fs::read_dir(format!("/sys/class/nvme/{ctrl}"))
+        .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    sysfs_namespaces(ctrl, names.iter().map(String::as_str))
+}
+
 /// Format NVM (0x80) CDW10: the LBA format, no metadata, no protection
 /// information, no secure erase (the worker's `sanitize` step is the erase).
 pub fn format_nvm_cdw10(lbaf: u8) -> u32 {
@@ -421,8 +490,14 @@ mod linux {
                 formats.iter().map(|f| format!("{}+{}", f.data_size, f.metadata_size)).collect::<Vec<_>>().join(", ")
             )
         })?;
+        // FNA: the format reaches every namespace; only when this is the one.
+        let active = if caps.format_all_namespaces { Some(identify(path, 2, 0).map(|b| parse_ns_list(&b))) } else { None };
+        let target = match &active {
+            None => nsid,
+            Some(Ok(l)) => format_target(&caps, nsid, Ok(l))?,
+            Some(Err(e)) => format_target(&caps, nsid, Err(e))?,
+        };
         progress(None, &format!("format nvm lbaf {} (was {current})", f.index));
-        let target = if caps.format_all_namespaces { 0xFFFF_FFFF } else { nsid };
         let st = admin(path, 0x80, target, format_nvm_cdw10(f.index), 0, &mut [], T_FORMAT).map_err(|e| format!("format nvm: {e}"))?;
         if st != 0 {
             return Err(format!("format nvm: status 0x{st:x}"));
@@ -644,6 +719,45 @@ mod tests {
         assert!(c.sanitize_crypto && !c.sanitize_block && c.sanitize_overwrite);
         assert_eq!(c.namespaces, 32);
         assert!(nvme_supports(&c, SanitizeMethod::Crypto) && !nvme_supports(&c, SanitizeMethod::Block));
+    }
+
+    #[test]
+    fn active_namespace_list() {
+        let mut b = vec![0u8; 4096];
+        b[0..4].copy_from_slice(&1u32.to_le_bytes());
+        b[4..8].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(parse_ns_list(&b), vec![1, 3]);
+        assert!(parse_ns_list(&[0u8; 4096]).is_empty());
+    }
+
+    /// Finding c1b3d071b848: FNA must not turn one namespace's format into
+    /// a format of its siblings.
+    #[test]
+    fn format_all_namespaces_only_when_alone() {
+        let per_ns = NvmeCaps { format_supported: true, namespaces: 32, ..Default::default() };
+        let fna = NvmeCaps { format_all_namespaces: true, ..per_ns };
+        // Per-namespace format: the namespace itself, siblings or not.
+        assert_eq!(format_target(&per_ns, 2, Ok(&[1, 2, 3])), Ok(2));
+        // FNA and alone: the broadcast is the same drive.
+        assert_eq!(format_target(&fna, 1, Ok(&[1])), Ok(0xFFFF_FFFF));
+        assert!(format_target(&fna, 1, Ok(&[])).is_err(), "a list without the namespace is no list");
+        // FNA with siblings: refused, naming them.
+        let e = format_target(&fna, 1, Ok(&[1, 2, 5])).unwrap_err();
+        assert!(e.starts_with("refused") && e.contains("2, 5"), "{e}");
+        // Unreadable list: refused, unless the controller holds one namespace.
+        assert!(format_target(&fna, 1, Err("status 0x2")).unwrap_err().contains("could not be read"));
+        let one = NvmeCaps { namespaces: 1, ..fna };
+        assert_eq!(format_target(&one, 1, Err("status 0x2")), Ok(0xFFFF_FFFF));
+    }
+
+    #[test]
+    fn namespaces_under_a_controller() {
+        let entries = ["nvme0n1", "nvme0n2", "nvme0c0n3", "nvme1c0n9", "nvme10n4", "device", "hwmon0", "nvme0", "subsysnqn"];
+        let got: Vec<u32> = sysfs_namespaces("nvme0", entries).into_iter().collect();
+        assert_eq!(got, vec![1, 2, 3, 9], "heads of nvme0 and path nodes through controller 0");
+        let got: Vec<u32> = sysfs_namespaces("nvme10", entries).into_iter().collect();
+        assert_eq!(got, vec![4]);
+        assert!(sysfs_namespaces("nvme2", entries).is_empty());
     }
 
     #[test]

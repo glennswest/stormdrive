@@ -656,7 +656,7 @@ fn run_nvme(path: &str, name: &str, want: (u32, Protection), method: Method) -> 
     let say = |_: Option<u8>, what: &str| eprintln!("{name}: {what}");
     match crate::erase::nvme_format(path, name, to, &say) {
         Ok(_) => {}
-        Err(e) if e.starts_with("no ") => return r.end(Outcome::Refused, Some(e)),
+        Err(e) if e.starts_with("no ") || e.starts_with("refused") => return r.end(Outcome::Refused, Some(e)),
         Err(e) => return r.end(Outcome::Failed, Some(e)),
     }
     r.method_used = Some("format_nvm");

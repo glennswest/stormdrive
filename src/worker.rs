@@ -814,13 +814,19 @@ pub async fn context(state: &Arc<AppState>, d: &Drive) -> Context {
     // (#81): foreign data on a 520-byte drive must be named in `destroy`.
     let holds = tokio::task::spawn_blocking(move || crate::contents::holds_drive(&path, &name, usable, bs)).await.ok().flatten();
     let siblings = if d.kind == DriveKind::NvmeSsd {
-        let ctrl = crate::erase::nvme_names(&d.name).map(|c| c.0);
+        let names = crate::erase::nvme_names(&d.name);
+        let ctrl = names.as_ref().map(|c| c.0.clone());
         let inv = state.inventory.read().await;
-        inv.drives
+        let known = inv
+            .drives
             .values()
             .filter(|o| o.id != d.id && o.activity != Activity::Missing)
             .filter(|o| ctrl.is_some() && crate::erase::nvme_names(&o.name).map(|c| c.0) == ctrl)
-            .count()
+            .count();
+        // The inventory leaves namespaces out (exclusions, the boot drive):
+        // the controller's own namespaces count too (#170).
+        let seen = names.map(|(c, ns)| crate::erase::controller_namespaces(&c).into_iter().filter(|&n| n != ns).count()).unwrap_or(0);
+        known.max(seen)
     } else {
         0
     };

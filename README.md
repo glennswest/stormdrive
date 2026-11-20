@@ -510,9 +510,13 @@ are listed under [Not yet](#not-yet).
     `model`, `unusable` (520/528-byte drives). The given filters are ANDed.
   - **Steps**, in this order, each at most once:
     1. `format {block_size}`: SCSI FORMAT UNIT (the existing format job) or
-       NVMe Format NVM with the LBA format of that data size.
+       NVMe Format NVM with the LBA format of that data size. A controller
+       whose Format NVM reaches every namespace (FNA bit 0) is formatted only
+       when the namespace is its only active one (Identify CNS 2); with other
+       namespaces it is refused, naming them (#170).
     2. `sanitize {method: block|crypto|overwrite}`: NVMe Sanitize (refused
-       while other namespaces share the controller) or SCSI SANITIZE
+       while other namespaces share the controller, counted from the
+       inventory and from `/sys/class/nvme/<ctrl>`) or SCSI SANITIZE
        (which SAT maps to ATA SANITIZE). Or `security_erase {enhanced?}`
        (#36), for a SATA drive that has the ATA Security feature set and
        not Sanitize. It sends ATA SECURITY ERASE UNIT through ATA
@@ -766,7 +770,9 @@ no FORMAT UNIT". An NVMe namespace whose Identify fails gets the same
 block-layer check (exit 4 at the format, else the Identify failure).
 
 An NVMe namespace gets Format NVM to the LBA format of that size without
-metadata; `--protection type1` on NVMe is refused (exit 3). A drive whose last
+metadata; `--protection type1` on NVMe is refused (exit 3), and so is a
+controller whose Format NVM formats every namespace (FNA) while it has other
+namespaces (exit 3, naming them; #170). A drive whose last
 format was cut off (31/00) is at no format and is formatted. So is a drive
 that answers READ CAPACITY with NOT READY (#142): 04/02 gets a START UNIT and
 is read again; 04/04 (a format still running) or 04/01 is waited for, never

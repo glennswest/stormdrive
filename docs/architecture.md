@@ -916,7 +916,13 @@ kept.
     progress, rescan, verify).
   - NVMe format picks the LBA format with the right data size, no
     metadata and the best relative performance (Identify Namespace), and
-    sends Format NVM without secure erase.
+    sends Format NVM without secure erase. With FNA bit 0 (a format
+    reaches every namespace) it is sent only when the controller's active
+    namespace list (Identify CNS 2) holds this namespace alone, and refused
+    otherwise or when the list cannot be read and NN > 1 (#170). The guard's
+    NVMe sibling count (the sanitize refusal) takes the larger of the
+    inventory's and `/sys/class/nvme/<ctrl>`'s, so a namespace the inventory
+    leaves out still counts.
   - Sanitize polls log 0x81 (NVMe) or TEST UNIT READY sense 04/1B (SCSI)
     for progress.
   - Test (#40) runs `drivetest::start` and turns its bytes into percent.
