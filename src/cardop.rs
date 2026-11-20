@@ -162,7 +162,7 @@ pub fn start(state: Arc<AppState>, op: String, spec: FlashSpec, card: CardReport
         let (devs, _) = drives_on(&state, &card.pci).await;
         let (region, ioc, mpi25, pci, host) = (spec.region, card.ioc, card.info.mpi25(), card.pci.clone(), card.host.clone());
         let r3 = r2.clone();
-        let out = tokio::task::spawn_blocking(move || run_blocking(ioc, mpi25, region, &image, &devs, &pci, &host, &*r3)).await;
+        let out = tokio::task::spawn_blocking(move || run_blocking(ioc, mpi25, region, &image, &devs, &pci, &host, &r3)).await;
         let (result, fresh) = match out {
             Ok(v) => v,
             Err(e) => (Err(format!("the flash task ended: {e}")), None),
