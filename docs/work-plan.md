@@ -2230,3 +2230,25 @@ savable (PS), read back; then the facing phy, a link reset either way.
   found 4 test lints, #165, closed by the rerun); image requested.
 - [ ] proof on forge1: bay 3's Drive shows `hardwareMax` 12000 (the read);
   raising it is a DriveOperation `link_rate` the owner runs on bay 3.
+
+### #164: spec.spreadSpectrum, SSC on both ends (2026-11-19) — P2, waiting on the owner
+
+Findings before any code (sources: Linux `drivers/scsi/mpt3sas/mpi/mpi2_cnfg.h`,
+sdparm `sdparm_data.c`, smp_utils `smp_discover.c` decode_phy_cap):
+- The drive's SSC is in mode page **0x19 subpage 3** (enhanced phy control),
+  not 0x19/1: per phy, programmed phy capabilities (32 bits, SNW-3 layout):
+  G1..G5 at bits 23:14 in pairs, the high bit "without SSC", the low bit "with
+  SSC" (G1 23/22, G2 21/20, G3 19/18, G4 17/16, G5 15/14), TX SSC type bit 30;
+  current and attached capabilities after it; negotiated SSC is a bit beside
+  the negotiated physical link rate. SSC off = clear the with-SSC bits in the
+  programmed capabilities (MODE SELECT, if the drive marks them changeable),
+  then a link reset.
+- The HBA's SSC has **no control in MPI2's public config pages**: SAS IO Unit
+  Page 1 (ControlFlags, AdditionalControlFlags, PhyFlags, MaxMinLinkRate) and
+  the rest of mpi2_cnfg.h have no SSC bit. On LSI/Broadcom cards it lives in
+  vendor NVDATA (manufacturing pages), undocumented.
+- SNW-3 settles SSC for the link from both phys' capabilities, so the drive
+  advertising no with-SSC setting turns SSC off for the link; the negotiated
+  SSC bit (0x19/3, the attached capabilities) measures it.
+- Asked on #164 (drive side only + the card's side reported from what the
+  link negotiated, or vendor NVDATA); `wait-owner`.
