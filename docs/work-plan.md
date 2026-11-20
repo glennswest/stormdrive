@@ -2315,5 +2315,5 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
   that `shipped --commit` names, so the proof is checked only on an install
   whose stormdrive golden was built with the `apis` (stormd writes the
   `[[process.api]]` probes from them).
-- [ ] Proof on a node: `get:http://{node}:9094/api/plugins/health/snapshot`
-  shows the `drives` API of container stormdrive healthy.
+- [x] Shipped (feb743d, image build 51ad6b687f89) with the proof `get:http://{node}:9094/api/plugins/health/snapshot`
+  shows the `drives` API of container stormdrive healthy; closes when a node shows it.
