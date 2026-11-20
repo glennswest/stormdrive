@@ -20,6 +20,17 @@
 - **docs:** #152 work plan: stormcos#683 re-copied the Shelf CRD + role; shipped with an order-independent proof (status keys are alphabetical: `bays` before `position`)
 - **docs:** documentation refreshed from the code since 2026-11-12: `rescan.rs` added to the CLAUDE.md source tree; README, architecture, CRD and example config checked against config keys, health TLS fields, ALPN, tiers and status fields (no other drift found)
 
+## [v0.57.0] — 2026-11-20
+
+### Added
+- (#164) `spec.spreadSpectrum: on|off|default` on the Drive object: the drive's phys offer spread spectrum clocking or not (mode page 0x19/3; `off` keeps every rate, without SSC; saved when the page is savable), the facing phys' link resets so the link renegotiates; `status.link.ssc` reads, on every sample, what the drive offers, what the link negotiated, and what the HBA's or expander's phy offered (the card's side, reported only: MPI2 has no SSC control); the prior is kept on the object so `default` puts it back exactly
+
+### Fixed
+- (#164) clippy `type_complexity` in the SSC prior
+
+### Documentation
+- (#91) the registry's `apis` set by the master and checked in `component export`
+
 ## [v0.56.0] — 2026-11-19
 
 ### Added
