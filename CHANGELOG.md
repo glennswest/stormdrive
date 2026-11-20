@@ -21,6 +21,11 @@
 - **docs:** #152 work plan: stormcos#683 re-copied the Shelf CRD + role; shipped with an order-independent proof (status keys are alphabetical: `bays` before `position`)
 - **docs:** documentation refreshed from the code since 2026-11-12: `rescan.rs` added to the CLAUDE.md source tree; README, architecture, CRD and example config checked against config keys, health TLS fields, ALPN, tiers and status fields (no other drift found)
 
+## [v0.57.1] — 2026-11-20
+
+### Fixed
+- (#170, finding c1b3d071b848) a Format NVM of one namespace on a controller whose format reaches every namespace (FNA) is sent only when that namespace is the controller's only active one; otherwise refused, naming the others. The NVMe sibling count also reads `/sys/class/nvme/<ctrl>`
+
 ## [v0.57.0] — 2026-11-20
 
 ### Added
