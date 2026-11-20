@@ -2263,6 +2263,11 @@ on forge1's HBA330), redone here with IOC Facts, FW upload/download and the
 reset. Sources: Linux `drivers/scsi/mpt3sas/` (mpi2_ioc.h, mpi2_cnfg.h,
 mpi2_image.h, mpt3sas_ctl.[ch]).
 
+- **Paused 2026-11-19 for P0 #91 (stormcentral).** State: `src/mpt.rs` is
+  written and pushed (WIP) but **not yet in `src/lib.rs`, never compiled**:
+  next session adds `pub mod mpt;`, runs sc-build, fixes what it finds, then
+  card.rs. Kernel headers used are in `tmp/ref/` (not committed; refetch from
+  torvalds/linux `drivers/scsi/mpt3sas/`).
 - [ ] mpt.rs: a `Port` (the ioctls) behind every request so a fake card runs
   the same code: IOC Facts, standard + extended config pages (Manufacturing
   0, IO Unit 0, BIOS 3, SAS IO Unit 0/1, SAS Device 0, Enclosure 0), FW
