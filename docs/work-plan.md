@@ -2291,9 +2291,12 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] sc-build on 81ef1d2 / 9087ae8 (453 lib tests incl. the 17 new); clippy
   found one lint (#168), fixed.
 - [x] v0.56.0 (d89607b) built and tested; image build e24530e5e0e2 requested.
-- [ ] proof on forge1 (after stormcos#1242 ships the CRDs): the HBA330's
-  HostBusAdapter (`board` HBA330); a same-version flash once its firmware is
-  a golden in forge1's store. #166 is proposed `--after stormcos#1242`.
+- [x] stormcos#1242 done (930a998, 101806e): the CRDs + role in the
+  manifests, checked on a real rustkube. #166 marked `shipped` with the proof
+  `on forge1 api:/apis/storage.storm.io/v1/hostbusadapters ~ "board":"[^"]*HBA330`;
+  stormcentral closes it when a release carrying both shows it on forge1.
+- [ ] a same-version flash on forge1, once the HBA330's firmware is a golden
+  in forge1's store.
 
 ### #91: API health probes in the registry (2026-11-19) — P0
 
