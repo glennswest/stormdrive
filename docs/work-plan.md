@@ -2355,7 +2355,8 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - Not built: its only user is #163 (unbuilt). `spec.linkRate`/`link_rate` already write the same page through sysfs (`maximum_linkrate` + `link_reset`), which also keeps mpt3sas's cached `maximum_linkrate` in step; a direct WRITE_CURRENT would leave `status.link` stale. Proposed `--after stormdrive#163`; #163 decides sysfs (close #167 as not needed) or a card write (e.g. NVRAM persistence).
 
 ### #172: review findings in worker.rs (2026-11-20) — P1
-- [ ] 519a928662f6: the one-time ATA password must be durably on disk before SECURITY SET PASSWORD: `Worker::save_durable` returns an error (no data_dir, write or dir fsync failure) and the security erase refuses on it.
-- [ ] 6ef0ed7ccb7b: after the lane wait, guards and re-auth, the Running transition checks under the jobs lock that the job is not cancelled and the drive still Queued/Running; cancel wakes waiting drives (Notify) so they stop at once.
-- [ ] 776a07af0ae7: Enroll and `fleet::join` propagate a `drive_slabs` error instead of reading it as "no slab" and formatting.
+- **State (2026-11-20, paused for P0 #141):** all three fixes + tests + changelog/README/architecture are in c725a69, pushed. NOT yet built: sc-build twice got no build VM in the hour (exit 75, line capacity). Next: `sc-build 'cargo build --locked && cargo test --locked && cargo clippy --workspace --all-targets -- -D warnings'` on c725a69 (or later), fix anything it finds, v0.57.2, image, shipped, close #172.
+- [x] 519a928662f6: the one-time ATA password must be durably on disk before SECURITY SET PASSWORD: `Worker::save_durable` returns an error (no data_dir, write or dir fsync failure) and the security erase refuses on it.
+- [x] 6ef0ed7ccb7b: after the lane wait, guards and re-auth, the Running transition checks under the jobs lock that the job is not cancelled and the drive still Queued/Running; cancel wakes waiting drives (Notify) so they stop at once.
+- [x] 776a07af0ae7: Enroll and `fleet::join` propagate a `drive_slabs` error instead of reading it as "no slab" and formatting.
 - [ ] Tests, changelog; sc-build; image; shipped.
