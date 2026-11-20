@@ -847,6 +847,9 @@ async fn apply_outcome(
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let was_below = crate::link::state(&id).and_then(|s| crate::link::programmed_below(&s));
         let (st, changed) = crate::link::observe(id, r, now);
+        if let Some(ssc) = &r.drive_ssc {
+            crate::ssc::observe(id, ssc.clone());
+        }
         // The drive holds its own link below its hardware (#159): said once
         // (a change of the programmed rate says it again).
         if let Some(b) = crate::link::programmed_below(&st).filter(|b| was_below.as_ref() != Some(b)) {

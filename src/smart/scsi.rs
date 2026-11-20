@@ -355,6 +355,8 @@ mod linux {
             // Its own limits (#159): what its firmware programs, what its
             // hardware can.
             l.drive_limits = crate::link::read_limits(&dev);
+            // Its spread spectrum (#164): what it offers, what the link runs.
+            l.drive_ssc = crate::ssc::read(&dev);
         }
         let mut c = SmartCounters { source: "log_sense".into(), ..Default::default() };
         let mut any = false;

@@ -57,6 +57,7 @@ pub mod shelfobj;
 pub mod shelfview;
 pub mod smart;
 pub mod smr;
+pub mod ssc;
 pub mod stormblock;
 pub mod system;
 pub mod thermal;

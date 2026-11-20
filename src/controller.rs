@@ -234,6 +234,9 @@ pub struct Controller {
     /// (what was asked, the kernel name it went to). Once per daemon run —
     /// that is, every boot — and again when either changes (#149).
     drive_link_rate: HashMap<String, (String, String)>,
+    /// Drive `spec.spreadSpectrum` last applied (or refused), the same way
+    /// (#164).
+    drive_ssc: HashMap<String, (String, String)>,
     /// The last link level (not settling) each Drive's Event was judged by.
     drive_link: HashMap<String, crate::link::Level>,
     /// HostBusAdapter status last written (fingerprint, when) (#166).
@@ -260,6 +263,7 @@ pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
         shelf_defaults: HashMap::new(),
         drive_ident: HashMap::new(),
         drive_link_rate: HashMap::new(),
+        drive_ssc: HashMap::new(),
         drive_link: HashMap::new(),
         hba_written: HashMap::new(),
         cop_status: HashMap::new(),
@@ -312,6 +316,7 @@ impl Controller {
             .collect();
         // `spec.linkRate` first: its policy shows in the status written below.
         self.link_rates(&list).await;
+        self.spread_spectrum(&list).await;
         let items: HashMap<String, &Value> = list["items"].as_array().into_iter().flatten().filter_map(|i| Some((i["metadata"]["name"].as_str()?.to_string(), i))).collect();
         let objs: Vec<Value> = {
             let inv = self.state.inventory.read().await;
@@ -469,6 +474,78 @@ impl Controller {
             self.drive_link_rate.insert(name.to_string(), key);
         }
         self.drive_link_rate.retain(|k, _| seen.contains(k));
+    }
+
+    /// `spec.spreadSpectrum: on|off|default` (#164): the drive's phys offer
+    /// SSC or not (mode page 0x19/3), then the facing phys' link resets so
+    /// the link renegotiates; status.link.ssc says what it negotiated.
+    /// Applied once per daemon run (every boot) and again when the value or
+    /// the kernel name changes, as `spec.linkRate`. The programmed words
+    /// before the first change are the prior, kept in status.link.ssc.prior
+    /// and read back from the object at start, so `default` puts them back
+    /// exactly. Removing the field changes nothing. Never set by stormdrive
+    /// itself.
+    async fn spread_spectrum(&mut self, list: &Value) {
+        let mut seen = HashSet::new();
+        for item in list["items"].as_array().into_iter().flatten() {
+            let Some(name) = item["metadata"]["name"].as_str() else { continue };
+            let drive = {
+                let inv = self.state.inventory.read().await;
+                inv.resolve(name).map(|d| (d.id, d.name.clone()))
+            };
+            let Some((id, dname)) = drive else { continue };
+            seen.insert(name.to_string());
+            // The prior survives a restart on the object itself.
+            if crate::ssc::prior(&id).is_none() {
+                if let Some(p) = crate::ssc::prior_from_json(&item["status"]["link"]["ssc"]["prior"]) {
+                    crate::ssc::set_prior(id, Some(p));
+                }
+            }
+            let raw = &item["spec"]["spreadSpectrum"];
+            let want = match crate::ssc::parse_wanted(raw) {
+                Ok(w) => w,
+                Err(why) => {
+                    crate::ssc::set_policy(id, None);
+                    let key = (format!("invalid {raw}"), dname.clone());
+                    if self.drive_ssc.get(name) != Some(&key) {
+                        self.event_on("Drive", item, "Warning", "SpreadSpectrumInvalid", &format!("{dname}: {why}")).await;
+                        self.drive_ssc.insert(name.to_string(), key);
+                    }
+                    continue;
+                }
+            };
+            crate::ssc::set_policy(id, want);
+            let Some(w) = want else {
+                self.drive_ssc.remove(name);
+                continue;
+            };
+            let key = (w.word().to_string(), dname.clone());
+            if self.drive_ssc.get(name) == Some(&key) {
+                continue;
+            }
+            let n = dname.clone();
+            let prior = crate::ssc::prior(&id);
+            let r = tokio::task::spawn_blocking(move || crate::ssc::set(std::path::Path::new("/sys"), &n, w, prior.as_deref())).await;
+            let r = r.unwrap_or_else(|e| Err(e.to_string()));
+            match r {
+                Ok((done, keep)) => {
+                    if w == crate::ssc::Wanted::Default {
+                        crate::ssc::set_prior(id, None);
+                    } else if let Some(k) = keep {
+                        crate::ssc::set_prior(id, Some(k));
+                    }
+                    self.event_on("Drive", item, "Normal", "SpreadSpectrumSet", &format!("{dname}: spreadSpectrum {}: {done}", w.word())).await;
+                    self.state.events.write().await.push(Some(id), crate::events::Severity::Info, "link", format!("{dname}: spreadSpectrum {} (Drive spec.spreadSpectrum): {done}", w.word()));
+                }
+                Err(e) => {
+                    self.event_on("Drive", item, "Warning", "SpreadSpectrumFailed", &format!("{dname}: spreadSpectrum {}: {e}", w.word())).await;
+                    self.state.events.write().await.push(Some(id), crate::events::Severity::Warning, "link", format!("{dname}: spreadSpectrum {} (Drive spec.spreadSpectrum) not applied: {e}", w.word()));
+                }
+            }
+            // Once per change either way (set it again, or restart, to retry).
+            self.drive_ssc.insert(name.to_string(), key);
+        }
+        self.drive_ssc.retain(|k, _| seen.contains(k));
     }
 
     /// Keep a Shelf object per enclosure this node sees (#83), act on its

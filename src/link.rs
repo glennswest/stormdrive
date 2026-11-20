@@ -121,6 +121,8 @@ pub struct Reading {
     pub host_rates: HostRates,
     /// Mode page 0x19/1 (#159); None when not read.
     pub drive_limits: Option<DriveLimits>,
+    /// Mode page 0x19/3, the drive's SSC (#164); None when not read.
+    pub drive_ssc: Option<crate::ssc::DriveSsc>,
 }
 
 /// SPL's phy control and discover subpage of the protocol-specific port
@@ -385,7 +387,7 @@ pub fn gbit(mbps: u32) -> String {
 }
 
 /// SPL's negotiated logical link rate code, Mb/s.
-fn rate_code(code: u8) -> Option<u32> {
+pub(crate) fn rate_code(code: u8) -> Option<u32> {
     match code {
         0x8 => Some(1_500),
         0x9 => Some(3_000),
@@ -662,13 +664,18 @@ pub fn maximum_said(st: &LinkState, policy: Option<Wanted>) -> Option<String> {
 pub fn status(id: &DriveId) -> (Option<serde_json::Value>, Vec<serde_json::Value>) {
     let st = state(id);
     let policy = policy(id);
-    if st.is_none() && policy.is_none() {
+    let ssc = crate::ssc::status(id);
+    if st.is_none() && policy.is_none() && ssc.is_none() {
         return (None, Vec::new());
     }
     let mut v = st.as_ref().map(|s| serde_json::to_value(s).unwrap_or_default()).unwrap_or_else(|| serde_json::json!({}));
     v["policy"] = serde_json::json!(policy.map(Wanted::word));
     if let Some(s) = &st {
         v["maximum"] = serde_json::json!(maximum_said(s, policy));
+    }
+    // Spread spectrum on the drive's phys (#164).
+    if let Some(ssc) = ssc {
+        v["ssc"] = ssc;
     }
     let conds = st.map(|s| conditions(&s)).unwrap_or_default();
     (Some(v), conds)
@@ -862,6 +869,24 @@ pub fn apply_host(sys: &std::path::Path, name: &str, want: Wanted, reset: bool) 
     Ok(done.join("; "))
 }
 
+/// Reset the link of every phy facing a drive, so it renegotiates (the
+/// drive's offer changed, #164). Ok: which phys, in words.
+pub fn reset_host(sys: &std::path::Path, name: &str) -> Result<String, String> {
+    let real = std::fs::canonicalize(sys.join("block").join(name).join("device")).map_err(|e| format!("{name}: no device: {e}"))?;
+    let dirs = facing_phys(&real);
+    if dirs.is_empty() {
+        return Err(format!("{name}: no SAS phy faces it (no SAS transport in sysfs)"));
+    }
+    let mut done = Vec::new();
+    for dir in dirs {
+        let pname = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let attrs = [dir.join("sas_phy").join(&pname), dir.clone()].into_iter().find(|d| d.join("link_reset").exists()).ok_or_else(|| format!("{pname}: no link_reset"))?;
+        std::fs::write(attrs.join("link_reset"), "1").map_err(|e| format!("{pname}: link_reset: {e}"))?;
+        done.push(format!("{pname} link reset"));
+    }
+    Ok(done.join("; "))
+}
+
 /// `spec.linkRate` and a DriveOperation `link_rate` (#159): the drive's
 /// own programmed maximum first, when it is below what is asked (or `hw`
 /// and it is not at its hardware maximum), then the facing phy, its link
@@ -923,7 +948,7 @@ fn negotiated_after(sys: &std::path::Path, name: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn open_sg(name: &str) -> Option<crate::scsi::Device> {
+pub(crate) fn open_sg(name: &str) -> Option<crate::scsi::Device> {
     let node = crate::scsi::sg_path_for_block(name).unwrap_or_else(|| format!("/dev/{name}"));
     crate::scsi::Device::open(&node).ok()
 }
@@ -1091,6 +1116,7 @@ mod tests {
             host: vec![phy("phy-1:2", host)],
             host_rates: HostRates { negotiated: Some(12_000), maximum: Some(12_000), maximum_hw: Some(12_000), minimum_hw: Some(1_500) },
             drive_limits: None,
+            drive_ssc: None,
         }
     }
 
