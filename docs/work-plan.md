@@ -1969,7 +1969,7 @@ drive-management plane — confirm before building:
   sysfs paths (bay_identifier, enclosure_identifier, version_fw) are used
   where present.
 
-### #141: forge1's NOT READY drives (2026-11-13) — P0, done from our side
+### #141: forge1's NOT READY drives (2026-11-13) — P0, done (proof seen 2026-11-20)
 forge1 (IT-mode mpt3sas) took only bay 0 at boot; bays 3/4/7 (unformatted,
 512B) came up later and stayed `missing`/`unconfigured_bad` with a failed
 Nov 7 format on their Drive objects.
@@ -2000,6 +2000,14 @@ Nov 7 format on their Drive objects.
     stormdrive (no sg node). Their assets were last seen 2026-11-06, behind
     the PERC. A person's step (cabling/seating), `wait-owner --action`; the
     proof follows at the next forge1 install
+  - [x] 2026-11-20: proof seen on forge1's console, install
+    `forge1-1794940637` (12.91, passed 2026-11-17 18:37Z; console
+    `forge1-20261117-183717.log`): `mpt3sas, 4 drive(s)`, `FORMATTED: …
+    reads 4096-byte blocks, PROT_EN=1 P_TYPE 1` for naa.5000cca26801b648,
+    …8077300, …80ab8d8 and the bay 3 replacement …27ea19054 (the NetApp
+    …a819e68 dropped off the SAS link on its first write, 11/16, and the
+    owner replaced it), all four laid, `created set node-data … 4 drives,
+    parity 1`. The drives have been on the HBA since 2026-11-16. Closed.
 
 
 ### #143: formatcli on a drive with no SCSI passthrough (2026-11-14) — P0
