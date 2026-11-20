@@ -252,12 +252,15 @@ pub fn plan(page: &[u8], changeable: Option<&[u8]>, targets: &[Option<u32>]) -> 
     Ok(Some(list))
 }
 
+/// Each phy's programmed word before stormdrive first changed it.
+pub type Prior = Vec<(String, u32)>;
+
 /// What a sample read, kept per drive.
 static STATES: std::sync::OnceLock<Mutex<HashMap<DriveId, DriveSsc>>> = std::sync::OnceLock::new();
 /// `spec.spreadSpectrum` as the controller last read it.
 static POLICIES: std::sync::OnceLock<Mutex<HashMap<DriveId, Wanted>>> = std::sync::OnceLock::new();
 /// The programmed word of each phy before stormdrive first changed it.
-static PRIORS: std::sync::OnceLock<Mutex<HashMap<DriveId, Vec<(String, u32)>>>> = std::sync::OnceLock::new();
+static PRIORS: std::sync::OnceLock<Mutex<HashMap<DriveId, Prior>>> = std::sync::OnceLock::new();
 
 fn lock<T>(m: &'static std::sync::OnceLock<Mutex<T>>) -> std::sync::MutexGuard<'static, T>
 where
@@ -286,12 +289,12 @@ pub fn set_policy(id: DriveId, w: Option<Wanted>) {
     };
 }
 
-pub fn prior(id: &DriveId) -> Option<Vec<(String, u32)>> {
+pub fn prior(id: &DriveId) -> Option<Prior> {
     lock(&PRIORS).get(id).cloned()
 }
 
 /// Keep the prior; `None` forgets it (after `default` put it back).
-pub fn set_prior(id: DriveId, p: Option<Vec<(String, u32)>>) {
+pub fn set_prior(id: DriveId, p: Option<Prior>) {
     let mut m = lock(&PRIORS);
     match p {
         Some(p) => m.insert(id, p),
@@ -305,8 +308,8 @@ pub fn prior_json(p: &[(String, u32)]) -> serde_json::Value {
     serde_json::Value::Array(p.iter().map(|(phy, w)| serde_json::json!({ "phy": phy, "programmed": format!("0x{w:08x}") })).collect())
 }
 
-pub fn prior_from_json(v: &serde_json::Value) -> Option<Vec<(String, u32)>> {
-    let out: Vec<(String, u32)> = v
+pub fn prior_from_json(v: &serde_json::Value) -> Option<Prior> {
+    let out: Prior = v
         .as_array()?
         .iter()
         .filter_map(|e| Some((e["phy"].as_str()?.to_string(), u32::from_str_radix(e["programmed"].as_str()?.trim_start_matches("0x"), 16).ok()?)))
@@ -388,7 +391,7 @@ pub fn read(dev: &crate::scsi::Device) -> Option<DriveSsc> {
 /// the prior to keep: Some when this changed the drive and none was kept,
 /// so the caller records it)).
 #[cfg(target_os = "linux")]
-pub fn set(sys: &std::path::Path, name: &str, want: Wanted, prior: Option<&[(String, u32)]>) -> Result<(String, Option<Vec<(String, u32)>>), String> {
+pub fn set(sys: &std::path::Path, name: &str, want: Wanted, prior: Option<&[(String, u32)]>) -> Result<(String, Option<Prior>), String> {
     let dev = crate::link::open_sg(name).ok_or_else(|| format!("{name}: no SCSI device to open"))?;
     let page = sense(&dev, 0).map_err(|e| format!("the drive has no enhanced phy control page: {e}"))?;
     let chg = sense(&dev, 1).ok();
@@ -432,7 +435,7 @@ pub fn set(sys: &std::path::Path, name: &str, want: Wanted, prior: Option<&[(Str
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn set(_sys: &std::path::Path, name: &str, _want: Wanted, _prior: Option<&[(String, u32)]>) -> Result<(String, Option<Vec<(String, u32)>>), String> {
+pub fn set(_sys: &std::path::Path, name: &str, _want: Wanted, _prior: Option<&[(String, u32)]>) -> Result<(String, Option<Prior>), String> {
     Err(format!("{name}: SCSI mode pages are read on Linux only"))
 }
 
