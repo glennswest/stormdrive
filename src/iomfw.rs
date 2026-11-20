@@ -6,7 +6,9 @@
 //! One IOM at a time: on a dual-IOM shelf each IOM is its own SES device (an
 //! ESP path), and every drive has a path through each. The first IOM is
 //! updated, it restarts, and only when it answers again **and** the drives
-//! have their second path back is the other one touched. A shelf where a
+//! have their second path back — probed on the devices by WWID and held
+//! for a settle window, not read from the inventory — is the other one
+//! touched. A shelf where a
 //! drive that serves data would lose its only path is refused unless the
 //! request says `allow_path_loss`. Never automatic; the images come from the
 //! same store as drive firmware (`<data_dir>/firmware`, #29 says where they
@@ -222,6 +224,11 @@ const POLL: Duration = Duration::from_secs(5);
 const RESTART_WAIT: Duration = Duration::from_secs(15 * 60);
 /// …and the drives' paths through it come back after it does.
 const PATHS_WAIT: Duration = Duration::from_secs(10 * 60);
+/// The paths must read back, probed directly, for this long without a gap
+/// before the next IOM goes down (#172 finding 759a0ee08e0a): an IOM that
+/// reported its update done may still be about to reset, and one probe
+/// that lands before it does would pass.
+const PATHS_SETTLE: Duration = Duration::from_secs(60);
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -331,15 +338,115 @@ fn update_esp(_: &EspPath, _: &[u8], _: usize, _: &(dyn Fn(u64, &str) + Sync)) -
     Err("SES requires Linux".into())
 }
 
-/// Each drive on the shelf and how many paths it has now.
-async fn shelf_paths(state: &AppState, key: &str) -> Vec<(String, usize)> {
-    let inv = state.inventory.read().await;
-    inv.drives
-        .values()
+/// A drive on the shelf whose paths a run watches, by its stable identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Watched {
+    name: String,
+    wwid: String,
+}
+
+/// The drives on the shelf that a run watches: the ones present, by WWID —
+/// the identity every path of a drive shares — and the names of those it
+/// cannot follow (no WWID).
+fn shelf_drives(key: &str, drives: &[Drive]) -> (Vec<Watched>, Vec<String>) {
+    let mut watched = vec![];
+    let mut blind = vec![];
+    for d in drives
+        .iter()
         .filter(|d| d.location.shelf.as_ref().and_then(|s| s.key()).as_deref() == Some(key))
         .filter(|d| d.activity != crate::drive::Activity::Missing)
-        .map(|d| (d.name.clone(), d.paths.len()))
+    {
+        match d.wwid.as_deref().filter(|w| !w.is_empty()) {
+            Some(w) => watched.push(Watched { name: d.name.clone(), wwid: w.to_string() }),
+            None => blind.push(d.name.clone()),
+        }
+    }
+    (watched, blind)
+}
+
+/// The block nodes under `sys` (`/sys`) that are paths of the drive with
+/// this WWID and work now: the kernel holds the SCSI device `running` and
+/// the path answers a command (`usable`). Read from sysfs and the device
+/// itself, never from the inventory, which discovery refreshes on its own
+/// time (finding 759a0ee08e0a).
+fn live_paths(sys: &std::path::Path, wwid: &str, usable: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let Ok(dir) = std::fs::read_dir(sys.join("block")) else { return vec![] };
+    let mut names: Vec<String> = dir
+        .flatten()
+        .filter(|e| std::fs::read_to_string(e.path().join("device/wwid")).is_ok_and(|w| w.trim() == wwid))
+        .filter(|e| std::fs::read_to_string(e.path().join("device/state")).is_ok_and(|s| s.trim() == "running"))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| usable(&format!("/dev/{n}")))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Does this path answer? TEST UNIT READY: GOOD, or a CHECK CONDITION with
+/// sense (a UNIT ATTENTION after the IOM's reset is the drive answering
+/// over this path). No answer — a transport error, an open that fails — is
+/// a path that is not there.
+#[cfg(target_os = "linux")]
+fn path_answers(dev: &str) -> bool {
+    match crate::scsi::Device::open(dev) {
+        Ok(d) => matches!(d.test_unit_ready(), Ok(()) | Err(crate::scsi::Error::Sense(_))),
+        Err(_) => false,
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn path_answers(_: &str) -> bool {
+    false
+}
+
+/// Each watched drive's working paths now, probed directly.
+async fn probe_paths(watched: &[Watched]) -> Vec<(Watched, usize)> {
+    let w = watched.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let sys = std::path::Path::new("/sys");
+        w.into_iter().map(|d| {
+            let n = live_paths(sys, &d.wwid, &path_answers).len();
+            (d, n)
+        }).collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// The drives with fewer working paths now than before the IOM went down,
+/// matched by WWID (a path that comes back may have another /dev name).
+fn short_paths(before: &[(Watched, usize)], now: &[(Watched, usize)]) -> Vec<String> {
+    before
+        .iter()
+        .filter(|(d, p)| !now.iter().any(|(m, q)| m.wwid == d.wwid && q >= p))
+        .map(|(d, _)| d.name.clone())
         .collect()
+}
+
+/// Wait, after an IOM's update, until every drive has its paths back by a
+/// direct probe, held for `settle` with no gap. Err: the drives still short
+/// when `limit` ran out.
+async fn wait_paths_back<F, Fut>(before: &[(Watched, usize)], probe: F, settle: Duration, poll: Duration, limit: Duration) -> Result<(), Vec<String>>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Vec<(Watched, usize)>>,
+{
+    let t0 = std::time::Instant::now();
+    let mut held_since: Option<std::time::Instant> = None;
+    loop {
+        let short = short_paths(before, &probe().await);
+        if short.is_empty() {
+            let since = *held_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= settle {
+                return Ok(());
+            }
+        } else {
+            held_since = None;
+            if t0.elapsed() > limit {
+                return Err(short);
+            }
+        }
+        tokio::time::sleep(poll).await;
+    }
 }
 
 /// Start updating every IOM of the shelf, one at a time. `Err` when it
@@ -358,11 +465,19 @@ pub async fn start(state: Arc<AppState>, report: crate::ses::ShelfReport, image_
     if esps.is_empty() {
         return Err(format!("shelf {key}: no SES path with an sg node"));
     }
+    let drives: Vec<Drive> = state.inventory.read().await.drives.values().cloned().collect();
     if !allow_path_loss {
-        let drives: Vec<Drive> = state.inventory.read().await.drives.values().cloned().collect();
         if let Some(why) = path_loss_blocker(&key, &drives, esps.len()) {
             return Err(format!("shelf {key}: {why}"));
         }
+    }
+    // Which drives' paths are watched: by WWID, read from the devices.
+    let (watched, blind) = shelf_drives(&key, &drives);
+    if !blind.is_empty() && !allow_path_loss {
+        return Err(format!(
+            "shelf {key}: no WWID for {}, so their paths cannot be checked between IOMs (allow_path_loss to go ahead)",
+            blind.join(", ")
+        ));
     }
     let handle = Arc::new(ShelfFwHandle {
         run: Mutex::new(ShelfFwRun {
@@ -401,7 +516,8 @@ pub async fn start(state: Arc<AppState>, report: crate::ses::ShelfReport, image_
     tokio::spawn(async move {
         let mut error = None;
         for (i, esp) in esps.iter().enumerate() {
-            let before = shelf_paths(&state, &key).await;
+            // Probed now, from the devices: what must be back afterwards.
+            let before = probe_paths(&watched).await;
             let (h2, e2, img) = (h.clone(), esp.clone(), image.clone());
             let r = tokio::task::spawn_blocking(move || {
                 let progress = |bytes: u64, phase: &str| h2.iom(i, |r| {
@@ -422,22 +538,10 @@ pub async fn start(state: Arc<AppState>, report: crate::ses::ShelfReport, image_
                     });
                     // The drives' paths through this IOM must be back before
                     // the next IOM goes down.
-                    let waited = std::time::Instant::now();
-                    loop {
-                        let now = shelf_paths(&state, &key).await;
-                        let short: Vec<&str> = before
-                            .iter()
-                            .filter(|(n, p)| !matches!(now.iter().find(|(m, _)| m == n), Some((_, q)) if q >= p))
-                            .map(|(n, _)| n.as_str())
-                            .collect();
-                        if short.is_empty() {
-                            break;
-                        }
-                        if waited.elapsed() > PATHS_WAIT {
-                            error = Some(format!("after IOM {}: paths did not come back for {}; the other IOM(s) were not touched", esp.scsi_id, short.join(", ")));
-                            break;
-                        }
-                        tokio::time::sleep(POLL).await;
+                    // Probed directly and held for PATHS_SETTLE, never read
+                    // from the inventory (finding 759a0ee08e0a).
+                    if let Err(short) = wait_paths_back(&before, || probe_paths(&watched), PATHS_SETTLE, POLL, PATHS_WAIT).await {
+                        error = Some(format!("after IOM {}: paths did not come back for {}; the other IOM(s) were not touched", esp.scsi_id, short.join(", ")));
                     }
                     let msg = format!(
                         "shelf {key}: IOM {} ({}) updated {} → {}{}",
@@ -548,6 +652,85 @@ mod tests {
         assert_eq!(chunk_len(1 << 20), MAX_CHUNK & !3);
         assert_eq!(chunk_len(4097), 4096);
         assert_eq!(chunk_len(0), 4);
+    }
+
+    fn fake_sys(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("stormdrive-iomfw-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn fake_disk(sys: &std::path::Path, name: &str, wwid: &str, state: &str) {
+        let d = sys.join("block").join(name).join("device");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("wwid"), format!("{wwid}\n")).unwrap();
+        std::fs::write(d.join("state"), format!("{state}\n")).unwrap();
+    }
+
+    /// Finding 759a0ee08e0a: paths are read from sysfs and the device, by
+    /// WWID — a path the kernel holds offline, or one that does not answer,
+    /// is not counted.
+    #[test]
+    fn live_paths_are_running_and_answer() {
+        let sys = fake_sys("live");
+        fake_disk(&sys, "sdb", "naa.5000c500aaaa0001", "running");
+        fake_disk(&sys, "sdq", "naa.5000c500aaaa0001", "running");
+        fake_disk(&sys, "sdr", "naa.5000c500aaaa0001", "transport-offline");
+        fake_disk(&sys, "sdc", "naa.5000c500bbbb0002", "running");
+        let all = |_: &str| true;
+        assert_eq!(live_paths(&sys, "naa.5000c500aaaa0001", &all), vec!["sdb", "sdq"]);
+        let no_sdq = |d: &str| d != "/dev/sdq";
+        assert_eq!(live_paths(&sys, "naa.5000c500aaaa0001", &no_sdq), vec!["sdb"], "a path that does not answer");
+        assert!(live_paths(&sys, "naa.nothing", &all).is_empty());
+        let _ = std::fs::remove_dir_all(&sys);
+    }
+
+    fn w(name: &str, wwid: &str) -> Watched {
+        Watched { name: name.into(), wwid: wwid.into() }
+    }
+
+    #[test]
+    fn short_paths_match_by_wwid_not_name() {
+        let before = vec![(w("sdb", "naa.1"), 2), (w("sdc", "naa.2"), 2)];
+        // sdb came back under another name: the WWID is what counts.
+        let now = vec![(w("sdz", "naa.1"), 2), (w("sdc", "naa.2"), 1)];
+        assert_eq!(short_paths(&before, &now), vec!["sdc"]);
+        assert!(short_paths(&before, &[(w("sdb", "naa.1"), 3), (w("sdc", "naa.2"), 2)]).is_empty());
+        assert_eq!(short_paths(&before, &[]).len(), 2, "a drive gone is short");
+    }
+
+    /// The stale-count case of the finding: the first probes still read two
+    /// paths (the IOM has not reset yet), then one drops, then it comes back.
+    /// A pass on the first probe would have taken the second IOM down with
+    /// a path still missing; the wait holds until the paths read back for
+    /// the whole settle window.
+    #[tokio::test]
+    async fn the_paths_must_hold_for_the_settle_window() {
+        let before = vec![(w("sdb", "naa.1"), 2)];
+        let seq = std::sync::Mutex::new(vec![2usize, 2, 1, 1, 2, 2, 2, 2, 2, 2].into_iter());
+        let seen = std::sync::atomic::AtomicUsize::new(0);
+        let probe = || {
+            seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let n = seq.lock().unwrap().next().unwrap_or(2);
+            async move { vec![(w("sdb", "naa.1"), n)] }
+        };
+        let ms = Duration::from_millis;
+        wait_paths_back(&before, probe, ms(30), ms(10), ms(5_000)).await.unwrap();
+        assert!(seen.load(std::sync::atomic::Ordering::Relaxed) >= 6, "not passed on the first two-path probes");
+        // Never back: the drives still short are named.
+        let never = || async { vec![(w("sdb", "naa.1"), 1)] };
+        assert_eq!(wait_paths_back(&before, never, ms(30), ms(10), ms(50)).await.unwrap_err(), vec!["sdb"]);
+    }
+
+    #[test]
+    fn a_drive_with_no_wwid_cannot_be_watched() {
+        let mut a = on_shelf("sdb", 2, true);
+        a.wwid = Some("naa.1".into());
+        let b = on_shelf("sdc", 2, true);
+        let key = a.location.shelf.as_ref().and_then(|s| s.key()).unwrap();
+        let (watched, blind) = shelf_drives(&key, &[a, b]);
+        assert_eq!(watched, vec![w("sdb", "naa.1")]);
+        assert_eq!(blind, vec!["sdc"]);
     }
 
     fn on_shelf(name: &str, paths: usize, fleet: bool) -> Drive {

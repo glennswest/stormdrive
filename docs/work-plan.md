@@ -2368,3 +2368,8 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] 6ef0ed7ccb7b: after the lane wait, guards and re-auth, the Running transition checks under the jobs lock that the job is not cancelled and the drive still Queued/Running; cancel wakes waiting drives (Notify) so they stop at once.
 - [x] 776a07af0ae7: Enroll and `fleet::join` propagate a `drive_slabs` error instead of reading it as "no slab" and formatting.
 - [ ] Tests, changelog; sc-build; image; shipped.
+
+### #173: IOM firmware path check on stale counts (finding 759a0ee08e0a) (2026-11-20) — P1
+- [x] `iomfw.rs`: paths probed directly (`live_paths`: sysfs by WWID, state `running`, TUR answered), before and after each IOM, matched by WWID (`short_paths`), held `PATHS_SETTLE` (60 s) with no gap (`wait_paths_back`); a drive with no WWID refuses the run unless `allow_path_loss`.
+- [x] Tests (fake sysfs, the stale-then-drop sequence, WWID matching), README, architecture, changelog.
+- [ ] sc-build (build + test + clippy); v0.57.2 with #172; image; shipped.

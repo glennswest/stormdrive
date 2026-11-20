@@ -602,9 +602,12 @@ are listed under [Not yet](#not-yet).
     SES Download Microcode (page 0x0E, SEND DIAGNOSTIC, mode 0x07), one IOM
     (ESP path) at a time. Each IOM's progress is watched on its status page
     while it restarts, for up to 15 min. The next IOM is touched only once
-    the drives' paths through the first are back. It is refused when a
-    drive serving data (fleet, or holding a slab) has no second path, e.g.
-    a single-pathed shelf, unless `allow_path_loss`. `GET …/firmware` gives
+    the drives' paths through the first are back, probed on the devices
+    themselves (sysfs by WWID, SCSI state `running`, TEST UNIT READY
+    answered) and held for 60 s, not read from the inventory (#172). It is
+    refused when a drive serving data (fleet, or holding a slab) has no
+    second path, e.g. a single-pathed shelf, or when a drive on the shelf
+    has no WWID, unless `allow_path_loss`. `GET …/firmware` gives
     each IOM's revision (sysfs `rev`) and the run.
 - **No page** (#84, owner: "stormdrive should be part of stormui, as a
   plugin"). The Svelte page that lived in `web/` (#6, #38, #47) is gone in

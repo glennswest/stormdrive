@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-20
+- **fix:** #173 (finding 759a0ee08e0a) a shelf IOM firmware run no longer takes the next IOM down on stale path counts: before and after each IOM every drive's working paths are probed on the devices (sysfs by WWID, SCSI state `running`, TEST UNIT READY answered), matched by WWID, and must hold for 60 s with no gap; never read from the inventory. A shelf with a drive that has no WWID is refused unless `allow_path_loss`
 - **docs:** #141 work plan: proof seen on forge1's console (install forge1-1794940637, 12.91, passed): 4 drives on the HBA, each formatted 4096 + PI type 1, all laid, node-data set created over 4 with parity 1; issue closed
 - **fix:** #172 (finding 519a928662f6) an ATA security erase sets its one-time password only once jobs.json holds it durably (file and directory synced); with no `data_dir` or a failed write it fails with the drive untouched and the password taken back
 - **fix:** #172 (finding 6ef0ed7ccb7b) a cancelled job no longer starts a step when a lane frees: a cancel wakes drives waiting for a lane, and the move to Running checks the job's cancel flag and the drive's state under the same lock cancel takes

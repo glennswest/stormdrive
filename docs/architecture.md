@@ -1073,11 +1073,18 @@ health-gated, abort-on-regression.
     that dropped off and came back idle (restarted on new code). It finds
     the IOM again by SAS address and reads its new revision from sysfs
     `rev`.
-  - **One IOM at a time.** The ESPs go in SCSI-id order. Before the next
-    one, every drive on the shelf must have its path count back (10 min,
-    then the run stops and says which). It is refused when a drive serving
-    data would lose its only path (`path_loss_blocker`), unless
-    `allow_path_loss`.
+  - **One IOM at a time.** The ESPs go in SCSI-id order. Before each IOM,
+    every drive on the shelf has its working paths probed directly, by
+    WWID: block nodes in sysfs with that WWID, the SCSI device `running`,
+    and the path answering TEST UNIT READY (GOOD or sense, e.g. a UNIT
+    ATTENTION; no answer is no path). Before the next IOM, every drive
+    must have that count back, held for 60 s with no gap (an IOM that said
+    "done" may still be about to reset); 10 min, then the run stops and
+    says which. Never the inventory's path counts, which discovery
+    refreshes on its own time (#172, finding 759a0ee08e0a). It is refused
+    when a drive serving data would lose its only path
+    (`path_loss_blocker`), or when a drive on the shelf has no WWID to
+    follow, unless `allow_path_loss`.
   - **Records.** Runs are in memory per shelf, like drive firmware runs;
     events go out on start, per IOM and at the end.
 - Policy: never automatic. Out-of-fleet drives update in parallel;
