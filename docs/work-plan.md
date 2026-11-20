@@ -2296,7 +2296,9 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
   timeout 10 s, no restart (a format or flash must never be cut short).
   Plain path, no token (`allow_anonymous` serves it; a bearer would put a
   TokenReview behind every probe). README "API health probes".
-- [ ] The registry is the master's (session token refused on
-  `/api/v1/config/components/check`): command sent with `stormcentral note`.
+- [x] The registry is the master's (session token refused on
+  `/api/v1/config/components/check`): command sent with `stormcentral note`;
+  sc-build passed on fd542b7; `wait-owner --action` with the command (a
+  to-do card; Done puts #91 back in line).
 - [ ] After the master sets it: export shows `apis`, sc-build, image build,
   close.
