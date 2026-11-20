@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-20
+- **docs:** #167 work plan: the card-side rate write is held after #163, its only user (spec.linkRate already writes the same page through sysfs, keeping the kernel's cached rate in step)
 - **fix:** #170 (finding c1b3d071b848, critical) a Format NVM of one namespace no longer erases its siblings: on a controller with FNA bit 0 (format applies to every namespace) the broadcast is sent only when the controller's own active namespace list (Identify CNS 2) holds the selected namespace alone; with others it is refused naming them, and refused when the list cannot be read unless NN = 1. `stormdrive format` reports it as Refused (exit 3). The worker's NVMe sibling count (sanitize refusal) also counts namespaces sysfs shows under the controller, not only the inventory's
 - **feat:** #164 `spec.spreadSpectrum: on|off|default` on the Drive object: the drive's phys offer SSC or not (mode page 0x19/3, every rate kept, saved when savable), the facing phys' link resets; `status.link.ssc` reads the drive's offer, what the link negotiated and what the HBA/expander phy offered (reported only: MPI2 has no SSC control), with the prior kept on the object so `default` is exact; CRD, README, architecture
 - **docs:** #91 the master set `apis` (drives, shelves) on stormdrive's registry entry; checked in `component export`; image requested, shipped with the node's API health snapshot as the proof
