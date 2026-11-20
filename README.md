@@ -522,8 +522,10 @@ are listed under [Not yet](#not-yet).
        not Sanitize. It sends ATA SECURITY ERASE UNIT through ATA
        PASS-THROUGH(16); enhanced is used when the drive supports it unless
        `enhanced: false`. It works under a one-time user password, which is
-       saved in the job record (`ata_password` in jobs.json) and a warning
-       event **before** the drive sees it, and cleared once IDENTIFY reads
+       saved in the job record (`ata_password` in jobs.json, synced to disk;
+       without a `data_dir` or on a failed write the step fails and the
+       drive is untouched, #172) and a warning event **before** the drive
+       sees it, and cleared once IDENTIFY reads
        security off again. A drive that loses power mid-erase stays locked
        with it (`hdparm --user-master u --security-unlock <pw>`). It is
        refused on a frozen drive (a hot-replug or a host suspend/resume
@@ -568,7 +570,9 @@ are listed under [Not yet](#not-yet).
     read back like any other; after a node restart its drive is found by WWID.
     Anything else in
     flight becomes `interrupted` until `POST …/resume`; it is never re-run
-    blind. `POST …/cancel` stops the steps that have not started.
+    blind. `POST …/cancel` stops the steps that have not started,
+    including a drive waiting for its HBA or failure-domain lane: it stops
+    at once and never starts its step when the lane frees (#172).
   - The same pass covers what was not a worker job (#39): a format from
     `/api/v1/format` (or a drive's/shelf's) still running on a SCSI drive
     is watched to the end, and must then report the block size it was

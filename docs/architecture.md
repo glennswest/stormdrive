@@ -940,7 +940,10 @@ kept.
        set.
     2. A one-time printable password goes into the drive job
        (`ata_password`). jobs.json is saved and an event names it, before
-       SECURITY SET PASSWORD.
+       SECURITY SET PASSWORD. The save is synced (the file and its
+       directory) and must succeed: with no `data_dir`, or a write or sync
+       that fails, the password is taken back out and the step fails with
+       the drive untouched (#172).
     3. ERASE PREPARE, then ERASE UNIT, enhanced when supported. ERASE UNIT
        blocks, so its SG_IO timeout is the drive's estimate × 1.5 + 30 min
        (48 h when the drive gives none or says over 508 min). A failure

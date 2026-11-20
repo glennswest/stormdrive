@@ -754,7 +754,13 @@ pub async fn join(
     }
     let mut slab_tier = None;
     if format_slab {
-        let has_slab = !state.stormblock.drive_slabs(path).await.unwrap_or_default().is_empty();
+        // An error is not "no slab" (#172): stop with it, never format on it.
+        let has_slab = !state
+            .stormblock
+            .drive_slabs(path)
+            .await
+            .map_err(|e| e.context(format!("slabs on {path}: no slab formatted without knowing none is there")))?
+            .is_empty();
         if !has_slab {
             let tier = tier.unwrap_or_else(|| state.stormblock.tier_for(kind));
             state.stormblock.format_slab(path, &tier, None).await?;

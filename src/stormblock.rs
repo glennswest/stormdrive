@@ -603,7 +603,10 @@ impl StormBlockClient {
             .error_for_status()?
             .json()
             .await?;
-        Ok(v.get("items").and_then(|i| i.as_array().cloned()).unwrap_or_default())
+        // An answer with no `items` list is not "no slabs" (#172).
+        v.get("items")
+            .and_then(|i| i.as_array().cloned())
+            .ok_or_else(|| anyhow::anyhow!("GET {id_or_path}/slabs: the answer has no items list"))
     }
 
     /// GET /api/v1/slabs — the whole pool, for the summary card.

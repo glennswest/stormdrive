@@ -99,6 +99,16 @@ pub fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     f.sync_all()
 }
 
+/// [`write_atomic`], and the rename itself made durable or an error: for a
+/// file whose loss cannot be recovered from (the one-time ATA password a
+/// security erase sets, #172), where "probably on disk" is not enough.
+pub fn write_durable(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    write_atomic(path, bytes)?;
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
 /// Make a rename in `dir` durable. Best effort: the data is already safe.
 pub fn sync_dir(dir: &Path) {
     if let Ok(d) = std::fs::File::open(dir) {
@@ -343,6 +353,18 @@ mod tests {
         assert!(note.expect("said").contains("inventory.json"));
         assert!(dir.join("inventory.json.unreadable").is_dir());
         Inventory::default().save(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_durable_writes_or_says_why_not() {
+        let dir = state_dir("durable");
+        let path = dir.join("jobs.json");
+        write_durable(&path, b"one").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        // A file where the directory should be: the write fails, and says so.
+        let blocked = dir.join("jobs.json").join("x.json");
+        assert!(write_durable(&blocked, b"two").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

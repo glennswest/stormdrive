@@ -670,6 +670,8 @@ pub struct Worker {
     path: Option<PathBuf>,
     save_lock: tokio::sync::Mutex<()>,
     seq: std::sync::atomic::AtomicU64,
+    /// Woken by a cancel, so a drive waiting for a lane stops at once (#172).
+    wake: tokio::sync::Notify,
 }
 
 impl Worker {
@@ -691,6 +693,7 @@ impl Worker {
             path,
             save_lock: Default::default(),
             seq: Default::default(),
+            wake: Default::default(),
         };
         (worker, note)
     }
@@ -756,7 +759,21 @@ impl Worker {
     }
 
     async fn save(&self) {
-        let Some(path) = &self.path else { return };
+        if self.path.is_none() {
+            return;
+        }
+        if let Err(e) = self.save_durable().await {
+            tracing::error!("jobs.json write failed: {e}");
+        }
+    }
+
+    /// Write jobs.json and wait until it, and its rename, are on disk — or
+    /// say why not. What cannot be lost (the ATA password, #172) is saved
+    /// with this, and nothing goes ahead on an error.
+    async fn save_durable(&self) -> Result<(), String> {
+        let Some(path) = &self.path else {
+            return Err("stormdrive has no data_dir, so nothing it records survives a restart".into());
+        };
         let _g = self.save_lock.lock().await;
         let bytes = {
             let mut jobs = self.jobs.lock().unwrap();
@@ -768,9 +785,75 @@ impl Worker {
             serde_json::to_vec(&*jobs).unwrap_or_default()
         };
         let path = path.clone();
-        if let Err(e) = tokio::task::spawn_blocking(move || crate::inventory::write_atomic(&path, &bytes)).await.unwrap_or_else(|e| Err(e.into())) {
-            tracing::error!("jobs.json write failed: {e:#}");
+        let shown = path.display().to_string();
+        tokio::task::spawn_blocking(move || crate::inventory::write_durable(&path, &bytes))
+            .await
+            .unwrap_or_else(|e| Err(e.into()))
+            .map_err(|e| format!("{shown}: {e:#}"))
+    }
+
+    /// Put a security erase's one-time password on record (#172): in the
+    /// job and durably in jobs.json. On an error the password is taken
+    /// back out and the drive must never see it — a password the drive
+    /// keeps and no one recorded locks it for good.
+    async fn record_ata_password(&self, job: &str, idx: usize, password: &str) -> Result<(), String> {
+        self.with(job, idx, |x| x.ata_password = Some(password.to_string()));
+        if let Err(e) = self.save_durable().await {
+            self.with(job, idx, |x| x.ata_password = None);
+            return Err(format!("the one-time ATA password could not be recorded ({e}); the drive was not touched"));
         }
+        Ok(())
+    }
+
+    /// Is this job cancelled (or gone)?
+    fn cancelled(&self, job: &str) -> bool {
+        self.jobs.lock().unwrap().get(job).map_or(true, |j| j.cancel)
+    }
+
+    /// Wait for a lane's permit, unless the job is cancelled first (#172).
+    /// None: cancelled; the drive does not go on.
+    async fn wait_lane(&self, job: &str, lane: Arc<tokio::sync::Semaphore>) -> Option<Option<tokio::sync::OwnedSemaphorePermit>> {
+        loop {
+            let woken = self.wake.notified();
+            tokio::pin!(woken);
+            // Registered before the check, so a cancel after it still wakes us.
+            woken.as_mut().enable();
+            if self.cancelled(job) {
+                return None;
+            }
+            tokio::select! {
+                p = lane.clone().acquire_owned() => return Some(p.ok()),
+                _ = &mut woken => {}
+            }
+        }
+    }
+
+    /// The step starts: the drive goes Running — only if, at this moment,
+    /// the job is not cancelled and the drive is still Queued or Running
+    /// (#172). The check and the change happen under one lock, which cancel
+    /// takes too, so a cancel either comes first and wins, or comes after
+    /// and lets the running step finish. False: cancelled (the drive is
+    /// marked so) or no longer runnable; the step does not run.
+    fn start_step(&self, job: &str, idx: usize, phase: &str) -> bool {
+        let mut jobs = self.jobs.lock().unwrap();
+        let Some(j) = jobs.get_mut(job) else { return false };
+        let cancel = j.cancel;
+        let Some(d) = j.drives.get_mut(idx) else { return false };
+        if !matches!(d.state, DjState::Queued | DjState::Running) {
+            return false;
+        }
+        if cancel {
+            d.state = DjState::Cancelled;
+            d.phase = "cancelled".into();
+            d.progress_pct = None;
+            d.finished = Some(SystemTime::now());
+            return false;
+        }
+        d.state = DjState::Running;
+        d.phase = phase.into();
+        d.progress_pct = None;
+        d.started.get_or_insert(SystemTime::now());
+        true
     }
 
     fn lane(&self, key: &str, permits: usize) -> Arc<tokio::sync::Semaphore> {
@@ -1020,6 +1103,8 @@ pub async fn cancel(state: &Arc<AppState>, id: &str) -> Result<Value, String> {
             d.finished = Some(SystemTime::now());
         }
     }
+    // Drives waiting for a lane stop now, not when the lane frees (#172).
+    state.worker.wake.notify_waiters();
     state.worker.save().await;
     state.events.write().await.push(None, Severity::Info, "worker", format!("job {id}: cancelled (running steps finish; the rest do not start)"));
     Ok(state.worker.get(id).unwrap_or_default())
@@ -1107,14 +1192,22 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
             return;
         };
         // Wait for a lane: low-level steps per HBA, enroll per failure domain.
-        let permit = if step.only_asks() || step.link_only() {
+        let lane = if step.only_asks() || step.link_only() {
             None
         } else if step.low_level() || matches!(step, Step::Partition { .. }) {
             state.worker.progress(&job, idx, None, &format!("waiting ({})", hba_key(&drive)));
-            state.worker.lane(&hba_key(&drive), cfg.max_per_hba).acquire_owned().await.ok()
+            Some(state.worker.lane(&hba_key(&drive), cfg.max_per_hba))
         } else {
             state.worker.progress(&job, idx, None, &format!("waiting ({})", domain_key(&drive)));
-            state.worker.domain(&domain_key(&drive), cfg.enroll_per_domain).acquire_owned().await.ok()
+            Some(state.worker.domain(&domain_key(&drive), cfg.enroll_per_domain))
+        };
+        let permit = match lane {
+            None => None,
+            Some(lane) => match state.worker.wait_lane(&job, lane).await {
+                Some(p) => p,
+                // Cancelled while waiting: back to the top, which marks it.
+                None => continue,
+            },
         };
         // Everything is checked again right before it happens.
         let Some(drive) = state.inventory.read().await.drives.get(&drive_id).cloned() else {
@@ -1142,9 +1235,16 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
             }
             Err(crate::kubeauth::RecheckError::Unavailable(why)) => {
                 let why = format!("before {}: could not re-check {} ({why}); resume when the apiserver answers", step.name(), requester.who);
+                let cancelled = state.worker.cancelled(&job);
                 state.worker.with(&job, idx, |d| {
-                    d.state = DjState::Interrupted;
-                    d.phase = "interrupted".into();
+                    if cancelled {
+                        d.state = DjState::Cancelled;
+                        d.phase = "cancelled".into();
+                        d.finished = Some(SystemTime::now());
+                    } else {
+                        d.state = DjState::Interrupted;
+                        d.phase = "interrupted".into();
+                    }
                     d.error = Some(why.clone());
                 });
                 state.events.write().await.push(Some(drive_id), Severity::Warning, "worker", format!("{}: job {job} — {why}", drive.name));
@@ -1152,12 +1252,11 @@ async fn run_drive(state: Arc<AppState>, job: String, idx: usize) {
                 return;
             }
         }
-        state.worker.with(&job, idx, |d| {
-            d.state = DjState::Running;
-            d.phase = step.name().into();
-            d.progress_pct = None;
-            d.started.get_or_insert(SystemTime::now());
-        });
+        // Cancelled during the waits above: the step never starts (#172).
+        if !state.worker.start_step(&job, idx, step.name()) {
+            state.worker.save().await;
+            return;
+        }
         state.worker.save().await;
         let result = run_step(&state, &job, idx, &drive, &step, &steps).await;
         drop(permit);
@@ -1379,8 +1478,8 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
                 Some(p) => p,
                 None => {
                     let p = crate::erase::one_time_password(&random16()?);
-                    state.worker.with(job, idx, |x| x.ata_password = Some(p.clone()));
-                    state.worker.save().await;
+                    // On disk, synced, or the erase does not start (#172).
+                    state.worker.record_ata_password(job, idx, &p).await?;
                     state.events.write().await.push(
                         Some(d.id),
                         Severity::Warning,
@@ -1436,7 +1535,14 @@ async fn run_step(state: &Arc<AppState>, job: &str, idx: usize, d: &Drive, step:
             } else {
                 state.stormblock.add_drive(&target, &labels, Some(d.id.0)).await.map_err(|e| format!("open in stormblock: {e:#}"))?;
             }
-            let has_slab = !state.stormblock.drive_slabs(&target).await.unwrap_or_default().is_empty();
+            // Only an answer that lists no slab allows a format; an error is
+            // not "nothing there" (#172).
+            let has_slab = !state
+                .stormblock
+                .drive_slabs(&target)
+                .await
+                .map_err(|e| format!("slabs on {target}: {e:#} — no slab formatted without knowing none is there"))?
+                .is_empty();
             if !has_slab {
                 state.stormblock.format_slab(&target, &tier, Some(role.word())).await.map_err(|e| format!("format slab: {e:#}"))?;
             }
@@ -1951,6 +2057,112 @@ mod tests {
             d.location = Location::default();
         });
         assert_eq!(hba_key(&nv), "nvme:nvme3");
+    }
+
+    /// A worker holding one job of one queued drive (#172 tests).
+    fn one_job(data_dir: Option<&str>) -> Worker {
+        let (w, _) = Worker::load(data_dir);
+        let dj = DriveJob {
+            drive: DriveId::derive(None, "m", "s"),
+            name: "sdb".into(),
+            serial: "s".into(),
+            wwn: None,
+            kind: DriveKind::SataHdd,
+            state: DjState::Queued,
+            step: 0,
+            phase: "queued".into(),
+            progress_pct: None,
+            error: None,
+            done: vec![],
+            destroy_named: true,
+            in_use_named: false,
+            started: None,
+            finished: None,
+            ata_password: None,
+        };
+        let job = Job {
+            id: "j1".into(),
+            created: SystemTime::now(),
+            select: Select::default(),
+            steps: vec![FMT],
+            destroy: vec![],
+            i_know_in_use: vec![],
+            drives: vec![dj],
+            cancel: false,
+            requester: None,
+            operation: None,
+            policy: None,
+        };
+        w.jobs.lock().unwrap().insert("j1".into(), job);
+        w
+    }
+
+    fn worker_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("stormdrive-worker-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Finding 519a928662f6: the password is on disk before the drive sees
+    /// it, or the erase stops and the password is taken back.
+    #[tokio::test]
+    async fn the_ata_password_is_on_disk_or_the_erase_does_not_start() {
+        let dir = worker_dir("pw");
+        let w = one_job(Some(dir.to_str().unwrap()));
+        w.record_ata_password("j1", 0, "sd-Xy7").await.unwrap();
+        let on_disk = std::fs::read_to_string(dir.join("jobs.json")).unwrap();
+        assert!(on_disk.contains("sd-Xy7"), "{on_disk}");
+        // No data_dir: nothing would survive a restart, so refused.
+        let w = one_job(None);
+        let e = w.record_ata_password("j1", 0, "sd-Ab1").await.unwrap_err();
+        assert!(e.contains("not touched") && e.contains("data_dir"), "{e}");
+        assert_eq!(w.job("j1").unwrap().drives[0].ata_password, None, "taken back");
+        // A write that fails (a file where the directory should be): refused.
+        let blocked = dir.join("jobs.json");
+        let w = one_job(Some(blocked.to_str().unwrap()));
+        let e = w.record_ata_password("j1", 0, "sd-Cd2").await.unwrap_err();
+        assert!(e.contains("could not be recorded"), "{e}");
+        assert_eq!(w.job("j1").unwrap().drives[0].ata_password, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Finding 6ef0ed7ccb7b: a drive waiting for a lane when its job is
+    /// cancelled stops at once, and never goes Running.
+    #[tokio::test]
+    async fn a_cancel_stops_a_drive_waiting_for_its_lane() {
+        let w = Arc::new(one_job(None));
+        let lane = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = lane.clone().acquire_owned().await.unwrap();
+        let (w1, l1) = (w.clone(), lane.clone());
+        let waiting = tokio::spawn(async move { w1.wait_lane("j1", l1).await.map(|p| p.is_some()) });
+        tokio::task::yield_now().await;
+        w.jobs.lock().unwrap().get_mut("j1").unwrap().cancel = true;
+        w.wake.notify_waiters();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), waiting).await.expect("woken, not left waiting").unwrap();
+        assert_eq!(got, None, "cancelled, no permit");
+        drop(held);
+        // The lane frees, the job is cancelled: the step does not start.
+        assert!(!w.start_step("j1", 0, "format"));
+        let d = &w.job("j1").unwrap().drives[0];
+        assert_eq!(d.state, DjState::Cancelled);
+        assert_eq!(d.started, None);
+        // Already cancelled before the wait: no permit taken either.
+        assert_eq!(w.wait_lane("j1", lane.clone()).await.map(|p| p.is_some()), None);
+    }
+
+    /// The transition to Running is refused for a drive cancel already
+    /// marked, and taken for a runnable one.
+    #[test]
+    fn a_step_starts_only_on_a_runnable_drive_of_a_live_job() {
+        let w = one_job(None);
+        assert!(w.start_step("j1", 0, "format"));
+        assert_eq!(w.job("j1").unwrap().drives[0].state, DjState::Running);
+        let w = one_job(None);
+        w.with("j1", 0, |d| d.state = DjState::Cancelled);
+        assert!(!w.start_step("j1", 0, "format"));
+        assert_eq!(w.job("j1").unwrap().drives[0].state, DjState::Cancelled);
+        assert!(!w.start_step("nope", 0, "format"));
     }
 
     #[test]

@@ -5,6 +5,9 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-20
+- **fix:** #172 (finding 519a928662f6) an ATA security erase sets its one-time password only once jobs.json holds it durably (file and directory synced); with no `data_dir` or a failed write it fails with the drive untouched and the password taken back
+- **fix:** #172 (finding 6ef0ed7ccb7b) a cancelled job no longer starts a step when a lane frees: a cancel wakes drives waiting for a lane, and the move to Running checks the job's cancel flag and the drive's state under the same lock cancel takes
+- **fix:** #172 (finding 776a07af0ae7) the worker's Enroll and `fleet::join` stop on a failed slab lookup (or an answer with no `items` list) instead of reading it as "no slab" and formatting one
 - **docs:** #167 work plan: the card-side rate write is held after #163, its only user (spec.linkRate already writes the same page through sysfs, keeping the kernel's cached rate in step)
 - **fix:** #170 (finding c1b3d071b848, critical) a Format NVM of one namespace no longer erases its siblings: on a controller with FNA bit 0 (format applies to every namespace) the broadcast is sent only when the controller's own active namespace list (Identify CNS 2) holds the selected namespace alone; with others it is refused naming them, and refused when the list cannot be read unless NN = 1. `stormdrive format` reports it as Refused (exit 3). The worker's NVMe sibling count (sanitize refusal) also counts namespaces sysfs shows under the controller, not only the inventory's
 - **feat:** #164 `spec.spreadSpectrum: on|off|default` on the Drive object: the drive's phys offer SSC or not (mode page 0x19/3, every rate kept, saved when savable), the facing phys' link resets; `status.link.ssc` reads the drive's offer, what the link negotiated and what the HBA/expander phy offered (reported only: MPI2 has no SSC control), with the prior kept on the object so `default` is exact; CRD, README, architecture
