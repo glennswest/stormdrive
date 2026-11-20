@@ -2231,7 +2231,7 @@ savable (PS), read back; then the facing phy, a link reset either way.
 - [ ] proof on forge1: bay 3's Drive shows `hardwareMax` 12000 (the read);
   raising it is a DriveOperation `link_rate` the owner runs on bay 3.
 
-### #164: spec.spreadSpectrum, SSC on both ends (2026-11-19) — P2, waiting on the owner
+### #164: spec.spreadSpectrum, SSC on the drive's phys (2026-11-19) — P2, option 1 decided
 
 Findings before any code (sources: Linux `drivers/scsi/mpt3sas/mpi/mpi2_cnfg.h`,
 sdparm `sdparm_data.c`, smp_utils `smp_discover.c` decode_phy_cap):
@@ -2252,6 +2252,29 @@ sdparm `sdparm_data.c`, smp_utils `smp_discover.c` decode_phy_cap):
   SSC bit (0x19/3, the attached capabilities) measures it.
 - Asked on #164 (drive side only + the card's side reported from what the
   link negotiated, or vendor NVDATA); `wait-owner`.
+- **Owner/master 2026-11-19: option 1**, drive side first ("dont care about
+  emi very much"; "should be able to set / clear it"). If the negotiated-SSC
+  bit says the link still spreads with the drive side off, the HBA phy side
+  is its own follow-up issue.
+
+Plan (option 1):
+- [ ] `ssc.rs`: parse 0x19/3 (per phy: programmed/current/attached caps,
+  negotiated SSC + rate; descriptors stepped by their length), the
+  changeable mask, the plan (`off`: every with-SSC bit cleared, its rate's
+  without-SSC bit set so no rate is lost; `on`: with-SSC set on every
+  enabled rate; `default`: the prior word put back), MODE SELECT (SP when
+  savable), read back; then the facing phy's link reset and what negotiated.
+- [ ] Read on every health sample (beside 0x19/1) → `status.link.ssc`: the
+  drive's setting in words, settable or why not, negotiated SSC, the
+  attached (card/expander) phy's advertised SSC, policy, prior.
+- [ ] Controller: `spec.spreadSpectrum: on|off|default`, applied once per
+  daemon run and on change, as `spec.linkRate`; Events; the prior kept on
+  the object (status.link.ssc.prior, seeded back at start) so `default` is
+  exact.
+- [ ] CRD, README, architecture, changelog; tests on built pages.
+- [ ] sc-build, image; proof on forge1: bay 1's Drive shows
+  `status.link.ssc` (the read); `off` on bay 1 is the owner's to set, and
+  the counters over a day are the measurement (#164 body).
 
 ### #166: our own SAS tools — HostBusAdapter + CardOperation flash (2026-11-19) — P1
 
