@@ -2343,3 +2343,9 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
   `[[process.api]]` probes from them).
 - [x] Shipped (feb743d, image build 51ad6b687f89) with the proof `get:http://{node}:9094/api/plugins/health/snapshot`
   shows the `drives` API of container stormdrive healthy; closes when a node shows it.
+
+### #170: a single-namespace format must not erase every namespace (finding c1b3d071b848) (2026-11-20) — P0
+- [ ] `erase::format_target`: with FNA bit 0 set, Format NVM goes to 0xFFFFFFFF only when the controller's own active namespace list (Identify CNS 2) has no other namespace; otherwise refused, naming them. List unreadable → refused unless NN = 1.
+- [ ] Guard context: NVMe siblings counted from sysfs (`/sys/class/nvme/<ctrl>`) as well as the inventory, so a namespace the inventory filters out still counts (sanitize refusal).
+- [ ] `stormdrive format` reports the refusal as Refused, not Failed.
+- [ ] Tests, changelog, README/architecture; sc-build; image; shipped.
