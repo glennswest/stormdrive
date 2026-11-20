@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-19
+- **fix:** #168 clippy `explicit_auto_deref` in the card flash task
 - **feat:** #166 our own SAS tools, no Broadcom binaries: `mpt.rs` (the card's control device: IOC info/facts, config pages, FW upload/download in MPI 2.0 and 2.5 frames, host reset, a fake card), a `HostBusAdapter` object per SAS card (storcli's inventory: identity, versions, phys with rates and settings, devices joined to Drives, enclosures to Shelves, firmware regions read back with sha256 and version), and a `CardOperation` flash (sas3flash's: the golden's sha256 + source, the image checked against the card, refused on a system-slab card unless the Node is cordoned, download, read back and byte compare, reset only on a match and with no I/O in flight, before/after recorded); CRDs, RBAC, README, architecture
 - **docs:** #91 API health probes: `drives` (/api/v1/drives) and `shelves` (/api/v1/shelves) declared for the registry (sent to the master to set), README "API health probes"
 - **docs:** #157 work plan: stormcos#1039 landed (273cf8a); re-shipped with the proof scoped `on server8`, carried from e474224
@@ -13,6 +14,17 @@
 ### 2026-11-18
 - **docs:** #152 work plan: stormcos#683 re-copied the Shelf CRD + role; shipped with an order-independent proof (status keys are alphabetical: `bays` before `position`)
 - **docs:** documentation refreshed from the code since 2026-11-12: `rescan.rs` added to the CLAUDE.md source tree; README, architecture, CRD and example config checked against config keys, health TLS fields, ALPN, tiers and status fields (no other drift found)
+
+## [v0.56.0] — 2026-11-19
+
+### Added
+- (#166) our own SAS tools, no Broadcom binaries (compliance-ops#252, A): `HostBusAdapter` objects (`sc get hba`), storcli's inventory from the card's own interface (`/dev/mpt3ctl`): identity, firmware / BIOS / NVDATA versions, IOC Facts, phys with negotiated rate and the card's max/min settings, devices joined to Drives, enclosures to Shelves, every firmware region read back with size, sha256, version; and `CardOperation` `flash` (sas3flash's): a golden image (store name, sha256, source) checked against the card, refused on a card holding the system slab unless the Node is cordoned, written with FW Download, read back and compared byte for byte, the card reset only on a match and with no I/O in flight, before / after on the operation and the HostBusAdapter
+
+### Fixed
+- (#168) clippy `explicit_auto_deref` in the card flash task
+
+### Documentation
+- (#91) API health probes `drives` and `shelves` for the component registry (README "API health probes")
 
 ## [v0.55.0] — 2026-11-19
 
