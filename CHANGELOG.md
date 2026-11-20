@@ -4,6 +4,9 @@
 
 <!-- New unreleased changes go here -->
 
+### 2026-11-20
+- **docs:** #91 the master set `apis` (drives, shelves) on stormdrive's registry entry; checked in `component export`; image requested, shipped with the node's API health snapshot as the proof
+
 ### 2026-11-19
 - **docs:** #166 work plan: stormcos#1242 shipped the CRDs + role; #166 marked shipped with the forge1 HostBusAdapter proof
 - **fix:** #168 clippy `explicit_auto_deref` in the card flash task

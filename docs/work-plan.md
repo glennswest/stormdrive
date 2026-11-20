@@ -2309,5 +2309,11 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
   `/api/v1/config/components/check`): command sent with `stormcentral note`;
   sc-build passed on fd542b7; `wait-owner --action` with the command (a
   to-do card; Done puts #91 back in line).
-- [ ] After the master sets it: export shows `apis`, sc-build, image build,
-  close.
+- [x] 2026-11-20: the master set it; `component export` shows both
+  `[[component.apis]]` (drives, shelves) exactly as sent. Master's build
+  c7a4595480cb (`--force`) was started; this commit carries the image build
+  that `shipped --commit` names, so the proof is checked only on an install
+  whose stormdrive golden was built with the `apis` (stormd writes the
+  `[[process.api]]` probes from them).
+- [ ] Proof on a node: `get:http://{node}:9094/api/plugins/health/snapshot`
+  shows the `drives` API of container stormdrive healthy.
