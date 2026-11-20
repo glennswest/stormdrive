@@ -1904,15 +1904,15 @@ mod tests {
         let s = Step::LinkRate { rate: Wanted::Max(12_000) };
         assert!(!s.destroys() && !s.read_only() && !s.only_asks() && s.link_only());
         assert_eq!((s.name(), s.describe()), ("link_rate", "link rate → 12 Gbit".to_string()));
-        assert!(validate_steps(&[s.clone()]).is_ok());
+        assert!(validate_steps(std::slice::from_ref(&s)).is_ok());
         assert!(validate_steps(&[s.clone(), Step::Details]).is_ok());
         let fleet = drive(|d| d.membership = Membership::Fleet);
-        assert!(guard(&fleet, &[s.clone()], false, &cx()).is_ok());
+        assert!(guard(&fleet, std::slice::from_ref(&s), false, &cx()).is_ok());
         assert!(guard(&fleet, &[s.clone(), Step::Details], false, &cx()).is_ok());
         let fmt = drive(|d| d.activity = Activity::Formatting);
-        assert!(guard(&fmt, &[s.clone()], false, &cx()).unwrap_err().contains("busy"));
+        assert!(guard(&fmt, std::slice::from_ref(&s), false, &cx()).unwrap_err().contains("busy"));
         let gone = drive(|d| d.activity = Activity::Missing);
-        assert_eq!(guard(&gone, &[s.clone()], false, &cx()).unwrap_err(), "missing");
+        assert_eq!(guard(&gone, std::slice::from_ref(&s), false, &cx()).unwrap_err(), "missing");
         assert!(guard(&fleet, &[FMT, s], false, &cx()).unwrap_err().contains("fleet"));
     }
 
