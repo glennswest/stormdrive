@@ -1,0 +1,23 @@
+# Flash a SAS card's firmware (#166): sas3flash's job, through the card's own
+# interface. The image is a golden (compliance-ops#23): put it in the node's
+# firmware store first (POST /api/v1/firmware/images), name it here with its
+# sha256 and the URL it was recorded from. dryRun: true checks the image and
+# the guards and changes nothing; remove it to flash.
+#
+#   kubectl get hba                         # the card's name and versions
+#   kubectl apply -f cardoperation.example.yaml
+#   kubectl get cop hba330-fw -o yaml       # phase, step, before / after
+apiVersion: storage.storm.io/v1
+kind: CardOperation
+metadata:
+  name: hba330-fw
+spec:
+  node: forge1
+  card: forge1-0000-01-00-0
+  op: flash
+  region: firmware
+  image:
+    name: hba330-16.17.01.00.bin
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    source: https://dl.dell.com/example/hba330-16.17.01.00.bin
+  dryRun: true

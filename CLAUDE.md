@@ -109,6 +109,11 @@ src/
                   each disk's state, set good / JBOD over MFI, personality via
                   perccli (#132)
   hba.rs          PCIe SCSI HBA inventory (firmware, BIOS, NVDATA versions)
+  mpt.rs          the SAS card's own interface (#166): /dev/mpt3ctl ioctls, IOC
+                  Facts, config pages, FW upload/download, reset; a fake card
+  card.rs         a card's report → HostBusAdapter; the flash (download, read
+                  back, quiesce, reset) (#166)
+  cardop.rs       the card table, CardOperation guards and runs (#166)
   hbaenc.rs       a backplane with no SES behind a SAS HBA as a shelf: bays from
                   the transport, each with its phy and rate, empty bays (#152)
   scsi.rs         raw SCSI over SG_IO: INQUIRY/VPD, READ CAPACITY(16), MODE SENSE/
@@ -153,8 +158,8 @@ src/
   api/kube.rs     /apis/storage.storm.io/v1/{drives,enclosures} (stormblock#80)
   kubeapi.rs      apiserver client (reqwest): TokenReview, SAR, objects, Events (#45)
   kubeauth.rs     the write gate: classify → bearer review / admin token, audit (#45)
-  controller.rs   Drive objects, DriveOperations (#45) and DrivePolicies (#50)
-                  in the apiserver
+  controller.rs   Drive objects, DriveOperations (#45), DrivePolicies (#50),
+                  Shelves, HostBusAdapters + CardOperations (#166) in the apiserver
 retry/            workspace crate: one backoff helper for every remote call (#71)
 test/             test container (#11): /test short|medium|long, pick.rs = safety
 tests/            suites.rs (the three suites against this daemon on every

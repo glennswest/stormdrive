@@ -366,8 +366,9 @@ are listed under [Not yet](#not-yet).
   - **Locate LEDs:** sysfs `locate`, or SES IDENT, or the PCIe slot's
     `attention` indicator, or NPEM.
   - **HBA inventory:** driver, PCI ids, board, and the firmware, option-ROM
-    BIOS and NVDATA versions. It is reported only; stormdrive never flashes
-    an HBA.
+    BIOS and NVDATA versions from sysfs; for a SAS card (mpt2sas/mpt3sas)
+    the card's own pages and firmware regions as a `HostBusAdapter`, and
+    its flash as a `CardOperation` (#166, below).
   - Location is resolved again on every discovery pass. A move is a
     `location` event.
 - **Fleet** (`src/fleet.rs`, `src/stormblock.rs`). A drive's lifecycle is
@@ -970,7 +971,7 @@ the fleet; delete the RaidSet) and the operation names it in `destroy` and in
 
 ### As Kubernetes objects
 
-With `[kubernetes]` set, each node's stormdrive keeps four cluster-scoped kinds
+With `[kubernetes]` set, each node's stormdrive keeps six cluster-scoped kinds
 in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
 `deploy/rbac.yaml`, stormcos#302):
 
@@ -1115,6 +1116,47 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
 
   Fan control (`cooling`) is not built: #90 (measure the shelf first).
 
+- **`HostBusAdapter`** (#166, short name `hba`), one per SAS card
+  (mpt2sas/mpt3sas), named `<node>-<pci address>` (`forge1-0000-01-00-0`),
+  labelled `storm.io/node` and `storage.storm.io/pci`. storcli's inventory,
+  read through the card's own interface (`/dev/mpt3ctl`, `src/mpt.rs`), no
+  vendor binary: board, chip, SAS address, firmware / BIOS / NVDATA
+  versions, IOC Facts, every phy (negotiated rate, the max/min the card is
+  set to, disabled, the device attached and its Drive), every device the
+  card lists (with its access status when not 0), each enclosure with its
+  Shelf, and `firmware.images`: each region read back with FW Upload
+  (firmware, bios and its `legacy_bios` / `uefi` parts, firmware_backup,
+  manufacturing) with size, sha256, version. Pages every discovery pass;
+  regions once per run and after each flash. Status only; `NotSeen` when
+  the card goes. `sc get hba`, `sc describe hba <name>`.
+- **`CardOperation`** (#166, `cop`): sas3flash's flash, ours. `spec`:
+  `node`, `card` (the HostBusAdapter's name or the PCI address), `op:
+  flash`, `region: firmware|bios`, `image {name, sha256, source}` — the
+  golden (compliance-ops#23): the file in the node's firmware store
+  (`POST /api/v1/firmware/images`) must have that sha256, and `source` is
+  the URL it was recorded from. `dryRun` checks without writing. The node
+  re-checks the stamped requester (`cardoperations` create, like a
+  DriveOperation), then:
+  1. checks the image against the card: a firmware image needs an MPI
+     firmware header for vendor 1000 and the card's IOC Facts product id;
+     a BIOS image needs an option ROM whose images are all vendor 1000;
+  2. refuses while a drive on the card holds the node's system slab,
+     unless the Node is cordoned (`spec.unschedulable`, its maintenance);
+     one card flash at a time per node;
+  3. writes it (MPI FW Download in 64 KiB chunks), reads the region back
+     (FW Upload) and compares every byte. **A read-back that differs is
+     never reset**: the card keeps running what it ran (`Failed`);
+  4. waits up to 30 s for a moment with no I/O in flight on the card's
+     drives (`/sys/block/<dev>/inflight`), then resets the card with the
+     driver's host reset (`MPT3HARDRESET`), which holds new I/O while it
+     runs, as a link reset does. Without that moment it is `Written`: the
+     image runs at the card's next reset;
+  5. waits for IOC Facts, reads the version again: `before` / `after` on
+     the operation and the HostBusAdapter's `lastFlash` (`Succeeded`).
+
+  A stormdrive restart during a flash makes it `Interrupted` (the region
+  may hold a partial image: read it back and flash again).
+
 ```bash
 kubectl get shelves
 kubectl patch shelf 500a09800e359135 --type merge -p '{"spec":{"identify":true}}'
@@ -1123,6 +1165,9 @@ kubectl apply -f deploy/driveoperation.example.yaml   # dryRun: true first
 kubectl get driveoperations
 kubectl apply -f deploy/drivepolicy.example.yaml      # dryRun: true first
 kubectl get drivepolicy stormblock1-warm -o jsonpath='{.status.nodes}'
+kubectl get hba -o wide
+kubectl apply -f deploy/cardoperation.example.yaml    # dryRun: true first
+kubectl get cardoperations
 ```
 
 ## API

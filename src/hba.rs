@@ -1,8 +1,8 @@
 //! Host bus adapters: what every drive hangs off, and what firmware it runs.
 //!
-//! Inventory only (#2, owner's decision 2026-09-24): stormdrive reports the
-//! HBA's firmware, BIOS and NVDATA versions; it does not flash them, and
-//! the node's own BIOS belongs to stormipmi.
+//! The sysfs inventory: the HBA's firmware, BIOS and NVDATA versions as the
+//! driver exposes them. A SAS card's own pages and its flash are `mpt.rs` /
+//! `card.rs` (#166); the node's own BIOS belongs to stormipmi (#2).
 //!
 //! Source: `/sys/class/scsi_host/hostN`. Each is a symlink into
 //! `/sys/devices/…/<pci bdf>/…/hostN`; hosts behind one PCIe function (an

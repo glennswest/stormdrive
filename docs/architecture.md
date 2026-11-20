@@ -724,9 +724,9 @@ climbing about 500 a minute at 12 Gbit — and nobody read the counter.
 
 ### HBAs (`hba.rs`)
 
-Inventory only — stormdrive reports an HBA's firmware and never flashes
-it; the node's own BIOS belongs to stormipmi (owner's decision on #2,
-2026-09-24). Each discovery tick reads `/sys/class/scsi_host/host*`,
+The sysfs inventory; a SAS card's own interface and its flash are below
+(`mpt.rs`, `card.rs`, #166). The node's own BIOS belongs to stormipmi
+(owner's decision on #2, 2026-09-24). Each discovery tick reads `/sys/class/scsi_host/host*`,
 follows each link to its PCIe function (the last BDF in the path; USB
 mass storage and non-PCI hosts are skipped) and groups hosts per function,
 so an AHCI controller's per-port hosts are one HBA. Per HBA: driver, PCI
@@ -740,6 +740,46 @@ with no drives still appears there), as `hba:<bdf>` components in the
 feed (has_many drives), and as the UI's HBA panel. A card appearing,
 going away or coming back with different firmware/BIOS/NVDATA is an
 `hba` event.
+
+### A SAS card's own interface (`mpt.rs`, `card.rs`, `cardop.rs`, #166)
+
+Owner, 2026-11-19 (compliance-ops#252, A): no Broadcom binaries in the
+release; storcli's inventory and sas3flash's flash are ours. Both are front
+ends to the mpt driver's control device, `/dev/mpt3ctl` (SAS3) or
+`/dev/mpt2ctl` (SAS2), and its three ioctls: `MPT3IOCINFO` (the driver's
+view: adapter type, PCI ids, firmware and BIOS versions), `MPT3COMMAND` (one
+MPI2 request frame with data in/out) and `MPT3HARDRESET` (the driver's host
+reset). Every request goes through `mpt::Port`; `mpt::Ctl` is the device,
+`mpt::fake::Fake` a card in the tests. The config-page path is stormblock's
+(`src/drive/mpt.rs`, #611/#642); layouts are Linux's `mpt3sas/mpi/`.
+
+- **Read**, each discovery pass: IOC Facts; Manufacturing Page 0 (chip,
+  board, assembly, tracer); IO Unit Page 0 (NVDATA default/persistent; MPI's
+  U64 is 4-aligned, so they sit at 0x0C/0x10); BIOS Page 3; SAS IO Unit
+  Page 0 (each phy: negotiated rate, attached handle) joined to Page 1 (its
+  max/min rate, disabled); every SAS Device Page 0 and Enclosure Page 0
+  (GET_NEXT_HANDLE walks). The IOC number is the SCSI host's `unique_id`.
+- **Regions**, once per run and after each flash: FW Upload of firmware
+  (0x01), BIOS (0x02), backup firmware (0x05), manufacturing (0x06), in
+  64 KiB chunks after the reply's `ActualImageSize`; a type the card answers
+  "invalid function/field" is absent. A firmware image's MPI2/2.6 header
+  gives its version and product; the BIOS region is parsed as a PCI option
+  ROM chain (`55 AA`, PCIR, code type 0 legacy / 3 UEFI), each image with
+  its own sha256.
+- **Frames**: MPI 2.5 (SAS3, SAS3.5) carries ImageOffset/ImageSize in the
+  FW Upload/Download frame and the SGL at 0x20; MPI 2.0 (SAS2) a
+  transaction-context element at 0x14, the SGL at 0x24.
+- **Flash** (`card::flash`): FW Download (the last chunk marked), FW Upload
+  and a byte compare; only on a match, and after up to 30 s for a moment
+  with nothing in flight on the card's block devices, `MPT3HARDRESET`, then
+  IOC Facts until the card answers (180 s) and the version read again.
+  `cardop` holds the card table and the runs (one per node at a time); the
+  controller turns a CardOperation into a run after the guards (the
+  golden's sha256 and source, the image fits the card, no system slab on
+  the card unless the Node is cordoned) and writes its status.
+- **Not here:** writing the card's settings through SAS IO Unit Page 1
+  (per-phy rate for #163; #164 found no SSC bit in MPI's public pages):
+  filed as its own issue, built with its first user.
 
 ### Sector-size reformat (`format.rs`)
 NetApp-formatted drives arrive at 520 (or 528) bytes per sector. Linux
