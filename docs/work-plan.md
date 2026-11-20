@@ -2290,7 +2290,10 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
   CRDs + role), sc#156 (the flash verb); stormconsole#376 is the console.
 - [x] sc-build on 81ef1d2 / 9087ae8 (453 lib tests incl. the 17 new); clippy
   found one lint (#168), fixed.
-- [ ] proof on forge1: the HBA330's HostBusAdapter; a same-version flash.
+- [x] v0.56.0 (d89607b) built and tested; image build e24530e5e0e2 requested.
+- [ ] proof on forge1 (after stormcos#1242 ships the CRDs): the HBA330's
+  HostBusAdapter (`board` HBA330); a same-version flash once its firmware is
+  a golden in forge1's store. #166 is proposed `--after stormcos#1242`.
 
 ### #91: API health probes in the registry (2026-11-19) — P0
 
