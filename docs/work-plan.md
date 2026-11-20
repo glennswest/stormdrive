@@ -2252,3 +2252,34 @@ sdparm `sdparm_data.c`, smp_utils `smp_discover.c` decode_phy_cap):
   SSC bit (0x19/3, the attached capabilities) measures it.
 - Asked on #164 (drive side only + the card's side reported from what the
   link negotiated, or vendor NVDATA); `wait-owner`.
+
+### #166: our own SAS tools — HostBusAdapter + CardOperation flash (2026-11-19) — P1
+
+Owner 2026-11-19 (compliance-ops#252 answered A): no Broadcom binaries in
+the release; storcli's inventory and sas3flash's flash are ours, over the
+MPT interface (`/dev/mpt3ctl`, MPT3COMMAND / MPT3IOCINFO / MPT3HARDRESET).
+The config-page path is stormblock's (`src/drive/mpt.rs`, #611/#642, read
+on forge1's HBA330), redone here with IOC Facts, FW upload/download and the
+reset. Sources: Linux `drivers/scsi/mpt3sas/` (mpi2_ioc.h, mpi2_cnfg.h,
+mpi2_image.h, mpt3sas_ctl.[ch]).
+
+- [ ] mpt.rs: a `Port` (the ioctls) behind every request so a fake card runs
+  the same code: IOC Facts, standard + extended config pages (Manufacturing
+  0, IO Unit 0, BIOS 3, SAS IO Unit 0/1, SAS Device 0, Enclosure 0), FW
+  upload (size, then chunks), FW download (MPI2.5 frame; MPI2.0's
+  transaction-context SGE), hard reset; image headers (MPI2/2.6 FW, PCI
+  option ROM chain: legacy BIOS / UEFI).
+- [ ] card.rs: a card's report (identity, phys with negotiated + programmed
+  max/min, devices joined to Drives, enclosures to Shelves, firmware images
+  present with size, sha256, version) → the HostBusAdapter object.
+- [ ] flash: image from the store, sha256 = spec's, source given (the
+  golden record); header matches the card (vendor/product); refused when a
+  drive on the card holds the system half unless the Node is cordoned;
+  download, read back and compare, wait for the card's in-flight I/O to
+  drain, reset, read the versions again; before/after on the op and object.
+- [ ] CRDs HostBusAdapter (`hba`) + CardOperation (`cop`), controller, RBAC.
+- [ ] tests: the fake MPT device (facts, pages, upload, download, reset).
+- [ ] item 3 (settings write through SAS IO Unit Page 1) filed apart: its
+  users (#163 step-down, #164 SSC) are not built, and #164 found no SSC bit
+  in the public pages.
+- [ ] proof on forge1: the HBA330's HostBusAdapter; a same-version flash.
