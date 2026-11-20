@@ -167,6 +167,7 @@ async fn daemon(args: Args) -> anyhow::Result<()> {
         shelves: RwLock::new(std::collections::BTreeMap::new()),
         media: RwLock::new(Vec::new()),
         hbas: RwLock::new(std::collections::BTreeMap::new()),
+        cards: Default::default(),
         inventory_path,
         events_path,
         events_persisted: tokio::sync::Mutex::new(events_seq),

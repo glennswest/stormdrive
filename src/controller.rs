@@ -236,6 +236,10 @@ pub struct Controller {
     drive_link_rate: HashMap<String, (String, String)>,
     /// The last link level (not settling) each Drive's Event was judged by.
     drive_link: HashMap<String, crate::link::Level>,
+    /// HostBusAdapter status last written (fingerprint, when) (#166).
+    hba_written: HashMap<String, (String, Instant)>,
+    /// CardOperation status last written.
+    cop_status: HashMap<String, String>,
 }
 
 /// Run the controller until the process ends. One pass every
@@ -257,6 +261,8 @@ pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
         drive_ident: HashMap::new(),
         drive_link_rate: HashMap::new(),
         drive_link: HashMap::new(),
+        hba_written: HashMap::new(),
+        cop_status: HashMap::new(),
     };
     let mut last_err = String::new();
     loop {
@@ -264,6 +270,13 @@ pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
             // Shelves first: their defaultFormat goes into the drives' plan.
             // A failed Shelf pass keeps the last defaults it read.
             if let Err(e) = c.shelves().await {
+                tracing::warn!("kubernetes: {e}");
+            }
+            // The SAS cards (#166); their CRDs may not be installed yet.
+            if let Err(e) = c.hbas().await {
+                tracing::warn!("kubernetes: {e}");
+            }
+            if let Err(e) = c.card_operations().await {
                 tracing::warn!("kubernetes: {e}");
             }
             c.drives().await?;
@@ -609,6 +622,214 @@ impl Controller {
         Ok(())
     }
 
+    /// Keep a HostBusAdapter per SAS card of this node (#166).
+    async fn hbas(&mut self) -> Result<(), String> {
+        let list = match self.kube.get(&path("hostbusadapters", None)).await {
+            Ok(l) => l,
+            Err(e) if e.code() == Some(404) => return Ok(()),
+            Err(e) => return Err(format!("listing HostBusAdapters: {e}")),
+        };
+        let node = self.state.node_name.clone();
+        let me = label_value(&node);
+        let existing: HashMap<String, Value> = list["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| Some((i["metadata"]["name"].as_str()?.to_string(), i.clone())))
+            .collect();
+        let reports = self.state.cards.reports.read().await.clone();
+        let drives: Vec<crate::card::DriveRef> = self
+            .state
+            .inventory
+            .read()
+            .await
+            .drives
+            .values()
+            .map(|d| crate::card::DriveRef {
+                id: d.id.0.to_string(),
+                name: d.name.clone(),
+                sas_address: d.location.sas_address.as_deref().and_then(crate::card::addr),
+                pci: d.location.controller.as_ref().and_then(|c| c.pcie_addr.clone()),
+            })
+            .collect();
+        let shelves: BTreeMap<u64, String> = self.state.shelves.read().await.keys().filter_map(|k| Some((crate::card::addr(k)?, k.clone()))).collect();
+        let hbas = self.state.hbas.read().await.clone();
+        let mut mine = HashSet::new();
+        for (pci, rep) in &reports {
+            let obj = crate::card::object(rep, &node, hbas.get(pci).and_then(|h| h.sas_address.as_deref()), &drives, &shelves);
+            let name = obj["metadata"]["name"].as_str().unwrap_or_default().to_string();
+            mine.insert(name.clone());
+            if !existing.contains_key(&name) {
+                let body = json!({ "apiVersion": obj["apiVersion"], "kind": "HostBusAdapter", "metadata": obj["metadata"], "spec": {} });
+                match self.kube.create_retried(&path("hostbusadapters", None), &body).await {
+                    Ok(_) => tracing::info!("kubernetes: HostBusAdapter {name} created"),
+                    Err(crate::kubeapi::KubeError::Status(409, _)) => {}
+                    Err(e) => return Err(format!("creating HostBusAdapter {name}: {e}")),
+                }
+            }
+            let fp = crate::card::fingerprint(&obj);
+            let due = match self.hba_written.get(&name) {
+                Some((p, at)) => *p != fp || at.elapsed() >= REFRESH,
+                None => true,
+            };
+            if due {
+                self.kube
+                    .merge_patch(&format!("{}/status", path("hostbusadapters", Some(&name))), &json!({ "status": obj["status"] }))
+                    .await
+                    .map_err(|e| format!("HostBusAdapter {name} status: {e}"))?;
+                self.hba_written.insert(name, (fp, Instant::now()));
+            }
+        }
+        for (name, o) in &existing {
+            if mine.contains(name) || o["metadata"]["labels"]["storm.io/node"].as_str() != me.as_deref() || o["status"]["present"] == json!(false) {
+                continue;
+            }
+            self.kube
+                .merge_patch(&format!("{}/status", path("hostbusadapters", Some(name))), &json!({ "status": { "present": false } }))
+                .await
+                .map_err(|e| format!("HostBusAdapter {name} status: {e}"))?;
+            self.event_on("HostBusAdapter", o, "Warning", "NotSeen", &format!("card {name} is no longer seen by {node}")).await;
+            self.hba_written.remove(name);
+        }
+        Ok(())
+    }
+
+    /// Run this node's CardOperations (#166).
+    async fn card_operations(&mut self) -> Result<(), String> {
+        let list = match self.kube.get(&path("cardoperations", None)).await {
+            Ok(l) => l,
+            Err(e) if e.code() == Some(404) => return Ok(()),
+            Err(e) => return Err(format!("listing CardOperations: {e}")),
+        };
+        let node = self.state.node_name.clone();
+        for op in list["items"].as_array().into_iter().flatten() {
+            let Some(name) = op["metadata"]["name"].as_str().map(str::to_string) else { continue };
+            if !same_node(op["spec"]["node"].as_str().unwrap_or(""), &node) || op["metadata"]["deletionTimestamp"].is_string() {
+                continue;
+            }
+            if let Err(e) = self.card_operation(&name, op).await {
+                tracing::warn!("kubernetes: CardOperation {name}: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    async fn card_operation(&mut self, name: &str, op: &Value) -> Result<(), String> {
+        let generation = op["metadata"]["generation"].as_i64();
+        let status = &op["status"];
+        let run = self.state.cards.runs.lock().unwrap().get(name).cloned();
+        if let Some(run) = run {
+            let who = status["requester"].as_str().unwrap_or("").to_string();
+            let st = run.status(&who, generation);
+            let was = status["phase"].as_str().unwrap_or("").to_string();
+            let now = st["phase"].as_str().unwrap_or("").to_string();
+            if was != now && now != "Running" {
+                let kind = if now == "Succeeded" { "Normal" } else { "Warning" };
+                let msg = st["message"].as_str().unwrap_or("").to_string();
+                self.event_on("CardOperation", op, kind, &now, &msg).await;
+                self.card_audit(name, &now.to_lowercase(), &msg).await;
+            }
+            self.put_cop_status(name, st).await?;
+            if !run.running() {
+                self.state.cards.runs.lock().unwrap().remove(name);
+            }
+            return Ok(());
+        }
+        let phase = status["phase"].as_str().unwrap_or("");
+        // A run this daemon does not have: it stopped during the flash.
+        if phase == "Running" {
+            let msg = "stormdrive stopped during the flash: the region may hold a partial image and the card was not reset by it; read the HostBusAdapter's firmware images and flash again".to_string();
+            self.event_on("CardOperation", op, "Warning", "Interrupted", &msg).await;
+            self.card_audit(name, "interrupted", &msg).await;
+            return self.put_cop_status(name, json!({ "phase": "Interrupted", "message": msg, "observedGeneration": generation })).await;
+        }
+        if !phase.is_empty() && phase != "Pending" && status["observedGeneration"].as_i64() == generation {
+            return Ok(());
+        }
+        let who = match self.stamped(name, op, "cardoperations").await {
+            Ok(r) => r,
+            Err((phase, why)) => {
+                if status["phase"].as_str() != Some(phase) || status["message"].as_str() != Some(&why) {
+                    self.event_on("CardOperation", op, "Warning", phase, &why).await;
+                    self.card_audit(name, &phase.to_lowercase(), &why).await;
+                }
+                return self.put_cop_status(name, json!({ "phase": phase, "message": why, "observedGeneration": generation })).await;
+            }
+        };
+        let refuse = |why: String| json!({ "phase": "Refused", "message": why, "requester": who.who, "observedGeneration": generation });
+        let spec: crate::card::FlashSpec = match serde_json::from_value(op["spec"].clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                let why = format!("spec: {e}");
+                self.event_on("CardOperation", op, "Warning", "Invalid", &why).await;
+                return self.put_cop_status(name, refuse(why)).await;
+            }
+        };
+        let cordoned = match self.kube.get(&format!("/api/v1/nodes/{}", urlencode(&self.state.node_name))).await {
+            Ok(n) => Some(n["spec"]["unschedulable"].as_bool().unwrap_or(false)),
+            Err(e) => {
+                tracing::debug!("kubernetes: Node: {e}");
+                None
+            }
+        };
+        let (card, image, version) = match crate::cardop::plan(&self.state, &spec, cordoned).await {
+            Ok(p) => p,
+            Err(why) => {
+                self.event_on("CardOperation", op, "Warning", "Refused", &why).await;
+                self.card_audit(name, "refused", &why).await;
+                return self.put_cop_status(name, refuse(why)).await;
+            }
+        };
+        let current = match spec.region {
+            crate::mpt::Region::Bios => card.bios_version.map(crate::mpt::version),
+            _ => Some(crate::mpt::version(card.info.firmware_version)),
+        };
+        let what = format!(
+            "{} of {} ({}): {} → {} ({}, sha256 {}, from {})",
+            spec.region.label(),
+            card.pci,
+            card.man0.as_ref().and_then(|m| m.board_name.clone()).unwrap_or_else(|| card.info.adapter().to_string()),
+            current.clone().unwrap_or_else(|| "?".into()),
+            version.clone().unwrap_or_else(|| "?".into()),
+            spec.image.name,
+            spec.image.sha256.to_lowercase(),
+            spec.image.source
+        );
+        if spec.dry_run {
+            let msg = format!("dry run: would flash {what}");
+            self.event_on("CardOperation", op, "Normal", "Planned", &msg).await;
+            return self
+                .put_cop_status(name, json!({ "phase": "Planned", "message": msg, "requester": who.who, "before": current, "imageVersion": version, "observedGeneration": generation }))
+                .await;
+        }
+        let msg = format!("flashing {what} for {}", who.who);
+        self.event_on("CardOperation", op, "Normal", "Accepted", &msg).await;
+        self.card_audit(name, "accepted", &msg).await;
+        let run = crate::cardop::start(self.state.clone(), name.to_string(), spec, card, image, version);
+        self.put_cop_status(name, run.status(&who.who, generation)).await
+    }
+
+    async fn put_cop_status(&mut self, name: &str, st: Value) -> Result<(), String> {
+        let s = st.to_string();
+        if self.cop_status.get(name) == Some(&s) {
+            return Ok(());
+        }
+        self.kube
+            .merge_patch(&format!("{}/status", path("cardoperations", Some(name))), &json!({ "status": st }))
+            .await
+            .map_err(|e| format!("status: {e}"))?;
+        self.cop_status.insert(name.to_string(), s);
+        Ok(())
+    }
+
+    async fn card_audit(&self, op: &str, decision: &str, message: &str) {
+        let access = Access { resource: "cardoperations", verb: "create", name: Some(op.to_string()) };
+        let line = crate::kubeauth::audit_line("OBJECT", &path("cardoperations", Some(op)), &access, "controller", decision, message, None);
+        self.state.gate.audit(&line);
+        let sev = if decision == "succeeded" || decision == "accepted" { crate::events::Severity::Info } else { crate::events::Severity::Warning };
+        self.state.events.write().await.push(None, sev, "operation", format!("CardOperation {op}: {decision} — {message}"));
+    }
+
     async fn put_drive(&self, name: &str, o: &Value) -> Result<(), String> {
         let main = json!({ "metadata": { "labels": o["metadata"]["labels"] }, "spec": o["spec"] });
         match self.kube.merge_patch(&path("drives", Some(name)), &main).await {
@@ -743,11 +964,17 @@ impl Controller {
     /// The stamped requester, re-checked: may they create this operation?
     /// `Err((phase, why))`: `Refused` for good, `Pending` to ask again.
     async fn requester(&self, name: &str, op: &Value) -> Result<Requester, (&'static str, String)> {
+        self.stamped(name, op, "driveoperations").await
+    }
+
+    /// The stamped requester of an object of `resource`, re-checked: may
+    /// they create it?
+    async fn stamped(&self, name: &str, op: &Value, resource: &'static str) -> Result<Requester, (&'static str, String)> {
         let Some(user) = stamped_requester(op) else {
             return Err(("Refused", format!("no requester stamped by the apiserver ({REQUESTER}, rustkube#210): the object alone is not trusted")));
         };
         let who = Requester::kube(user);
-        let access = Access { resource: "driveoperations", verb: "create", name: Some(name.to_string()) };
+        let access = Access { resource, verb: "create", name: Some(name.to_string()) };
         match self.state.gate.recheck(&who, &access).await {
             Ok(()) => Ok(who),
             Err(crate::kubeauth::RecheckError::Denied(why)) => Err(("Refused", why)),

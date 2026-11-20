@@ -21,15 +21,16 @@ metadata:
   name: stormdrive-controller
 rules:
   - apiGroups: ["storage.storm.io"]
-    resources: ["drives", "shelves"]
+    resources: ["drives", "shelves", "hostbusadapters"]
     verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: ["storage.storm.io"]
-    resources: ["drives/status", "shelves/status", "driveoperations/status", "drivepolicies/status"]
+    resources: ["drives/status", "shelves/status", "hostbusadapters/status", "driveoperations/status", "drivepolicies/status", "cardoperations/status"]
     verbs: ["get", "patch", "update"]
   - apiGroups: ["storage.storm.io"]
-    resources: ["driveoperations", "drivepolicies"]
+    resources: ["driveoperations", "drivepolicies", "cardoperations"]
     verbs: ["get", "list", "watch"]
-  # A DrivePolicy's nodeSelector is matched against this node's labels (#50).
+  # A DrivePolicy's nodeSelector is matched against this node's labels (#50);
+  # a CardOperation reads whether the Node is cordoned (#166).
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get"]

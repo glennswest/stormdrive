@@ -297,6 +297,8 @@ async fn tick(
         scan_controllers(state).await;
         let hbas = tokio::task::spawn_blocking(crate::hba::scan).await?;
         merge_hbas(state, hbas).await;
+        // The SAS cards' own pages (#166).
+        crate::cardop::scan(state).await;
         scan_shelves(state).await?;
         let started = std::time::Instant::now();
         let cfg = state.config.discovery.clone();

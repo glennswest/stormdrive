@@ -230,6 +230,12 @@ pub fn scan(prev: &Cards, images_for: &[String]) -> (Cards, Vec<String>) {
     (out, errs)
 }
 
+/// No mpt control device on this platform: no cards.
+#[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+pub fn scan(_prev: &Cards, _images_for: &[String]) -> (Cards, Vec<String>) {
+    (Cards::new(), Vec::new())
+}
+
 /// The control device that answers for `ioc` (SAS3 cards on mpt3ctl, SAS2
 /// on mpt2ctl).
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]

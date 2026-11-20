@@ -18,6 +18,14 @@
 # - Shelf (#83): one per enclosure, SES or not (#152), written by the node that sees it
 #   (status, conditions; issues are Events on it). Its spec is the user's:
 #   identify, faultLed, defaultFormat. Changing spec is storage-admin's.
+# - HostBusAdapter (#166): one per SAS card (mpt2sas/mpt3sas), written by the
+#   node that has it: storcli's inventory from the card's own pages (identity,
+#   versions, phys, devices joined to Drives, enclosures to Shelves, the
+#   firmware regions read back). Status only.
+# - CardOperation (#166): sas3flash's flash, ours: a firmware or BIOS image
+#   recorded as a golden (store name, sha256, source) written to one card,
+#   read back, then the card reset. Only storage-admin can create one; its
+#   requester is re-checked like a DriveOperation's.
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -440,3 +448,148 @@ spec:
                       reason: { type: string }
                       message: { type: string }
                       lastTransitionTime: { type: string }
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hostbusadapters.storage.storm.io
+spec:
+  group: storage.storm.io
+  scope: Cluster
+  names:
+    kind: HostBusAdapter
+    plural: hostbusadapters
+    singular: hostbusadapter
+    shortNames: [hba]
+    categories: [storage]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Node, type: string, jsonPath: .status.node }
+        - { name: PCI, type: string, jsonPath: .status.pci }
+        - { name: Board, type: string, jsonPath: .status.board }
+        - { name: Firmware, type: string, jsonPath: .status.firmwareVersion }
+        - { name: BIOS, type: string, jsonPath: .status.biosVersion }
+        - { name: Phys, type: integer, jsonPath: .status.linkedPhys }
+        - { name: Drives, type: integer, jsonPath: .status.drives }
+        - { name: NVDATA, type: string, jsonPath: .status.nvdataVersion, priority: 1 }
+        - { name: Chip, type: string, jsonPath: .status.chip, priority: 1 }
+        - { name: SASAddress, type: string, jsonPath: .status.sasAddress, priority: 1 }
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: "A SAS card (mpt2sas/mpt3sas) as the stormdrive of its node reads it through the card's own interface, /dev/mpt3ctl (#166): IOC info and facts, Manufacturing Page 0, IO Unit Page 0, BIOS Page 3, SAS IO Unit Pages 0/1, every SAS Device and Enclosure page. Named <node>-<pci address>. Written by the node; a write to it changes nothing on the card. To change the card, a CardOperation."
+          properties:
+            spec:
+              type: object
+              description: Nothing to set; the node writes status.
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                node: { type: string }
+                present: { type: boolean, description: "False once the node no longer sees the card." }
+                pci: { type: string }
+                scsiHost: { type: string }
+                ioc: { type: integer }
+                controlDevice: { type: string, description: "mpt3ctl or mpt2ctl." }
+                adapter: { type: string, description: "SAS2, SAS3, SAS3.5." }
+                board: { type: string, nullable: true }
+                chip: { type: string, nullable: true }
+                firmwareVersion: { type: string }
+                biosVersion: { type: string, nullable: true }
+                nvdataVersion: { type: string, nullable: true }
+                sasAddress: { type: string, nullable: true }
+                facts: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "IOC Facts: mpiVersion, productId, capabilities, ports, maxTargets, …" }
+                phys:
+                  type: array
+                  description: "Each phy: rate negotiated (rateMbps), maxRateMbps/minRateMbps the card is set to (SAS IO Unit Page 1), disabled, and the device attached (sasAddress, kind, the Drive)."
+                  items: { type: object, x-kubernetes-preserve-unknown-fields: true }
+                linkedPhys: { type: integer }
+                devices:
+                  type: array
+                  description: "Every device the card lists (SAS Device Page 0): sasAddress, kind, present, access (the card's access status, when not 0), enclosure, slot, phy, and the Drive."
+                  items: { type: object, x-kubernetes-preserve-unknown-fields: true }
+                drives: { type: integer }
+                enclosures:
+                  type: array
+                  description: "Enclosure Page 0: logicalId, slots, startSlot, and the Shelf whose logical id it is."
+                  items: { type: object, x-kubernetes-preserve-unknown-fields: true }
+                firmware:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: "images: each region read back from the card (FW Upload) — firmware, bios (and its legacy_bios / uefi parts), firmware_backup, manufacturing — with size, sha256, version; readAt."
+                lastFlash: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "The last CardOperation flash on this card: operation, region, image, sha256, before, after, started, finished, result." }
+                problems: { type: array, items: { type: string }, description: "IOC exceptions and device access statuses, in words." }
+                errors: { type: array, items: { type: string }, description: "What could not be read." }
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: cardoperations.storage.storm.io
+spec:
+  group: storage.storm.io
+  scope: Cluster
+  names:
+    kind: CardOperation
+    plural: cardoperations
+    singular: cardoperation
+    shortNames: [cop]
+    categories: [storage]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Node, type: string, jsonPath: .spec.node }
+        - { name: Card, type: string, jsonPath: .spec.card }
+        - { name: Region, type: string, jsonPath: .spec.region }
+        - { name: Phase, type: string, jsonPath: .status.phase }
+        - { name: Before, type: string, jsonPath: .status.before }
+        - { name: After, type: string, jsonPath: .status.after }
+        - { name: Message, type: string, jsonPath: .status.message, priority: 1 }
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: "Flash a SAS card (#166, sas3flash's job, no vendor binary): the image is written with MPI FW Download, read back with FW Upload and compared, then the card is reset with the driver's host reset and asked its versions again. A read-back that differs is never reset. Refused while a drive on the card holds the node's system slab unless the Node is cordoned (spec.unschedulable). The reset waits for a moment with no I/O in flight on the card's drives (30 s); without one the image is written and runs at the card's next reset."
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [node, card, op, region, image]
+              properties:
+                node: { type: string, description: "The node with the card (its stormdrive runs the operation)." }
+                card: { type: string, description: "The HostBusAdapter's name, or the card's PCI address." }
+                op: { type: string, enum: [flash] }
+                region: { type: string, enum: [firmware, bios], description: "firmware: the IOC firmware; bios: the option ROM (legacy BIOS and UEFI driver)." }
+                image:
+                  type: object
+                  description: "The golden (compliance-ops#23): the image's name in the node's firmware store (<data_dir>/firmware, POST /api/v1/firmware/images), its sha256 and the URL it was recorded from. The file's sha256 must be this one."
+                  required: [name, sha256, source]
+                  properties:
+                    name: { type: string }
+                    sha256: { type: string, pattern: "^[0-9a-fA-F]{64}$" }
+                    source: { type: string }
+                dryRun: { type: boolean, description: "Check the image and the guards, change nothing." }
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                phase: { type: string, enum: [Pending, Refused, Planned, Running, Succeeded, Written, Failed, Interrupted] }
+                message: { type: string }
+                requester: { type: string }
+                step: { type: string, description: "download, verify, quiesce, reset, ready." }
+                bytesDone: { type: integer }
+                bytesTotal: { type: integer }
+                imageVersion: { type: string, nullable: true }
+                before: { type: string, nullable: true }
+                after: { type: string, nullable: true }
+                started: { type: string, nullable: true }
+                finished: { type: string, nullable: true }
+                observedGeneration: { type: integer, nullable: true }

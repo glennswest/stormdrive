@@ -43,6 +43,8 @@ pub struct AppState {
     pub media: RwLock<Vec<crate::discovery::Media>>,
     /// Latest HBA scan: every PCIe SCSI controller, by PCIe address.
     pub hbas: RwLock<crate::hba::Hbas>,
+    /// The SAS cards read through their own interface, and card flashes (#166).
+    pub cards: crate::cardop::Cards,
     pub inventory_path: Option<PathBuf>,
     /// `<data_dir>/events.json` (#25), and the latest seq written there.
     pub events_path: Option<PathBuf>,
