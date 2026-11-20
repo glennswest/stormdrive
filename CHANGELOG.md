@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-19
+- **docs:** #166 work plan: stormcos#1242 shipped the CRDs + role; #166 marked shipped with the forge1 HostBusAdapter proof
 - **fix:** #168 clippy `explicit_auto_deref` in the card flash task
 - **feat:** #166 our own SAS tools, no Broadcom binaries: `mpt.rs` (the card's control device: IOC info/facts, config pages, FW upload/download in MPI 2.0 and 2.5 frames, host reset, a fake card), a `HostBusAdapter` object per SAS card (storcli's inventory: identity, versions, phys with rates and settings, devices joined to Drives, enclosures to Shelves, firmware regions read back with sha256 and version), and a `CardOperation` flash (sas3flash's: the golden's sha256 + source, the image checked against the card, refused on a system-slab card unless the Node is cordoned, download, read back and byte compare, reset only on a match and with no I/O in flight, before/after recorded); CRDs, RBAC, README, architecture
 - **docs:** #91 API health probes: `drives` (/api/v1/drives) and `shelves` (/api/v1/shelves) declared for the registry (sent to the master to set), README "API health probes"
