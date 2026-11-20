@@ -2288,3 +2288,15 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
   users (#163 step-down, #164 SSC) are not built, and #164 found no SSC bit
   in the public pages.
 - [ ] proof on forge1: the HBA330's HostBusAdapter; a same-version flash.
+
+### #91: API health probes in the registry (2026-11-19) — P0
+
+- [x] Two real reads: `drives` (/api/v1/drives: inventory + run tables) and
+  `shelves` (/api/v1/shelves: shelves lock + inventory), p50 50 / p99 500 ms,
+  timeout 10 s, no restart (a format or flash must never be cut short).
+  Plain path, no token (`allow_anonymous` serves it; a bearer would put a
+  TokenReview behind every probe). README "API health probes".
+- [ ] The registry is the master's (session token refused on
+  `/api/v1/config/components/check`): command sent with `stormcentral note`.
+- [ ] After the master sets it: export shows `apis`, sc-build, image build,
+  close.

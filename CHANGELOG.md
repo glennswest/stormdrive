@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-19
+- **docs:** #91 API health probes: `drives` (/api/v1/drives) and `shelves` (/api/v1/shelves) declared for the registry (sent to the master to set), README "API health probes"
 - **docs:** #157 work plan: stormcos#1039 landed (273cf8a); re-shipped with the proof scoped `on server8`, carried from e474224
 - **docs:** #157 work plan: the proof was checked on pvetest2 (no SSD, so nothing can be `fast` there); re-ship scoped `on server8` after stormcos#1039 puts the policy in the blades' manifests
 

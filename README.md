@@ -1198,6 +1198,24 @@ Body-free forms, for stormview renderers that POST with no body:
 `…/format/{block_size}`, `/shelves/{key}/locate/{on|off}`,
 `/shelves/{key}/format/{block_size}`.
 
+### API health probes (#91, stormcentral#596)
+
+`/api/v1/health` answers while the work behind it is stuck, so stormdrive's
+registry entry declares two real reads for stormd to probe inside the
+container (`[[process.api]]`, stormd's "API health"):
+
+| API | Probe | What a stall there means |
+|---|---|---|
+| `drives` | `GET /api/v1/drives` | the inventory lock (held by discovery, the poller's merges and the worker) or a run table (test, format, firmware) is held |
+| `shelves` | `GET /api/v1/shelves` | the shelves lock (the SES scan) or the inventory is held |
+
+Budgets p50 50 ms, p99 500 ms, stalled after 10 s. No
+`restart_after_stalled_secs`: a restart would cut a format, sanitize or
+firmware download short. The probes go to the plain-HTTP port with no
+credential, which `[api] allow_anonymous` serves today (#19). When that line
+goes, each probe becomes `https://127.0.0.1:9092/…` with a `token_file`, or
+the probes read `down`.
+
 ### `/metrics` (#18)
 
 Prometheus text on the API port, a read like any other (a scraper presents
