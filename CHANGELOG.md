@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **docs:** #180 work plan: sc-build passed on 19858c3 (build, test, clippy), closed
 - **fix:** #180 (finding 63bd02ad750e) a format request can no longer start two formats on one drive: `start_formats` formats a drive named twice (by any alias) once, and reserves every drive (`format::reserve`, all or nothing, under the inventory write lock) before any format task starts, so a concurrent request finds it `Formatting` and gets 409 instead of a second MODE SELECT/FORMAT UNIT and a replaced run record
 - **docs:** #179 work plan: sc-build passed on f426514 (build, test, clippy), closed
 - **fix:** #179 (finding 5c92c84d172b) `stormdrive format sgN` no longer bypasses the mounted-disk guard: an sg node is resolved through sysfs (`class/scsi_generic/sgN/device/block`) to its sd disk, and the format is refused when that disk or a partition of it is mounted or held by an active stack (dm, md: `holders/`); the same holders check now guards a block node too

@@ -2416,4 +2416,4 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 ### #180 — a format batch could start two formats on one drive (finding 63bd02ad750e)
 - [x] `start_formats` dedupes resolved DriveIds; `format::reserve` marks every drive `Formatting` under the inventory write lock, all or nothing, before any task starts (409 otherwise)
 - [x] test `a_reservation_is_all_or_nothing_and_takes_a_drive_once`; README `/api/v1/format` row
-- [ ] sc-build
+- [x] sc-build passed on 19858c3: cargo build, cargo test (480 lib tests + every suite, 0 failed), clippy -D warnings clean; closed
