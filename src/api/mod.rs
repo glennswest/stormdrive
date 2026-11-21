@@ -257,8 +257,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/hbas", get(list_hbas))
         .route("/api/v1/controllers", get(list_controllers))
         .route("/api/v1/controllers/{key}", get(get_controller))
-        .route("/api/v1/controllers/{key}/personality", post(set_controller_personality))
-        .route("/api/v1/controllers/{key}/personality/{mode}", post(personality_by_path))
         .route("/api/v1/controllers/{key}/drives/{device}/state", post(set_controller_device_state))
         .route("/api/v1/drives/{id}/controller-state", post(set_drive_controller_state))
         .route("/api/v1/drives/{id}/controller-state/{state}", post(drive_controller_state_by_path))
@@ -1805,56 +1803,6 @@ async fn get_controller(State(s): State<Arc<AppState>>, Path(key): Path<String>)
 }
 
 #[derive(Deserialize)]
-struct PersonalityBody {
-    mode: String,
-}
-
-/// perccli's personality change (#132): HBA (or JBOD); a reboot applies it.
-/// Refused while the controller has virtual disks, and when perccli is not
-/// on the node (501 `tool_missing`).
-async fn set_controller_personality(
-    State(s): State<Arc<AppState>>,
-    Path(key): Path<String>,
-    Json(body): Json<PersonalityBody>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let r = resolve_controller(&s, &key).await?;
-    let want = crate::raidctl::Mode::parse(&body.mode).ok_or_else(|| ApiError::bad_request(format!("mode {:?}: HBA or JBOD", body.mode)))?;
-    let ours = s.controllers.read().await.len();
-    let perccli = s.config.controllers.perccli.clone();
-    let bin = match crate::raidctl::find_perccli(perccli.as_deref()) {
-        Ok(b) => b,
-        Err(why) => {
-            s.events.write().await.push(None, Severity::Warning, "controller", format!("controller {}: personality {} refused: {why}", r.key, want.perccli_word()));
-            return Err(ApiError { status: StatusCode::NOT_IMPLEMENTED, code: "tool_missing", message: why });
-        }
-    };
-    let mut r2 = r.clone();
-    r2.perccli = Ok(bin.display().to_string());
-    let res = tokio::task::spawn_blocking(move || crate::raidctl::set_personality(&r2, perccli.as_deref(), ours, want))
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    match res {
-        Ok(said) => {
-            s.events.write().await.push(
-                None,
-                Severity::Warning,
-                "controller",
-                format!("controller {} ({}): personality {} set ({said}); a reboot applies it", r.key, r.model.as_deref().unwrap_or("?"), want.perccli_word()),
-            );
-            if let Some(c) = s.controllers.write().await.iter_mut().find(|c| c.key == r.key) {
-                c.pending_mode = Some(want);
-                c.findings = crate::raidctl::findings(c);
-            }
-            Ok(Json(json!({ "controller": r.key, "mode": want, "reboot_required": true, "perccli": said })))
-        }
-        Err(e) => {
-            s.events.write().await.push(None, Severity::Warning, "controller", format!("controller {}: personality {} refused: {e}", r.key, want.perccli_word()));
-            Err(ApiError::conflict(e))
-        }
-    }
-}
-
-#[derive(Deserialize)]
 struct ControllerStateBody {
     state: crate::raidctl::Target,
     #[serde(default)]
@@ -1931,11 +1879,6 @@ async fn set_drive_controller_state(
     let cs = cs.ok_or_else(|| ApiError::conflict(format!("drive {id}: no RAID controller lists it")))?;
     let r = resolve_controller(&s, &cs.controller).await?;
     change_controller_state(&s, r, cs.device_id, body).await
-}
-
-/// The feed's parameter-less actions: `…/personality/hba`.
-async fn personality_by_path(State(s): State<Arc<AppState>>, Path((key, mode)): Path<(String, String)>) -> Result<Json<serde_json::Value>, ApiError> {
-    set_controller_personality(State(s), Path(key), Json(PersonalityBody { mode })).await
 }
 
 /// `…/controller-state/good` | `/jbod` from the feed: force implied (the

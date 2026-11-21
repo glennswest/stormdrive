@@ -471,17 +471,16 @@ half that.
   forge1's 0x0c "device not found" on drives whose cut-off format left 31/00
   is the controller failing to bring them up, which a state change cannot
   cure. The
-  personality has no public DCMD (megaraid_sas.h has only the
-  `supportPersonalityChange` capability bits): perccli runs it (`/call show
-  J` → our controller by PCI address, `/cN show personality J`, `/cN set
-  personality=HBA J`), bounded, its JSON `Command Status` checked. Not
-  needed (stormcentral#1310 ruling, 2026-11-10: storage nodes use IT-mode
-  HBAs; perccli is a separate diagnostic image, not in stormdrive's). Mode
-  without perccli: RAID when virtual disks exist or a disk is in any state
-  but JBOD; otherwise `unknown` (RAID with JBOD and HBA read alike). Joined to
+  personality is not changed (#171): it has no public DCMD (megaraid_sas.h
+  has only the `supportPersonalityChange` capability bits), no vendor binary
+  ships (owner, compliance-ops#231), and storage nodes use IT-mode HBAs
+  (stormcentral#1310, 2026-11-10); a change, if ever wanted, is stormraid#93's
+  own controller tool. Mode, inferred over MFI: RAID when virtual disks
+  exist or a disk is in any state but JBOD; otherwise `unknown` (RAID with
+  JBOD and HBA read alike). Joined to
   the inventory (SAS address, else host + slot when the slot is unique):
   `Drive.controller_state`. Findings → events on change, `/metrics`, the HBA
-  card in the feed (mode, Switch to HBA), drive actions Set good / Set JBOD.
+  card in the feed (mode, findings), drive actions Set good / Set JBOD.
 - **Behind `megaraid_sas`** (#65, `megaraid.rs`): no SES device, no
   `sas_address`, no enclosure class. MFI DCMDs over `MEGASAS_IOC_FIRMWARE`,
   reads only: `0x02010000` (every physical device: device id, enclosure device

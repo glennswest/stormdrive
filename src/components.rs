@@ -503,22 +503,18 @@ fn hba_component(h: &crate::hba::Hba, drives: &[&Drive]) -> ComponentSummary {
 }
 
 /// The HBA card, with what its RAID controller read says (#132): mode (RAID
-/// is a warning: HBA mandatory), findings, and Switch to HBA.
+/// is a warning: HBA mandatory) and findings. No personality action: the
+/// personality is not changed from here (#171).
 fn hba_with(h: &crate::hba::Hba, drives: &[&Drive], ctl: Option<&crate::raidctl::ControllerReport>) -> ComponentSummary {
     let mut c = hba_plain(h, drives);
     if let Some(r) = ctl {
-        let mode = r.mode.perccli_word();
+        let mode = r.mode.word();
         c.metrics.insert(1, Metric::new("mode", mode).tone(if r.mode == crate::raidctl::Mode::Raid { "warn" } else { "muted" }));
-        if let Some(p) = r.pending_mode {
-            c.metrics.insert(2, Metric::new("after reboot", p.perccli_word()).tone("accent"));
-        }
         c.detail.push_str(&format!(" · {} mode", mode));
         if r.findings.iter().any(|f| f.severity == "warning") {
             c.health = Health::Warn;
             c.detail.push_str(&format!(" · {}", r.findings.iter().filter(|f| f.severity == "warning").map(|f| f.code.as_str()).collect::<Vec<_>>().join(", ")));
         }
-        let can = r.mode != crate::raidctl::Mode::Hba && r.pending_mode != Some(crate::raidctl::Mode::Hba) && r.perccli.is_ok() && r.virtual_disks.unwrap_or(0) == 0;
-        c.actions.push(act("personality-hba", "Switch to HBA", "POST", format!("/api/v1/controllers/{}/personality/hba", r.key), can, true));
     }
     c
 }
@@ -1174,6 +1170,35 @@ mod tests {
         assert_eq!(m("bios").as_deref(), Some("08.37.00.00"));
         assert_eq!(m("drives").as_deref(), Some("1"));
         assert!(c.relations.iter().any(|r| r.name == "drives" && r.targets == vec![format!("drive:{}", d.id)]));
+    }
+
+    /// #171: a RAID-mode controller is a warning on its HBA card, and there
+    /// is no Switch to HBA: the personality is not changed from here.
+    #[test]
+    fn a_raid_mode_controller_warns_and_offers_no_personality_switch() {
+        let h = crate::hba::Hba { pcie_addr: "0000:03:00.0".into(), scsi_hosts: vec!["host0".into()], driver: Some("megaraid_sas".into()), ..Default::default() };
+        let mut r = crate::raidctl::ControllerReport {
+            key: "0000:03:00.0".into(),
+            scsi_host: "host0".into(),
+            pcie_addr: Some("0000:03:00.0".into()),
+            driver: "megaraid_sas".into(),
+            model: Some("PERC H730 Mini".into()),
+            serial: None,
+            firmware: None,
+            virtual_disks: Some(1),
+            jbod_enabled: Some(true),
+            mode: crate::raidctl::Mode::Raid,
+            mode_basis: "inferred: 1 virtual disk(s)".into(),
+            drives: vec![],
+            findings: vec![],
+            error: None,
+        };
+        r.findings = crate::raidctl::findings(&r);
+        let c = hba_with(&h, &[], Some(&r));
+        assert_eq!(c.health, Health::Warn);
+        assert!(c.detail.contains("RAID mode") && c.detail.contains("raid_mode"), "{}", c.detail);
+        assert_eq!(c.metrics.iter().find(|m| m.label == "mode").map(|m| m.value.as_str()), Some("RAID"));
+        assert!(!c.actions.iter().any(|a| a.id.contains("personality") || a.path.contains("personality")), "{:?}", c.actions.iter().map(|a| &a.id).collect::<Vec<_>>());
     }
 
     #[test]

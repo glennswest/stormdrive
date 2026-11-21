@@ -376,7 +376,7 @@ pub fn render_thermal(t: &crate::thermal::Tracker) -> String {
 pub fn render_controllers(cs: &[crate::raidctl::ControllerReport]) -> String {
     let mut o = Out::default();
     for r in cs {
-        let l = [("controller", r.key.clone()), ("model", r.model.clone().unwrap_or_default()), ("mode", r.mode.perccli_word().to_string())];
+        let l = [("controller", r.key.clone()), ("model", r.model.clone().unwrap_or_default()), ("mode", r.mode.word().to_string())];
         o.gauge("stormdrive_controller_raid_mode", "1 when the RAID controller is in RAID mode (HBA mode is mandatory).", &l, (r.mode == crate::raidctl::Mode::Raid) as u8 as f64);
         for d in &r.drives {
             let l = [

@@ -108,8 +108,8 @@ src/
   megaraid.rs     a RAID controller's enclosures as internal shelves: MFI reads
                   through the driver's char device (#65)
   raidctl.rs      the RAID controller itself: identity, mode (RAID = finding),
-                  each disk's state, set good / JBOD over MFI, personality via
-                  perccli (#132)
+                  each disk's state, set good / JBOD over MFI (#132); no
+                  personality change (#171)
   hba.rs          PCIe SCSI HBA inventory (firmware, BIOS, NVDATA versions)
   mpt.rs          the SAS card's own interface (#166): /dev/mpt3ctl ioctls, IOC
                   Facts, config pages, FW upload/download, reset; a fake card

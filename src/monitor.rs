@@ -385,7 +385,7 @@ async fn scan_shelves(state: &Arc<AppState>) -> anyhow::Result<()> {
 
 /// One controller scan at a time, as the shelf scan (#132).
 static CONTROLLER_SCAN_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// MFI reads and up to two perccli calls a controller.
+/// MFI reads of every controller.
 const CONTROLLER_SCAN_LIMIT: Duration = Duration::from_secs(150);
 
 /// RAID controllers (#132): identity, mode, each disk's firmware state;
@@ -401,10 +401,9 @@ async fn scan_controllers(state: &Arc<AppState>) {
     if CONTROLLER_SCAN_BUSY.swap(true, Ordering::SeqCst) {
         return;
     }
-    let perccli = state.config.controllers.perccli.clone();
     let scan = tokio::task::spawn_blocking(move || {
         let _done = Done;
-        crate::raidctl::scan(perccli.as_deref())
+        crate::raidctl::scan()
     });
     match tokio::time::timeout(CONTROLLER_SCAN_LIMIT, scan).await {
         Ok(Ok(reports)) => merge_controllers(state, reports).await,

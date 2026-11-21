@@ -5,7 +5,7 @@
 //! 0 KB** after their formats were cut by a power-off; neither the setup menu
 //! nor the iDRAC would act on them. Dell's fix is from the OS: each Failed
 //! drive set good, then the controller's personality to HBA (a reboot applies
-//! it). stormdrive does both:
+//! it). stormdrive does the first and reports the second:
 //!
 //! - **Reads and drive state changes are MFI DCMDs** over the driver's char
 //!   device (as [`crate::megaraid`]): `MR_DCMD_CTRL_GET_INFO` for model,
@@ -14,23 +14,22 @@
 //!   *unconfigured good* (FreeBSD mfiutil's `good`) or *JBOD* (`syspd`: Linux
 //!   sees it with no personality change). Layouts: Linux
 //!   `drivers/scsi/megaraid/megaraid_sas.h`, FreeBSD `sys/dev/mfi/mfireg.h`.
-//! - **The personality is perccli's.** No public header names the DCMD that
-//!   changes it (they carry only the `supportPersonalityChange` bits), so it
-//!   is not guessed: stormdrive runs `perccli /cN set personality=HBA` when the
-//!   binary is there (`[controllers] perccli`) and says it is not otherwise.
+//! - **The personality is not changed from here** (#171). No public header
+//!   names the DCMD that changes it (they carry only the
+//!   `supportPersonalityChange` bits), and no vendor binary ships (owner,
+//!   compliance-ops#231). Storage nodes use IT-mode HBAs (#132); a
+//!   personality change, if ever wanted, is our own controller tool's
+//!   (stormraid#93).
 //!
-//! A controller is in RAID mode by perccli's word, or — without perccli — when
-//! it has virtual disks or a disk in a state only RAID mode has (unconfigured,
-//! hot spare, failed, online, …: in HBA mode every disk is a plain device).
-//! RAID mode is a finding on every node.
+//! A controller is in RAID mode when it has virtual disks or a disk in a
+//! state only RAID mode has (unconfigured, hot spare, failed, online, …: in
+//! HBA mode every disk is a plain device). RAID mode is a finding on every
+//! node.
 //!
-//! Everything but the ioctl and the process is portable and tested against a
-//! fake firmware and a fake perccli.
+//! Everything but the ioctl is portable and tested against a fake firmware.
 
 use crate::drive::{Drive, Membership};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// MR_DCMD_CTRL_GET_INFO: struct megasas_ctrl_info.
 pub const DCMD_CTRL_INFO: u32 = 0x0101_0000;
@@ -127,19 +126,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub fn parse(s: &str) -> Option<Mode> {
-        let u = s.to_ascii_uppercase();
-        if u.contains("HBA") {
-            Some(Mode::Hba)
-        } else if u.contains("JBOD") {
-            Some(Mode::Jbod)
-        } else if u.contains("RAID") {
-            Some(Mode::Raid)
-        } else {
-            None
-        }
-    }
-    pub fn perccli_word(self) -> &'static str {
+    pub fn word(self) -> &'static str {
         match self {
             Mode::Hba => "HBA",
             Mode::Jbod => "JBOD",
@@ -315,22 +302,17 @@ pub struct ControllerReport {
     #[serde(default)]
     pub jbod_enabled: Option<bool>,
     pub mode: Mode,
-    /// How `mode` is known: "perccli", or the evidence it was inferred from.
+    /// The evidence `mode` was inferred from.
     pub mode_basis: String,
-    /// A personality asked for that a reboot has not applied yet.
-    #[serde(default)]
-    pub pending_mode: Option<Mode>,
     pub drives: Vec<PdStatus>,
     pub findings: Vec<Finding>,
     /// Why the controller could not be read.
     #[serde(default)]
     pub error: Option<String>,
-    /// Where perccli is, or why there is none (the personality needs it).
-    pub perccli: Result<String, String>,
 }
 
 /// The mode from what MFI says: RAID when the controller has virtual disks
-/// or a disk in a RAID-only state; otherwise not known without perccli.
+/// or a disk in a RAID-only state; otherwise not known over MFI.
 pub fn infer_mode(info: Option<&CtrlInfo>, drives: &[PdStatus]) -> (Mode, String) {
     if let Some(i) = info.filter(|i| i.virtual_disks > 0) {
         return (Mode::Raid, format!("inferred: {} virtual disk(s)", i.virtual_disks));
@@ -343,7 +325,7 @@ pub fn infer_mode(info: Option<&CtrlInfo>, drives: &[PdStatus]) -> (Mode, String
         let list: Vec<String> = odd.iter().map(|(s, n)| format!("{s} ×{n}")).collect();
         return (Mode::Raid, format!("inferred: disks in states only RAID mode has ({})", list.join(", ")));
     }
-    (Mode::Unknown, "every disk is JBOD; RAID mode with JBOD and HBA mode read alike without perccli".into())
+    (Mode::Unknown, "every disk is JBOD; RAID mode with JBOD and HBA mode read alike over MFI".into())
 }
 
 pub fn findings(r: &ControllerReport) -> Vec<Finding> {
@@ -352,18 +334,11 @@ pub fn findings(r: &ControllerReport) -> Vec<Finding> {
     if let Some(e) = &r.error {
         out.push(w("unreadable", format!("controller {} not read: {e}", r.key)));
     }
-    if r.mode == Mode::Raid && r.pending_mode != Some(Mode::Hba) {
+    if r.mode == Mode::Raid {
         out.push(w(
             "raid_mode",
             format!("controller {} ({}) is in RAID mode ({}); HBA mode is mandatory", r.key, r.model.as_deref().unwrap_or("?"), r.mode_basis),
         ));
-    }
-    if let Some(p) = r.pending_mode {
-        out.push(Finding {
-            code: "reboot_pending".into(),
-            severity: "info".into(),
-            message: format!("controller {}: personality {} asked for; a reboot applies it", r.key, p.perccli_word()),
-        });
     }
     for d in r.drives.iter().filter(|d| matches!(d.state_code, STATE_FAILED | STATE_UNCONFIGURED_BAD | STATE_OFFLINE)) {
         out.push(w(
@@ -440,8 +415,8 @@ pub fn read_drives(mfi: &mut dyn Mfi) -> Result<Vec<PdStatus>, String> {
     Ok(out)
 }
 
-/// Identity and disks of one controller; mode inferred (perccli's word, when
-/// there is one, is put in by the caller).
+/// Identity and disks of one controller; mode inferred (findings are the
+/// caller's: [`findings`]).
 pub fn read_controller(host: &str, pcie: Option<&str>, mfi: Result<&mut dyn Mfi, String>) -> ControllerReport {
     let mut r = ControllerReport {
         key: pcie.unwrap_or(host).to_string(),
@@ -455,11 +430,9 @@ pub fn read_controller(host: &str, pcie: Option<&str>, mfi: Result<&mut dyn Mfi,
         jbod_enabled: None,
         mode: Mode::Unknown,
         mode_basis: String::new(),
-        pending_mode: None,
         drives: Vec::new(),
         findings: Vec::new(),
         error: None,
-        perccli: Err("not looked for".into()),
     };
     let mfi = match mfi {
         Ok(m) => m,
@@ -646,218 +619,18 @@ pub fn apply_state(mfi: &mut dyn Mfi, pd: &PdStatus, steps: &[u16]) -> Result<Pd
     }
 }
 
-// ---- perccli -------------------------------------------------------------
-
-/// Where perccli is looked for when the config names none.
-pub const PERCCLI_SEARCH: &[&str] =
-    &["/usr/libexec/stormdrive/perccli64", "/opt/MegaRAID/perccli/perccli64", "/opt/dell/perccli/perccli64", "/usr/sbin/perccli64", "/usr/bin/perccli64", "/usr/sbin/perccli"];
-
-/// The binary: the configured one, else the first of the search list.
-pub fn find_perccli(configured: Option<&str>) -> Result<PathBuf, String> {
-    if let Some(p) = configured {
-        let p = PathBuf::from(p);
-        return if p.is_file() { Ok(p) } else { Err(format!("perccli {}: not there", p.display())) };
-    }
-    PERCCLI_SEARCH.iter().map(PathBuf::from).find(|p| p.is_file()).ok_or_else(|| {
-        format!("perccli is not in this image (looked in {}); the personality change needs it (#132)", PERCCLI_SEARCH.join(", "))
-    })
-}
-
-/// Run perccli with `args` + `J`, bounded; its JSON.
-pub fn run_perccli(bin: &Path, args: &[&str], limit: Duration) -> Result<serde_json::Value, String> {
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(bin)
-        .args(args)
-        .arg("J")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{}: {e}", bin.display()))?;
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() > limit => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("perccli {}: no answer in {} s", args.join(" "), limit.as_secs()));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(format!("perccli: {e}")),
-        }
-    }
-    let out = child.wait_with_output().map_err(|e| format!("perccli: {e}"))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str(text.trim()).map_err(|e| {
-        format!("perccli {}: not JSON ({e}): {}", args.join(" "), text.chars().take(200).collect::<String>())
-    })
-}
-
-/// The `Controllers` entries, each `Command Status` checked: a failure is
-/// its description (and detailed status) as perccli gives it.
-pub fn perccli_ok(v: &serde_json::Value) -> Result<Vec<&serde_json::Value>, String> {
-    let list = v.get("Controllers").and_then(|c| c.as_array()).ok_or("perccli: no Controllers in its answer")?;
-    let mut out = Vec::new();
-    for c in list {
-        let st = &c["Command Status"];
-        if st["Status"].as_str() != Some("Success") {
-            let mut why = st["Description"].as_str().unwrap_or("failed").to_string();
-            if let Some(d) = st.get("Detailed Status") {
-                why.push_str(&format!(": {d}"));
-            }
-            return Err(format!("perccli: {why}"));
-        }
-        out.push(c);
-    }
-    Ok(out)
-}
-
-/// Strings anywhere under `v` whose key contains `needle` (case-blind).
-fn find_strings<'a>(v: &'a serde_json::Value, needle: &str, out: &mut Vec<(&'a str, &'a str)>) {
-    match v {
-        serde_json::Value::Object(m) => {
-            for (k, x) in m {
-                if let Some(s) = x.as_str() {
-                    if k.to_ascii_lowercase().contains(needle) {
-                        out.push((k, s));
-                    }
-                }
-                find_strings(x, needle, out);
-            }
-        }
-        serde_json::Value::Array(a) => a.iter().for_each(|x| find_strings(x, needle, out)),
-        _ => {}
-    }
-}
-
-fn pci_triple(bdf: &str) -> Option<(u32, u32, u32)> {
-    // "0000:03:00.0"
-    let (rest, func) = bdf.rsplit_once('.')?;
-    let mut p = rest.rsplit(':');
-    let dev = u32::from_str_radix(p.next()?, 16).ok()?;
-    let bus = u32::from_str_radix(p.next()?, 16).ok()?;
-    Some((bus, dev, u32::from_str_radix(func, 16).ok()?))
-}
-
-/// perccli's controller number for ours: `/call show` names each one's PCI
-/// address ("00:03:00:00"); a lone controller on both sides is the one.
-pub fn perccli_index(all: &serde_json::Value, pcie: Option<&str>, ours: usize) -> Result<u32, String> {
-    let ctrls = perccli_ok(all)?;
-    let mut seen = Vec::new();
-    for c in &ctrls {
-        let idx = c["Command Status"]["Controller"].as_u64().map(|n| n as u32);
-        let mut addr = Vec::new();
-        find_strings(&c["Response Data"], "pci address", &mut addr);
-        seen.push((idx, addr.first().map(|a| a.1.to_string())));
-    }
-    if let Some(want) = pcie.and_then(pci_triple) {
-        for (idx, addr) in &seen {
-            let parts: Vec<u32> = addr.iter().flat_map(|a| a.split([':', '.'])).filter_map(|x| u32::from_str_radix(x.trim(), 16).ok()).collect();
-            if parts.windows(3).any(|w| (w[0], w[1], w[2]) == want) {
-                if let Some(i) = idx {
-                    return Ok(*i);
-                }
-            }
-        }
-    }
-    match (seen.as_slice(), ours) {
-        ([(Some(i), _)], 1) => Ok(*i),
-        _ => Err(format!("perccli: no controller at {} among {:?}", pcie.unwrap_or("?"), seen)),
-    }
-}
-
-/// The current and requested personality from `/cN show personality`.
-pub fn perccli_personality(v: &serde_json::Value) -> Result<(Option<Mode>, Option<Mode>), String> {
-    let ctrls = perccli_ok(v)?;
-    let mut strs = Vec::new();
-    for c in ctrls {
-        find_strings(&c["Response Data"], "personality", &mut strs);
-    }
-    let pick = |pred: &dyn Fn(&str) -> bool| strs.iter().find(|(k, _)| pred(&k.to_ascii_lowercase())).and_then(|(_, s)| Mode::parse(s));
-    let current = pick(&|k: &str| k.contains("current")).or_else(|| pick(&|k: &str| !k.contains("request") && !k.contains("pending") && !k.contains("support")));
-    let pending = pick(&|k: &str| k.contains("request") || k.contains("pending"));
-    Ok((current, pending.filter(|p| Some(*p) != current)))
-}
-
-/// Ask for a personality: refused while the controller has virtual disks
-/// (perccli would refuse too; they are the owner's data).
-pub fn personality_blocker(r: &ControllerReport, want: Mode) -> Option<String> {
-    if want == Mode::Raid || want == Mode::Unknown {
-        return Some(format!("mode {}: only HBA (or JBOD) is asked for from here", want.perccli_word()));
-    }
-    if let Some(n) = r.virtual_disks.filter(|n| *n > 0) {
-        return Some(format!("controller {} has {n} virtual disk(s): they are not deleted from here", r.key));
-    }
-    if let Err(e) = &r.perccli {
-        return Some(e.clone());
-    }
-    None
-}
-
 // ---- the node ------------------------------------------------------------
 
-/// Every `megaraid_sas` controller on the node, read; perccli's mode put in
-/// where it answers.
-pub fn scan(perccli: Option<&str>) -> Vec<ControllerReport> {
+/// Every `megaraid_sas` controller on the node, read, with its findings.
+pub fn scan() -> Vec<ControllerReport> {
     #[cfg(target_os = "linux")]
     {
-        linux::scan(perccli)
+        linux::scan()
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = perccli;
         Vec::new()
     }
-}
-
-/// perccli's mode and pending mode into a report, when it answers.
-pub fn with_perccli(r: &mut ControllerReport, configured: Option<&str>, ours: usize, all: &mut Option<Result<serde_json::Value, String>>) {
-    let bin = match find_perccli(configured) {
-        Ok(b) => b,
-        Err(e) => {
-            r.perccli = Err(e);
-            r.findings = findings(r);
-            return;
-        }
-    };
-    r.perccli = Ok(bin.display().to_string());
-    let limit = Duration::from_secs(60);
-    let all = all.get_or_insert_with(|| run_perccli(&bin, &["/call", "show"], limit));
-    let res = all.clone().and_then(|a| perccli_index(&a, r.pcie_addr.as_deref(), ours)).and_then(|i| {
-        let v = run_perccli(&bin, &[&format!("/c{i}"), "show", "personality"], limit)?;
-        perccli_personality(&v)
-    });
-    match res {
-        Ok((cur, pending)) => {
-            if let Some(m) = cur {
-                r.mode = m;
-                r.mode_basis = "perccli".into();
-            }
-            r.pending_mode = pending;
-        }
-        Err(e) => tracing::debug!(controller = %r.key, "perccli personality: {e}"),
-    }
-    r.findings = findings(r);
-}
-
-/// Set the personality through perccli; its answer's description.
-pub fn set_personality(r: &ControllerReport, configured: Option<&str>, ours: usize, want: Mode) -> Result<String, String> {
-    if let Some(why) = personality_blocker(r, want) {
-        return Err(why);
-    }
-    let bin = find_perccli(configured)?;
-    let limit = Duration::from_secs(300);
-    let all = run_perccli(&bin, &["/call", "show"], Duration::from_secs(60))?;
-    let i = perccli_index(&all, r.pcie_addr.as_deref(), ours)?;
-    let v = run_perccli(&bin, &[&format!("/c{i}"), "set", &format!("personality={}", want.perccli_word())], limit)?;
-    let ok = perccli_ok(&v)?;
-    let mut said = Vec::new();
-    for c in ok {
-        find_strings(&c["Response Data"], "", &mut said);
-    }
-    let detail: Vec<String> = said.iter().map(|(k, s)| format!("{k}: {s}")).collect();
-    Ok(if detail.is_empty() { format!("perccli /c{i}: personality {} set; a reboot applies it", want.perccli_word()) } else { detail.join("; ") })
 }
 
 /// Change one drive's state on the controller `key` (re-read first, so the
@@ -889,6 +662,7 @@ pub fn change_state(mfi: &mut dyn Mfi, device_id: u16, want: Target, force: bool
 mod linux {
     use super::*;
     use std::fs::File;
+    use std::path::Path;
 
     struct Ioctl<'a> {
         file: &'a File,
@@ -911,14 +685,12 @@ mod linux {
         host.trim_start_matches("host").parse::<u16>().map_err(|e| format!("{host}: {e}"))
     }
 
-    pub fn scan(perccli: Option<&str>) -> Vec<ControllerReport> {
+    pub fn scan() -> Vec<ControllerReport> {
         let hosts = crate::megaraid::linux::hosts(Path::new("/sys"));
         if hosts.is_empty() {
             return Vec::new();
         }
         let file = crate::megaraid::linux::open_node();
-        let mut all = None;
-        let n = hosts.len();
         hosts
             .iter()
             .map(|(host, pcie)| {
@@ -929,7 +701,7 @@ mod linux {
                     }
                     (Err(e), _) | (_, Err(e)) => read_controller(host, pcie.as_deref(), Err(e.clone())),
                 };
-                with_perccli(&mut r, perccli, n, &mut all);
+                r.findings = findings(&r);
                 r
             })
             .collect()
@@ -1344,66 +1116,5 @@ mod tests {
         assert_eq!(state_set_mbox(4, 11, STATE_JBOD), [4, 0, 11, 0, 0x40, 0]);
         assert!(parse_ctrl_info(&[0; 100]).is_none());
     }
-
-    fn controllers_json(addr: &str) -> serde_json::Value {
-        serde_json::json!({"Controllers":[{"Command Status":{"CLI Version":"007.1910","Controller":0,"Status":"Success","Description":"None"},
-            "Response Data":{"Basics":{"Controller":0,"Model":"PERC H730 Mini","PCI Address":addr}}}]})
-    }
-
-    #[test]
-    fn perccli_answers() {
-        assert_eq!(perccli_index(&controllers_json("00:03:00:00"), Some("0000:03:00.0"), 1), Ok(0));
-        assert_eq!(perccli_index(&controllers_json("00:81:00:00"), Some("0000:03:00.0"), 1), Ok(0), "the only one on both sides");
-        assert!(perccli_index(&controllers_json("00:81:00:00"), Some("0000:03:00.0"), 2).is_err());
-        let p = serde_json::json!({"Controllers":[{"Command Status":{"Controller":0,"Status":"Success","Description":"None"},
-            "Response Data":{"Personality Info":[{"Current Personality":"RAID-Mode","Requested Personality":"HBA-Mode","Default Personality":"RAID-Mode"}]}}]});
-        assert_eq!(perccli_personality(&p), Ok((Some(Mode::Raid), Some(Mode::Hba))));
-        let fail = serde_json::json!({"Controllers":[{"Command Status":{"Controller":0,"Status":"Failure","Description":"Un-supported command"}}]});
-        assert_eq!(perccli_personality(&fail), Err("perccli: Un-supported command".into()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_fake_perccli_sets_the_personality() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("perccli-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let bin = dir.join("perccli64");
-        let log = dir.join("calls");
-        let script = format!(
-            r#"#!/bin/sh
-echo "$@" >> {log}
-case "$*" in
-  "/call show J") echo '{all}' ;;
-  "/c0 show personality J") echo '{{"Controllers":[{{"Command Status":{{"Controller":0,"Status":"Success","Description":"None"}},"Response Data":{{"Current Personality":"RAID-Mode"}}}}]}}' ;;
-  "/c0 set personality=HBA J") echo '{{"Controllers":[{{"Command Status":{{"Controller":0,"Status":"Success","Description":"None"}},"Response Data":{{"Personality":"HBA","Reboot Required":"Yes"}}}}]}}' ;;
-  *) echo '{{"Controllers":[{{"Command Status":{{"Status":"Failure","Description":"bad args"}}}}]}}' ;;
-esac
-"#,
-            log = log.display(),
-            all = controllers_json("00:03:00:00")
-        );
-        std::fs::write(&bin, script).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut f = forge1();
-        let mut r = read_controller("host0", Some("0000:03:00.0"), Ok(&mut f));
-        let cfg = bin.to_str();
-        with_perccli(&mut r, cfg, 1, &mut None);
-        assert_eq!((r.mode, r.mode_basis.as_str()), (Mode::Raid, "perccli"));
-        let said = set_personality(&r, cfg, 1, Mode::Hba).unwrap();
-        assert!(said.contains("Reboot Required: Yes"), "{said}");
-        let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains("/c0 set personality=HBA J"), "{calls}");
-        // Refused: RAID asked for, virtual disks present, no perccli.
-        assert!(set_personality(&r, cfg, 1, Mode::Raid).is_err());
-        let mut vds = r.clone();
-        vds.virtual_disks = Some(1);
-        assert!(set_personality(&vds, cfg, 1, Mode::Hba).unwrap_err().contains("virtual disk"));
-        let missing = dir.join("nope");
-        let mut r2 = r.clone();
-        with_perccli(&mut r2, missing.to_str(), 1, &mut None);
-        assert!(r2.perccli.is_err());
-        assert!(set_personality(&r2, missing.to_str(), 1, Mode::Hba).unwrap_err().contains("not there"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }
+

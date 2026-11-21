@@ -20,7 +20,6 @@ pub struct Config {
     pub kubernetes: KubernetesConfig,
     pub history: HistoryConfig,
     pub thermal: ThermalConfig,
-    pub controllers: ControllersConfig,
     /// Bay numbering per platform (#134): `[[bay_map]]` entries, the
     /// controller's slot of each physical bay by system model + controller.
     #[serde(default)]
@@ -42,19 +41,9 @@ impl Default for Config {
             kubernetes: KubernetesConfig::default(),
             history: HistoryConfig::default(),
             thermal: ThermalConfig::default(),
-            controllers: ControllersConfig::default(),
             bay_map: Vec::new(),
         }
     }
-}
-
-/// RAID controllers read and changed from the node (#132).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ControllersConfig {
-    /// perccli, for the personality change (no public MFI command does it).
-    /// None: the first of `raidctl::PERCCLI_SEARCH` that exists.
-    pub perccli: Option<String>,
 }
 
 /// Thermal management (#125): readings, limits, alerts, the cooling
@@ -498,6 +487,14 @@ mod tests {
 
     /// The shipped example claims every value in it is the default: keep
     /// it that way (#7). `data_dir` is the one it sets on purpose.
+    /// #171: `[controllers] perccli` is gone; a node config that still
+    /// carries it parses (the key is ignored), so no node fails to start.
+    #[test]
+    fn an_old_controllers_perccli_key_is_ignored() {
+        let c: Config = toml::from_str("[controllers]\nperccli = \"/opt/MegaRAID/perccli/perccli64\"\n").unwrap();
+        assert_eq!(serde_json::to_value(&c).unwrap(), serde_json::to_value(Config::default()).unwrap());
+    }
+
     #[test]
     fn example_config_is_the_defaults() {
         let mut c: Config = toml::from_str(include_str!("../deploy/stormdrive.example.toml")).unwrap();

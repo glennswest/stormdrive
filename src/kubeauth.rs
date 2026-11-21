@@ -132,7 +132,7 @@ pub fn classify(method: &str, path: &str) -> Option<Access> {
         }
         ["api", "v1", "shelves", _, "format" | "firmware" | "bays", ..] => Some(op(None)),
         ["api", "v1", "shelves", key, ..] => Some(Access::new("enclosures", "update", Some(key))),
-        // A controller's personality or a disk's state on it (#132).
+        // A disk's state on its RAID controller (#132).
         ["api", "v1", "controllers", ..] => Some(op(None)),
         ["api", "v1", "drives", id] if method == "DELETE" => Some(Access::new("drives", "delete", Some(id))),
         ["api", "v1", "drives", _, "test", "cancel"] => Some(Access::new("drives", "update", segs.get(3).copied())),

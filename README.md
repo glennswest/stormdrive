@@ -348,19 +348,16 @@ are listed under [Not yet](#not-yet).
     `[[bay_map]]` physical bay, #178), and carries `controller_state`: forge1's sdb–sdd, which
     the PERC has **Failed, 0 KB** and Linux no longer sees, read "failed
     (controller)" instead of a bare `missing`. **RAID mode is a finding**
-    (`raid_mode`, warning event, `stormdrive_controller_raid_mode` 1): by
-    perccli's word when perccli is on the node, else inferred — virtual disks,
-    or a disk in a state only RAID mode has. A drive is set **good** or
+    (`raid_mode`, warning event, `stormdrive_controller_raid_mode` 1),
+    inferred over MFI — virtual disks, or a disk in a state only RAID mode
+    has. A drive is set **good** or
     **JBOD** with the MFI state change (`0x02030100`, FreeBSD mfiutil's
     `good`/`syspd`), read back after; never the system drive, a fleet or
-    in-use drive; from Failed it needs `force`. The **personality** change
-    (`perccli /cN set personality=HBA`; a reboot applies it) runs perccli:
-    no public MFI command does it, so it is not guessed. Without perccli it
-    answers 501 `tool_missing`; refused while the controller has virtual disks.
-    Not needed for storage nodes (master's ruling, stormcentral#1310,
-    2026-11-10): they use IT-mode HBAs (HBA330), and perccli becomes its own
-    diagnostic image, never part of stormdrive's; the route stays for a node
-    that has perccli
+    in-use drive; from Failed it needs `force`. The controller's
+    **personality** is not changed from here (#171): no public MFI command
+    does it, no vendor binary ships (owner, compliance-ops#231), and storage
+    nodes use IT-mode HBAs (HBA330; stormcentral#1310, 2026-11-10). A change,
+    if ever wanted, comes from our own controller tool (stormraid#93)
   - **NVMe:** the PCIe slot on the drive's PCIe chain. A numeric slot name
     is also the bay. Intel VMD domains and native multipath heads are
     followed.
@@ -870,7 +867,6 @@ or only one of `api.tls_cert_file`/`tls_key_file` set.
 | `thermal.trend_samples` | `120` | readings kept in memory per component |
 | `thermal.classes.<class>` | none | `{warn_c, crit_c}` class defaults in place of the built-in ones (under the device's own limits and the live settings) |
 | `bay_map` | none | `[[bay_map]]` entries (#134): `system` (DMI product_name), `controller` (model, board name, PCI subsystem/id or driver), optional `enclosure` (shelf model), `slots` = the controller slot of bay 0, 1, 2, …; e.g. `system = "PowerEdge R6415"`, `controller = "PERC H730 Mini"`, `slots = [0, 3, 4, 7]`. A slot listed twice is refused at start |
-| `controllers.perccli` | none | perccli for the RAID personality change (#132); none = the first of `/usr/libexec/stormdrive/perccli64`, `/opt/MegaRAID/perccli/perccli64`, `/opt/dell/perccli/perccli64`, `/usr/sbin/perccli64`, `/usr/bin/perccli64`, `/usr/sbin/perccli` |
 
 Qualified for `auto_add`: out of the fleet, designation `none`, idle, a
 health verdict that is known and not Failing/Failed, not `in_use_by`, and
@@ -1268,8 +1264,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `POST /api/v1/shelves/{key}/format` | `{"block_size","protection"?,"method"?,"all"?}` — out-of-fleet drives that need it |
 | `GET /api/v1/topology` | controller → shelf → drive tree, with HBA firmware |
 | `GET /api/v1/hbas` | every PCIe SCSI HBA |
-| `GET /api/v1/controllers`, `GET …/controllers/{key}` | RAID controllers (#132): model, serial, firmware, `virtual_disks`, `jbod_enabled`, `mode` (raid / hba / jbod / unknown) + `mode_basis`, `pending_mode` (after reboot), `drives` (device id, enclosure, slot, `state`, `state_code`, errors, size, `raw_size_bytes`, `not_supported`, `unusable`, the inventory drive; for a failed / unconfigured-bad / offline disk `unit` = its own answer to TEST UNIT READY through the controller and `medium_format_corrupted`), `findings` (`raid_mode`, `drive_failed`, `reboot_pending`), `perccli` (its path, or why none). Key: PCIe address, SCSI host or serial |
-| `POST /api/v1/controllers/{key}/personality` | `{"mode":"HBA"}` (or `/personality/hba`) — perccli `set personality`; a drive operation; 501 `tool_missing` without perccli, 409 with virtual disks; a reboot applies it |
+| `GET /api/v1/controllers`, `GET …/controllers/{key}` | RAID controllers (#132): model, serial, firmware, `virtual_disks`, `jbod_enabled`, `mode` (raid / hba / jbod / unknown) + `mode_basis` (the evidence it was inferred from), `drives` (device id, enclosure, slot, `state`, `state_code`, errors, size, `raw_size_bytes`, `not_supported`, `unusable`, the inventory drive; for a failed / unconfigured-bad / offline disk `unit` = its own answer to TEST UNIT READY through the controller and `medium_format_corrupted`), `findings` (`raid_mode`, `drive_failed`, `unreadable`). Key: PCIe address, SCSI host or serial |
 | `POST /api/v1/drives/{id}/controller-state` | `{"state":"good"\|"jbod","force"?}` (or `/controller-state/{state}`, force implied) — MFI state change on the drive's controller, read back; a drive operation; refused for the system drive, a fleet or in-use drive, from Failed without `force`, for a member of a virtual disk |
 | `POST /api/v1/controllers/{key}/drives/{device_id}/state` | the same for a controller disk with no inventory record |
 | `GET /api/v1/placement`, `GET …/placement/{id}` | where each drive is; `generation`, ETag, `?since=` / `If-None-Match` → 304 |
