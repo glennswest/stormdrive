@@ -891,13 +891,13 @@ async fn set_thermal_limits(
     Json(body): Json<crate::thermal::Settings>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     body.validate().map_err(ApiError::bad_request)?;
-    let changed = {
-        let mut rt = s.thermal.write().await;
-        let changed = rt.settings != body;
-        rt.settings = body.clone();
-        rt.save().map_err(|e| ApiError::bad_request(format!("thermal limits not saved: {e:#}")))?;
-        changed
-    };
+    // Written first: a failed save leaves the live limits unchanged.
+    let changed = s
+        .thermal
+        .write()
+        .await
+        .replace(body.clone())
+        .map_err(|e| ApiError::bad_request(format!("thermal limits not saved, the live limits are unchanged: {e:#}")))?;
     if changed {
         let who = who.map_or("unknown".to_string(), |w| w.0.who.clone());
         s.events.write().await.push(

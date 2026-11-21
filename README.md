@@ -1136,7 +1136,10 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   the node:
   - `identify` / `faultLed` (bool): the shelf's locate LED (enclosure IDENT)
     and fault LED (enclosure REQUEST FAILURE), sent when the enclosure shows
-    otherwise; a refused request is not resent until you change it;
+    otherwise; a refused request is sent again with a backoff (30 s,
+    doubling to 30 min), and one the enclosure took but does not show
+    after 10 min is sent again (#181). Drive `spec.identify` retries the
+    same way;
   - `defaultFormat {blockSize: 512|4096, protection: none|type1}`: the
     format planned for a drive in the shelf whose Drive has no
     `spec.format`. The format belongs to a RAID set or a drive; the shelf

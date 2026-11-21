@@ -986,11 +986,21 @@ impl Runtime {
         (Self { tracker: Tracker::default(), settings, settings_path: path }, note)
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
-        if let Some(p) = &self.settings_path {
-            crate::inventory::write_atomic(p, &serde_json::to_vec_pretty(&self.settings)?)?;
+    fn write(path: Option<&std::path::Path>, settings: &Settings) -> anyhow::Result<()> {
+        if let Some(p) = path {
+            crate::inventory::write_atomic(p, &serde_json::to_vec_pretty(settings)?)?;
         }
         Ok(())
+    }
+
+    /// Make `new` the live settings: written first, and live only once the
+    /// write succeeded. A failed write leaves the live limits as they were
+    /// (finding f8241fc52724). True: they changed.
+    pub fn replace(&mut self, new: Settings) -> anyhow::Result<bool> {
+        Self::write(self.settings_path.as_deref(), &new)?;
+        let changed = self.settings != new;
+        self.settings = new;
+        Ok(changed)
     }
 }
 
@@ -1136,6 +1146,27 @@ pub async fn pass(state: &std::sync::Arc<crate::api::AppState>) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Finding f8241fc52724: a save that fails changes nothing live.
+    #[test]
+    fn a_failed_save_leaves_the_live_limits() {
+        let dir = std::env::temp_dir().join(format!("stormdrive-thermal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut rt = Runtime { settings_path: Some(dir.join("thermal-limits.json")), ..Default::default() };
+        let mut new = Settings::default();
+        new.classes.insert("drive".into(), LimitSetting { warn_c: Some(50.0), crit_c: Some(60.0) });
+        assert!(rt.replace(new.clone()).unwrap(), "changed");
+        assert_eq!(rt.settings, new);
+        assert!(!rt.replace(new.clone()).unwrap(), "the same again: no change");
+        // A file where the directory should be: the write fails.
+        rt.settings_path = Some(dir.join("thermal-limits.json").join("x.json"));
+        let mut other = new.clone();
+        other.classes.insert("cpu".into(), LimitSetting { warn_c: Some(70.0), crit_c: None });
+        assert!(rt.replace(other).is_err());
+        assert_eq!(rt.settings, new, "the live limits are unchanged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn cfg() -> PassCfg {
         PassCfg { near_c: 5.0, hysteresis_c: 2.0, replace_after_secs: 1800, heartbeat_secs: 600, trend_len: 4, drive_default: (55.0, 70.0) }

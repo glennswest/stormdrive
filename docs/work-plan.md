@@ -2375,3 +2375,9 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] Tests (fake sysfs, the stale-then-drop sequence, WWID matching), README, architecture, changelog.
 - [x] sc-build (build + test + clippy); v0.57.2 with #172; image; shipped. Passed on 81575f1 (the 4 new iomfw tests ran, 0 warnings); v0.57.2 (4bdd199); image build be48662f52de.
 - State (2026-11-21): fix 1953913 pushed, unbuilt. Its sc-build sat in the line (67-74 ahead) and was stopped on this VM for low memory, not by the build. Next: the one combined sc-build (covers #172 c725a69 too), then v0.57.2, image, shipped.
+
+### #181: two minor review findings (2026-11-21) — P3
+- [x] f7a6d05cde97: `controller::LedRequests` — refused LED requests retried with backoff (30 s → 30 min), shelf requests unacknowledged 10 min resent, forgotten when the object/spec field goes; drive `spec.identify` and Shelf `identify`/`faultLed`.
+- [x] f8241fc52724: `thermal::Runtime::replace` writes before it makes the settings live; the PUT uses it.
+- [x] Tests, README, architecture, changelog.
+- [ ] sc-build; v0.57.3; image; close.

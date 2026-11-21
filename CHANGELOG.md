@@ -5,6 +5,8 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **fix:** #181 (finding f7a6d05cde97) a shelf or drive LED request the hardware refused is no longer remembered as done: it is sent again with a backoff (30 s doubling to 30 min) until it takes; a shelf request the enclosure took but does not show after 10 min is sent again; a request is forgotten when its object or spec field goes
+- **fix:** #181 (finding f8241fc52724) `PUT /api/v1/thermal/limits` writes the new limits before they go live: a failed save leaves the live limits unchanged
 - **docs:** #172/#173 work plan: sc-build passed on 81575f1, v0.57.2, image build be48662f52de, shipped
 
 ### 2026-11-20

@@ -1367,7 +1367,9 @@ The route table, request bodies and handle resolution are in the
     bay act on the enclosure element. The fault request is REQUEST FAILURE
     (byte 3 bit 1) with REQUEST WARNING and IDENT kept; an IDENT request
     keeps a requested failure (a zero there would clear it). A request is
-    sent once per change; a refused one waits for the spec to change;
+    sent once per change; a refused one is sent again with a backoff (30 s
+    doubling to 30 min), and one the enclosure took but still does not
+    show after 10 min is sent again (#181, finding f7a6d05cde97);
   - marks a Shelf it wrote and no longer sees `present: false` (NotSeen).
 - **A backplane with no SES behind a SAS HBA is a shelf (#152,
   `hbaenc.rs`).** forge1's R730xd: four drives behind an HBA330, no
@@ -1385,7 +1387,9 @@ The route table, request bodies and handle resolution are in the
   refusals. `status.bays` gives `state` (occupied/empty), `wwid`, `phy`,
   `linkRateMbps`.
 
-  On Drives, `spec.identify` drives `topology::set_locate` once per change.
+  On Drives, `spec.identify` drives `topology::set_locate` once per change;
+  a refused one is tried again with the same backoff, and a request is
+  forgotten when its object or `spec.identify` goes (#181).
   `formatFrom` says what planned the format: the Drive's `spec.format`,
   else its Shelf's `defaultFormat`, else #82's preference. RAID sets
   declare their own format in stormraid's `RaidSet` (stormraid#54).

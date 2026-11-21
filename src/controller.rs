@@ -76,6 +76,72 @@ const REFRESH: Duration = Duration::from_secs(300);
 /// disk) is looked at again after this long.
 const RECHECK_SKIPPED: Duration = Duration::from_secs(300);
 
+/// A failed LED request is tried again after this, doubling up to
+/// `LED_RETRY_MAX` (finding f7a6d05cde97).
+const LED_RETRY_MIN: Duration = Duration::from_secs(30);
+const LED_RETRY_MAX: Duration = Duration::from_secs(30 * 60);
+/// A shelf LED request the enclosure accepted but never shows is sent again
+/// after this: the SES scan catches up within minutes.
+const SHELF_LED_ACK: Duration = Duration::from_secs(10 * 60);
+
+/// One LED request: what was asked, whether the hardware took it, when,
+/// and how many tries in a row failed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LedRequest {
+    on: bool,
+    ok: bool,
+    at: Instant,
+    failures: u32,
+}
+
+/// The LED requests sent, per key (finding f7a6d05cde97): a request the
+/// hardware refused stays due, tried again with a bounded backoff; one it
+/// took is not resent, unless `expire` says it went unacknowledged too long.
+#[derive(Debug, Default)]
+struct LedRequests<K: std::hash::Hash + Eq + Clone> {
+    sent: HashMap<K, LedRequest>,
+}
+
+impl<K: std::hash::Hash + Eq + Clone> LedRequests<K> {
+    /// Is a request for `on` due now?
+    fn due(&self, key: &K, on: bool, now: Instant, expire: Option<Duration>) -> bool {
+        match self.sent.get(key) {
+            None => true,
+            Some(r) if r.on != on => true,
+            Some(r) if !r.ok => now.saturating_duration_since(r.at) >= backoff(r.failures),
+            Some(r) => expire.is_some_and(|e| now.saturating_duration_since(r.at) >= e),
+        }
+    }
+
+    /// What the hardware said to a request for `on`.
+    fn record(&mut self, key: K, on: bool, ok: bool, now: Instant) {
+        let failures = match self.sent.get(&key) {
+            Some(r) if r.on == on && !ok => r.failures + 1,
+            _ if ok => 0,
+            _ => 1,
+        };
+        self.sent.insert(key, LedRequest { on, ok, at: now, failures });
+    }
+
+    /// The hardware shows `shown`: a request it matches is done.
+    fn acknowledge(&mut self, key: &K, shown: Option<bool>) {
+        if shown.is_some() && self.sent.get(key).map(|r| r.on) == shown {
+            self.sent.remove(key);
+        }
+    }
+
+    /// Keep only the keys still asked for (the object or its spec field
+    /// gone: what was sent no longer stands for anything).
+    fn retain(&mut self, keep: impl Fn(&K) -> bool) {
+        self.sent.retain(|k, _| keep(k));
+    }
+}
+
+/// The wait before try `failures + 1`: 30 s, 1 min, 2 min, … at most 30 min.
+fn backoff(failures: u32) -> Duration {
+    LED_RETRY_MIN.saturating_mul(1u32 << failures.saturating_sub(1).min(16)).min(LED_RETRY_MAX)
+}
+
 fn path(resource: &str, name: Option<&str>) -> String {
     match name {
         Some(n) => format!("/apis/{GROUP}/{VERSION}/{resource}/{n}"),
@@ -222,14 +288,15 @@ pub struct Controller {
     pass: HashMap<String, Value>,
     /// Shelf status last written (fingerprint, when).
     shelf_written: HashMap<String, (String, Instant)>,
-    /// Shelf LED requests sent: (shelf, "identify"|"faultLed") → wanted,
-    /// so a request is not resent every pass while the next SES scan
-    /// catches up (or when the enclosure refuses it).
-    shelf_led_sent: HashMap<(String, &'static str), bool>,
+    /// Shelf LED requests sent: (shelf, "identify"|"faultLed"), so a
+    /// request is not resent every pass while the next SES scan catches
+    /// up; a refused one is retried with backoff (finding f7a6d05cde97).
+    shelf_led_sent: LedRequests<(String, &'static str)>,
     /// Each Shelf's `spec.defaultFormat`, last read.
     shelf_defaults: HashMap<String, (u32, crate::pi::Protection)>,
-    /// Drive `spec.identify` last applied, per Drive object.
-    drive_ident: HashMap<String, bool>,
+    /// Drive `spec.identify` requests, per Drive object: a refused one is
+    /// retried with backoff (finding f7a6d05cde97).
+    drive_ident: LedRequests<String>,
     /// Drive `spec.linkRate` last applied (or refused), per Drive object:
     /// (what was asked, the kernel name it went to). Once per daemon run —
     /// that is, every boot — and again when either changes (#149).
@@ -259,9 +326,9 @@ pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
         probed: HashMap::new(),
         pass: HashMap::new(),
         shelf_written: HashMap::new(),
-        shelf_led_sent: HashMap::new(),
+        shelf_led_sent: LedRequests::default(),
         shelf_defaults: HashMap::new(),
-        drive_ident: HashMap::new(),
+        drive_ident: LedRequests::default(),
         drive_link_rate: HashMap::new(),
         drive_ssc: HashMap::new(),
         drive_link: HashMap::new(),
@@ -384,10 +451,20 @@ impl Controller {
                 self.written.remove(name);
             }
         }
-        // `spec.identify`: the drive's locate LED, sent when it changes.
+        // `spec.identify`: the drive's locate LED, sent when it changes, and
+        // again (backing off) while the hardware refuses it.
+        let asked: HashSet<String> = list["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| i["spec"]["identify"].as_bool().is_some())
+            .filter_map(|i| i["metadata"]["name"].as_str().map(str::to_string))
+            .filter(|n| mine.contains(n))
+            .collect();
+        self.drive_ident.retain(|n| asked.contains(n));
         for item in list["items"].as_array().into_iter().flatten() {
             let (Some(name), Some(on)) = (item["metadata"]["name"].as_str(), item["spec"]["identify"].as_bool()) else { continue };
-            if !mine.contains(name) || self.drive_ident.get(name) == Some(&on) {
+            if !mine.contains(name) || !self.drive_ident.due(&name.to_string(), on, Instant::now(), None) {
                 continue;
             }
             let drive = {
@@ -400,16 +477,14 @@ impl Controller {
             let r = tokio::task::spawn_blocking(move || crate::topology::set_locate(&dname, &loc, &shelves, on)).await;
             let r = r.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
             let what = if on { "on" } else { "off" };
+            self.drive_ident.record(name.to_string(), on, r.is_ok(), Instant::now());
             match r {
                 Ok(()) => {
                     self.event_on("Drive", item, "Normal", "Identify", &format!("{}: locate LED {what}", d.name)).await;
                     self.state.events.write().await.push(Some(d.id), crate::events::Severity::Info, "locate", format!("{}: locate LED {what} (Drive spec.identify)", d.name));
                 }
-                Err(e) => self.event_on("Drive", item, "Warning", "IdentifyFailed", &format!("{}: locate LED {what}: {e}", d.name)).await,
+                Err(e) => self.event_on("Drive", item, "Warning", "IdentifyFailed", &format!("{}: locate LED {what}: {e} (tried again with backoff)", d.name)).await,
             }
-            // Once per change either way: a refused LED is not retried
-            // every pass (set it again to retry).
-            self.drive_ident.insert(name.to_string(), on);
         }
         Ok(())
     }
@@ -645,15 +720,17 @@ impl Controller {
             // LEDs the spec asks for that the enclosure does not show.
             let spec = ShelfSpec::parse(&target["spec"]);
             let (ident_shown, fault_shown, _) = shelfobj::leds(rep);
-            for (what, shown) in [("identify", ident_shown), ("faultLed", fault_shown)] {
-                if self.shelf_led_sent.get(&(key.clone(), what)).copied() == shown && shown.is_some() {
-                    self.shelf_led_sent.remove(&(key.clone(), what)); // caught up
+            for (what, shown, asked) in [("identify", ident_shown, spec.identify.is_some()), ("faultLed", fault_shown, spec.fault_led.is_some())] {
+                let k = (key.clone(), what);
+                self.shelf_led_sent.acknowledge(&k, shown); // caught up
+                if !asked {
+                    self.shelf_led_sent.retain(|x| *x != k); // the spec field is gone
                 }
             }
             let (ident, fault) = shelfobj::led_actions(&spec, rep);
             for (what, want) in [("identify", ident), ("faultLed", fault)] {
                 let Some(on) = want else { continue };
-                if self.shelf_led_sent.get(&(key.clone(), what)) == Some(&on) {
+                if !self.shelf_led_sent.due(&(key.clone(), what), on, Instant::now(), Some(SHELF_LED_ACK)) {
                     continue;
                 }
                 let r2 = rep.clone();
@@ -668,6 +745,7 @@ impl Controller {
                 let r = r.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
                 let led = if what == "identify" { "locate LED" } else { "fault LED" };
                 let state = if on { "on" } else { "off" };
+                self.shelf_led_sent.record((key.clone(), what), on, r.is_ok(), Instant::now());
                 match r {
                     Ok(()) => {
                         self.event_on("Shelf", &target, "Normal", if what == "identify" { "Identify" } else { "FaultLed" }, &format!("shelf {led} {state}")).await;
@@ -675,10 +753,9 @@ impl Controller {
                     }
                     Err(e) => {
                         let reason = if what == "identify" { "IdentifyFailed" } else { "FaultLedFailed" };
-                        self.event_on("Shelf", &target, "Warning", reason, &format!("shelf {led} {state}: {e}")).await;
+                        self.event_on("Shelf", &target, "Warning", reason, &format!("shelf {led} {state}: {e} (tried again with backoff)")).await;
                     }
                 }
-                self.shelf_led_sent.insert((key.clone(), what), on);
             }
         }
         // Shelves this node wrote and no longer sees.
@@ -1503,6 +1580,51 @@ pub fn rfc3339(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Finding f7a6d05cde97: a transient failure, then the hardware back.
+    #[test]
+    fn a_refused_led_request_is_retried_with_backoff_until_it_takes() {
+        let mut r: LedRequests<String> = LedRequests::default();
+        let k = "drive-1".to_string();
+        let t0 = Instant::now();
+        assert!(r.due(&k, true, t0, None), "never sent");
+        r.record(k.clone(), true, false, t0); // SES/sysfs refused it
+        assert!(!r.due(&k, true, t0 + Duration::from_secs(10), None), "not every pass");
+        assert!(r.due(&k, true, t0 + Duration::from_secs(30), None), "due again after the backoff");
+        r.record(k.clone(), true, false, t0 + Duration::from_secs(30)); // still down
+        assert!(!r.due(&k, true, t0 + Duration::from_secs(80), None), "the wait doubled");
+        assert!(r.due(&k, true, t0 + Duration::from_secs(90), None));
+        r.record(k.clone(), true, true, t0 + Duration::from_secs(90)); // recovered
+        assert!(!r.due(&k, true, t0 + Duration::from_secs(10_000), None), "taken: not resent");
+        assert!(r.due(&k, false, t0 + Duration::from_secs(91), None), "a change is due at once");
+        // The spec field (or the object) is gone: forgotten, so asking again sends.
+        r.retain(|_| false);
+        assert!(r.due(&k, true, t0 + Duration::from_secs(92), None));
+    }
+
+    #[test]
+    fn the_led_backoff_doubles_and_is_bounded() {
+        assert_eq!(backoff(1), Duration::from_secs(30));
+        assert_eq!(backoff(2), Duration::from_secs(60));
+        assert_eq!(backoff(3), Duration::from_secs(120));
+        assert_eq!(backoff(100), LED_RETRY_MAX);
+    }
+
+    /// A shelf request the enclosure took but never shows is sent again
+    /// after `SHELF_LED_ACK`; one it shows is done.
+    #[test]
+    fn an_unacknowledged_shelf_led_request_expires() {
+        let mut r: LedRequests<(String, &'static str)> = LedRequests::default();
+        let k = ("5000a098aaaa0001".to_string(), "faultLed");
+        let t0 = Instant::now();
+        r.record(k.clone(), true, true, t0);
+        assert!(!r.due(&k, true, t0 + Duration::from_secs(60), Some(SHELF_LED_ACK)));
+        assert!(r.due(&k, true, t0 + SHELF_LED_ACK, Some(SHELF_LED_ACK)), "never shown: sent again");
+        r.acknowledge(&k, Some(false));
+        assert!(r.sent.contains_key(&k), "shows otherwise: still pending");
+        r.acknowledge(&k, Some(true));
+        assert!(!r.sent.contains_key(&k), "shown: done");
+    }
     use crate::drive::DriveId;
     use crate::worker::{DriveJob, Select, Step};
 
