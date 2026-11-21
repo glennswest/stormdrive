@@ -246,8 +246,14 @@ pub struct Record {
     pub temperature_c: Option<i32>,
     /// Every counter, by name (see [`spec`]).
     pub counters: BTreeMap<String, u64>,
+    /// The drive predicting its own failure (SMART threshold, SCSI IE
+    /// FAILURE PREDICTION THRESHOLD EXCEEDED). Never a warning (#177).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predicted_failure: Option<String>,
+    /// A warning short of a failure prediction (SCSI IE ASC 0Bh and
+    /// others), as the sample shows it, acknowledged or not (#177).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ie_warning: Option<String>,
     /// A SATA drive's whole SMART attribute table.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ata_attributes: Vec<AtaAttribute>,
@@ -415,6 +421,7 @@ pub fn due(prev: Option<&Record>, cur: &Record, heartbeat: u64) -> Option<&'stat
         || p.drive.firmware != cur.drive.firmware
         || p.drive.bay != cur.drive.bay
         || p.predicted_failure != cur.predicted_failure
+        || p.ie_warning != cur.ie_warning
         || !cur.findings.is_empty();
     if moved {
         Some("changed")
@@ -617,7 +624,8 @@ impl History {
             status: serde_json::to_value(status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
             temperature_c: s.temperature_c,
             counters: counters(s),
-            predicted_failure: s.smart.as_ref().and_then(|m| m.predicted_failure.clone().or_else(|| m.ie_warning.clone())),
+            predicted_failure: s.smart.as_ref().and_then(|m| m.predicted_failure.clone()),
+            ie_warning: s.smart.as_ref().and_then(|m| m.ie_warning.clone()),
             ata_attributes: s.ata_attributes.clone(),
             findings: vec![],
         };
@@ -958,6 +966,40 @@ mod tests {
         assert_eq!(due(Some(&base), &err, 3600), Some("changed"));
         let worse = Record { unix: 1060, status: "warning".into(), ..base.clone() };
         assert_eq!(due(Some(&base), &worse, 3600), Some("changed"));
+    }
+
+    #[test]
+    fn a_warning_is_not_a_predicted_failure() {
+        // finding 9f1094371911: an IE warning was stored as the drive
+        // predicting its failure.
+        let root = tmp("warning");
+        let d = drive();
+        let h = history(&root, "boot-a");
+        let t0 = 1_791_417_600;
+        h.observe(&d, &sas(0, 10), HealthStatus::Good, t0);
+        let mut w = sas(0, 10);
+        w.smart.as_mut().unwrap().ie_warning = Some("warning - specified temperature exceeded".into());
+        h.observe(&d, &w, HealthStatus::Good, t0 + 60);
+        let mut f = w.clone();
+        f.smart.as_mut().unwrap().predicted_failure = Some("failure prediction threshold exceeded".into());
+        h.observe(&d, &f, HealthStatus::Failing, t0 + 120);
+        let recs = h.read(&d, 10);
+        assert_eq!(recs.len(), 3, "the warning appearing is a change of its own");
+        assert_eq!((recs[0].predicted_failure.as_deref(), recs[0].ie_warning.as_deref()), (None, None));
+        assert_eq!(recs[1].why, "changed");
+        assert_eq!(recs[1].predicted_failure, None, "a warning is not a failure prediction");
+        assert_eq!(recs[1].ie_warning.as_deref(), Some("warning - specified temperature exceeded"));
+        assert_eq!(recs[2].predicted_failure.as_deref(), Some("failure prediction threshold exceeded"));
+        assert_eq!(recs[2].ie_warning.as_deref(), Some("warning - specified temperature exceeded"));
+        // The warning going away is a change too; an old record without
+        // the field still reads.
+        let base = Record { unix: 1000, ie_warning: Some("w".into()), ..Default::default() };
+        assert_eq!(due(Some(&base), &Record { unix: 1060, ..Default::default() }, 3600), Some("changed"));
+        let line = serde_json::to_string(&recs[0]).unwrap();
+        assert!(!line.contains("ie_warning"), "absent when there is none: {line}");
+        let old: Record = serde_json::from_str(&line).unwrap();
+        assert_eq!(old.ie_warning, None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -1177,12 +1177,14 @@ what the drive is, not where: `wwn-<WWID>`, else `serial-<model>-<serial>`
 (id, wwn, serial, model, firmware, kind, path, bay key, capacity),
 `status`, `temperature_c`, `counters` (a flat name → value map: health
 fields, `nvme.*` = the whole log 0x02, `smart.*`, `sas.<page>.<counter>`,
-`ata.<id>` for lifetime ATA counts), `predicted_failure`,
+`ata.<id>` for lifetime ATA counts), `predicted_failure` (the drive
+predicting its own failure, only that), `ie_warning` (a warning short of
+one, SCSI IE ASC 0Bh and others, kept apart since #177),
 `ata_attributes` (the SATA table) and `findings`.
 
 A record is due (`history::due`, pure) on the drive's first sample, when a
 counter whose rule says `writes` changes, when the verdict, firmware, bay
-or predicted failure changes, when there are findings, and otherwise every
+predicted failure or IE warning changes, when there are findings, and otherwise every
 `heartbeat_secs` (3600). Counters that move on every read on a busy drive
 (bytes, commands, busy minutes, power-on hours, SAS corrected/bytes) do not
 force a record on their own: at the 60 s poll, a record per sample is about
