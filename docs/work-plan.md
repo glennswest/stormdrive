@@ -2380,4 +2380,4 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] f7a6d05cde97: `controller::LedRequests` — refused LED requests retried with backoff (30 s → 30 min), shelf requests unacknowledged 10 min resent, forgotten when the object/spec field goes; drive `spec.identify` and Shelf `identify`/`faultLed`.
 - [x] f8241fc52724: `thermal::Runtime::replace` writes before it makes the settings live; the PUT uses it.
 - [x] Tests, README, architecture, changelog.
-- [ ] sc-build; v0.57.3; image; close.
+- [x] sc-build passed on 4739c34 (build VM, 472 lib tests + all suites, clippy -D warnings, zero warnings; the four new tests ran); v0.57.3 (faf88db, tag); image build c1865d1ecb8f; shipped; closed.
