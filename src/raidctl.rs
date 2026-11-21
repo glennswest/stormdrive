@@ -493,7 +493,10 @@ pub fn read_controller(host: &str, pcie: Option<&str>, mfi: Result<&mut dyn Mfi,
 }
 
 /// The inventory drive a controller's disk is: by SAS address, else on the
-/// same SCSI host in the same bay when that slot is unique on the controller.
+/// same SCSI host in the same controller slot when that slot is unique on the
+/// controller. The slot is the drive's `controller_slot`; its `bay` stands in
+/// only when the bay is the controller's own numbering, never a physical bay
+/// from a `[[bay_map]]` (#178: R6415 slots 3/4/7 are bays 1/2/3).
 pub fn match_drive<'a>(r: &ControllerReport, pd: &PdStatus, drives: impl Iterator<Item = &'a Drive> + Clone) -> Option<&'a Drive> {
     let norm = |s: &str| s.trim_start_matches("0x").to_ascii_lowercase();
     if let Some(sas) = pd.sas_address.as_deref().map(norm) {
@@ -506,10 +509,17 @@ pub fn match_drive<'a>(r: &ControllerReport, pd: &PdStatus, drives: impl Iterato
         return None;
     }
     let mut on_host = drives.filter(|d| {
-        d.location.bay == Some(slot) && d.location.controller.as_ref().and_then(|c| c.scsi_host.as_deref()) == Some(r.scsi_host.as_str())
+        drive_controller_slot(d) == Some(slot) && d.location.controller.as_ref().and_then(|c| c.scsi_host.as_deref()) == Some(r.scsi_host.as_str())
     });
     let first = on_host.next()?;
     on_host.next().is_none().then_some(first)
+}
+
+/// A drive's slot in its controller's numbering: `controller_slot`, else its
+/// bay unless that bay is a platform's physical number.
+fn drive_controller_slot(d: &Drive) -> Option<u32> {
+    let l = &d.location;
+    l.controller_slot.or(if l.bay_numbering == Some(crate::bays::BayNumbering::Platform) { None } else { l.bay })
 }
 
 /// The controller's view kept on a drive (shown in place of a bare
@@ -1195,6 +1205,43 @@ mod tests {
         assert_eq!(match_drive(&r, &r.drives[1], drives.iter()).map(|d| d.name.as_str()), Some("sdb"));
         assert_eq!(match_drive(&r, &r.drives[2], drives.iter()).map(|d| d.name.as_str()), Some("sdc"));
         assert!(match_drive(&r, &r.drives[3], drives.iter()).is_none());
+    }
+
+    #[test]
+    fn a_mapped_bay_is_matched_by_its_controller_slot() {
+        // finding 4d4ce1d41af1: with the R6415 map (slots 0/3/4/7 = bays
+        // 0-3) and no SAS addresses, slot 4 is bay 2 and slot 7 bay 3.
+        let mut f = forge1();
+        let mut r = read_controller("host0", Some("0000:03:00.0"), Ok(&mut f));
+        for pd in r.drives.iter_mut() {
+            pd.sas_address = None;
+        }
+        let host = || Some(crate::drive::Controller { scsi_host: Some("host0".into()), pcie_addr: None, driver: None });
+        let mapped = |name: &str, bay, slot| {
+            let mut d = crate::drive::Drive::test_fixture(name);
+            d.location.bay = Some(bay);
+            d.location.controller_slot = Some(slot);
+            d.location.bay_numbering = Some(crate::bays::BayNumbering::Platform);
+            d.location.controller = host();
+            d
+        };
+        // bay 3 is also slot 3's number: it must not take slot 3's disk.
+        let drives = [mapped("sdc", 2, 4), mapped("sdd", 3, 7)];
+        let at = |slot: u8| r.drives.iter().find(|pd| pd.slot == Some(slot)).unwrap();
+        assert_eq!(match_drive(&r, at(4), drives.iter()).map(|d| d.name.as_str()), Some("sdc"));
+        assert_eq!(match_drive(&r, at(7), drives.iter()).map(|d| d.name.as_str()), Some("sdd"));
+        assert!(match_drive(&r, at(3), drives.iter()).is_none(), "physical bay 3 is not controller slot 3");
+        // A platform bay with no controller slot recorded is never compared.
+        let mut bare = mapped("sde", 4, 0);
+        bare.location.controller_slot = None;
+        assert!(match_drive(&r, at(4), [bare.clone()].iter()).is_none());
+        // Controller numbering (no map): the bay is the slot.
+        bare.location.bay_numbering = Some(crate::bays::BayNumbering::Controller);
+        assert_eq!(match_drive(&r, at(4), [bare].iter()).map(|d| d.name.as_str()), Some("sde"));
+        // Another host's drive in the same slot is not this controller's.
+        let mut other = mapped("sdf", 2, 4);
+        other.location.controller = Some(crate::drive::Controller { scsi_host: Some("host1".into()), pcie_addr: None, driver: None });
+        assert!(match_drive(&r, at(4), [other].iter()).is_none());
     }
 
     /// FreeBSD mfiutil `good` (usr.sbin/mfiutil/mfi_drive.c drive_set_state +

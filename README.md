@@ -344,7 +344,8 @@ are listed under [Not yet](#not-yet).
     `0x01010000`) and each disk's firmware state (`failed`,
     `unconfigured_good`, `jbod`, `online`, …, from `0x02020000`). A drive the
     controller lists is joined to its inventory record by SAS address, else
-    by host and slot, and carries `controller_state`: forge1's sdb–sdd, which
+    by host and controller slot (the drive's `controller_slot`, not a
+    `[[bay_map]]` physical bay, #178), and carries `controller_state`: forge1's sdb–sdd, which
     the PERC has **Failed, 0 KB** and Linux no longer sees, read "failed
     (controller)" instead of a bare `missing`. **RAID mode is a finding**
     (`raid_mode`, warning event, `stormdrive_controller_raid_mode` 1): by

@@ -2402,3 +2402,8 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] `history::Record.ie_warning` apart from `predicted_failure` (only `m.predicted_failure`); `due` counts it a change
 - [x] test `a_warning_is_not_a_predicted_failure`; architecture.md history record
 - [x] sc-build passed on 473d9e2: cargo build, cargo test (477 lib tests + every suite, 0 failed), clippy -D warnings clean; closed
+
+### #178 — controller fallback matched a physical bay against a controller slot (finding 4d4ce1d41af1)
+- [x] `raidctl::match_drive` compares `PdStatus.slot` with `location.controller_slot`, else the bay only when not platform-numbered; host + uniqueness checks kept
+- [x] test `a_mapped_bay_is_matched_by_its_controller_slot` (R6415 map, no SAS addresses); README
+- [ ] sc-build (build + test, clippy)

@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **fix:** #178 (finding 4d4ce1d41af1) a RAID controller's disk with no SAS address is matched to its drive by the drive's `controller_slot`, not its physical bay: with a `[[bay_map]]` (R6415: slots 0/3/4/7 = bays 0-3) slots 3/4/7 used to miss (or hit the wrong drive) and a Failed disk lost its controller state; the bay stands in only when it is the controller's own numbering. Host and slot-uniqueness checks unchanged
 - **docs:** #177 work plan: sc-build passed on 473d9e2 (build, test, clippy), closed
 - **fix:** #177 (finding 9f1094371911) a drive history record no longer stores a SCSI IE warning (ASC 0Bh and others, acknowledged or not) as `predicted_failure`: that field holds only the drive's own failure prediction; the warning is its own `ie_warning` field, and its appearing, changing or clearing writes a `changed` record. Records written before keep the warning in `predicted_failure` (no way to tell them apart after the fact)
 - **docs:** #175 work plan: sc-build passed on d2d8e3d (build, test, clippy), closed
