@@ -2117,6 +2117,13 @@ async fn start_formats(
     if ids.is_empty() {
         return Err(ApiError::bad_request("no drives to format"));
     }
+    // One drive, one format (finding 63bd02ad750e): a drive named twice,
+    // by any alias, is formatted once.
+    let mut ids = ids;
+    {
+        let mut seen = std::collections::HashSet::new();
+        ids.retain(|id| seen.insert(*id));
+    }
     let mut drives = Vec::new();
     let mut blocked = Vec::new();
     {
@@ -2158,6 +2165,19 @@ async fn start_formats(
                     .join("; ")
             ),
         });
+    }
+    // Reserve them all before any task starts (finding 63bd02ad750e): the
+    // checks above ran on a snapshot, and a concurrent request may have
+    // taken a drive since.
+    {
+        let mut inv = s.inventory.write().await;
+        if let Err(refused) = crate::format::reserve(&mut inv, &ids) {
+            let names: Vec<String> = refused
+                .iter()
+                .map(|(id, why)| format!("{} ({why})", inv.drives.get(id).map(|d| d.name.clone()).unwrap_or_else(|| id.to_string())))
+                .collect();
+            return Err(ApiError::conflict(format!("not started: {}", names.join("; "))));
+        }
     }
     // Every drive at once (#140): each run is its own task, the drive does
     // the work and the host only polls.

@@ -488,6 +488,41 @@ fn verify_prot_error(prot: Protection, got: u8) -> String {
 }
 
 /// Start a format on one drive. Caller has checked `format_blocker`.
+/// Reserve every drive of a format request at once (finding 63bd02ad750e):
+/// under the inventory's write lock, so two requests — or one naming a
+/// drive twice — cannot both pass the idle check and send FORMAT UNIT to
+/// the same device. All or nothing: each drive must be known, named once
+/// and have no [`Drive::format_blocker`] (a format already reserved or
+/// running is one); then every one is marked `Formatting` before any
+/// format task starts. Refused: each drive and why, nothing reserved.
+pub fn reserve(inv: &mut crate::inventory::Inventory, ids: &[DriveId]) -> Result<(), Vec<(DriveId, String)>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut refused = Vec::new();
+    for id in ids {
+        if !seen.insert(*id) {
+            refused.push((*id, "named twice in one request".to_string()));
+            continue;
+        }
+        match inv.drives.get(id) {
+            None => refused.push((*id, "unknown drive".to_string())),
+            Some(d) => {
+                if let Some(why) = d.format_blocker() {
+                    refused.push((*id, why));
+                }
+            }
+        }
+    }
+    if !refused.is_empty() {
+        return Err(refused);
+    }
+    for id in ids {
+        if let Some(d) = inv.drives.get_mut(id) {
+            d.activity = Activity::Formatting;
+        }
+    }
+    Ok(())
+}
+
 pub async fn start(state: Arc<AppState>, drive: Drive, to: u32, prot: Protection, method: Method) -> Arc<FormatHandle> {
     let handle = Arc::new(FormatHandle {
         run: Mutex::new(FormatRun {
@@ -903,6 +938,43 @@ mod tests {
             progress,
             field: None,
         }))
+    }
+
+    #[test]
+    fn a_reservation_is_all_or_nothing_and_takes_a_drive_once() {
+        // finding 63bd02ad750e
+        use crate::drive::tests::base_drive;
+        let mut inv = crate::inventory::Inventory::default();
+        let a = base_drive();
+        let mut b = base_drive();
+        b.id = DriveId::derive(None, "M", "S2");
+        b.name = "sdy".into();
+        let (ia, ib) = (a.id, b.id);
+        inv.drives.insert(ia, a);
+        inv.drives.insert(ib, b);
+
+        // One request naming a drive twice: refused, nothing reserved.
+        let e = reserve(&mut inv, &[ia, ia]).unwrap_err();
+        assert_eq!(e, vec![(ia, "named twice in one request".to_string())]);
+        assert_eq!(inv.drives[&ia].activity, Activity::Idle);
+
+        // The first request takes both; a second (as from a concurrent
+        // POST) finds them reserved and starts nothing.
+        reserve(&mut inv, &[ia, ib]).unwrap();
+        assert_eq!(inv.drives[&ia].activity, Activity::Formatting);
+        assert_eq!(inv.drives[&ib].activity, Activity::Formatting);
+        let e = reserve(&mut inv, &[ib]).unwrap_err();
+        assert!(e[0].1.contains("already running"), "{e:?}");
+
+        // All or nothing: one busy drive keeps the free one free.
+        inv.drives.get_mut(&ia).unwrap().activity = Activity::Idle;
+        let e = reserve(&mut inv, &[ia, ib]).unwrap_err();
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].0, ib);
+        assert_eq!(inv.drives[&ia].activity, Activity::Idle, "nothing reserved on a refusal");
+
+        let unknown = DriveId::derive(None, "M", "gone");
+        assert_eq!(reserve(&mut inv, &[unknown]).unwrap_err()[0].1, "unknown drive");
     }
 
     #[test]

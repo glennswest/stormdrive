@@ -1253,7 +1253,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `POST /api/v1/drives/{id}/enroll[?tier=]` | an offered (`enrolable`) drive → partition + enroll as a data slab (worker job; 409 otherwise) (#42) |
 | `GET·POST /api/v1/drives/{id}/format` | `{"block_size":512\|4096,"protection":"none"\|"type1","method":"auto"\|"fast"\|"full"}` (default 4096, none, auto) · `run` + the kept `last` record with progress, method used (#108, #140) |
 | `GET /api/v1/drives/{id}/format/log` | the run's log (the running one, else the last): `{"name","running","log":[{"at","line"}]}` (#140) |
-| `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size","protection","method"}`, all started at once |
+| `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size","protection","method"}`, all started at once; a drive named twice (by any alias) is formatted once, and every drive is reserved before any starts: one already reserved or formatting (a concurrent request) answers 409 and nothing starts |
 | `GET·POST /api/v1/worker/jobs` | drive worker jobs · `{"select":{…},"steps":[…],"destroy"?,"i_know_in_use"?,"dry_run"?}` |
 | `GET /api/v1/worker/jobs/{id}`, `POST …/{id}/cancel`, `POST …/{id}/resume` | one job; stop what hasn't started; continue interrupted drives |
 | `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` |
