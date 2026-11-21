@@ -27,6 +27,14 @@
 - **docs:** #152 work plan: stormcos#683 re-copied the Shelf CRD + role; shipped with an order-independent proof (status keys are alphabetical: `bays` before `position`)
 - **docs:** documentation refreshed from the code since 2026-11-12: `rescan.rs` added to the CLAUDE.md source tree; README, architecture, CRD and example config checked against config keys, health TLS fields, ALPN, tiers and status fields (no other drift found)
 
+## [v0.57.2] — 2026-11-21
+
+### Fixed
+- (#172, finding 519a928662f6) an ATA security erase sets its one-time password only once jobs.json holds it durably (file and directory synced); with no `data_dir` or a failed write the step fails with the drive untouched
+- (#172, finding 6ef0ed7ccb7b) a cancelled job never starts a step when a lane frees: a cancel wakes drives waiting for a lane, and the move to Running checks the cancel flag under the lock cancel takes
+- (#172, finding 776a07af0ae7) Enroll and `fleet::join` stop on a failed slab lookup instead of formatting a slab on it
+- (#173, finding 759a0ee08e0a) a shelf IOM firmware run waits for paths probed on the devices (sysfs by WWID, `running`, TEST UNIT READY), held 60 s, before the next IOM; never the inventory's counts
+
 ## [v0.57.1] — 2026-11-20
 
 ### Fixed
