@@ -2391,4 +2391,4 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] `shelfobj::conditions`: `through.error` → `Healthy=False`, reason `ControllerReadFailed`, the error in the message; a successful read with no SES keeps `ThroughController`.
 - [x] Test `a_failed_controller_read_is_not_healthy` (condition, object, Warning Event; the successful-read case).
 - [x] README, changelog.
-- [ ] sc-build; close.
+- [x] sc-build passed on b39e3d5 (build VM, 474 lib tests + all suites, clippy -D warnings, zero warnings; the new test ran); closed.
