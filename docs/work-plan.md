@@ -2406,4 +2406,4 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 ### #178 — controller fallback matched a physical bay against a controller slot (finding 4d4ce1d41af1)
 - [x] `raidctl::match_drive` compares `PdStatus.slot` with `location.controller_slot`, else the bay only when not platform-numbered; host + uniqueness checks kept
 - [x] test `a_mapped_bay_is_matched_by_its_controller_slot` (R6415 map, no SAS addresses); README
-- [ ] sc-build (build + test, clippy)
+- [x] sc-build passed on 107fbc9: cargo build, cargo test (478 lib tests + every suite, 0 failed), clippy -D warnings clean; closed
