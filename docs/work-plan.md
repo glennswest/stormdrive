@@ -2401,4 +2401,4 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 ### #177 — a SCSI IE warning recorded as a predicted failure in drive history (finding 9f1094371911)
 - [x] `history::Record.ie_warning` apart from `predicted_failure` (only `m.predicted_failure`); `due` counts it a change
 - [x] test `a_warning_is_not_a_predicted_failure`; architecture.md history record
-- [ ] sc-build (build + test, clippy)
+- [x] sc-build passed on 473d9e2: cargo build, cargo test (477 lib tests + every suite, 0 failed), clippy -D warnings clean; closed

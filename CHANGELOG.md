@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **docs:** #177 work plan: sc-build passed on 473d9e2 (build, test, clippy), closed
 - **fix:** #177 (finding 9f1094371911) a drive history record no longer stores a SCSI IE warning (ASC 0Bh and others, acknowledged or not) as `predicted_failure`: that field holds only the drive's own failure prediction; the warning is its own `ie_warning` field, and its appearing, changing or clearing writes a `changed` record. Records written before keep the warning in `predicted_failure` (no way to tell them apart after the fact)
 - **docs:** #175 work plan: sc-build passed on d2d8e3d (build, test, clippy), closed
 - **fix:** #175 (finding d14b1a801a9c) a bay LED change (IDENT or FAULT, by hand or fleet reconciliation) no longer clears the slot's DEVICE OFF, i.e. no longer powers a turned-off bay back on: identify, fault and power controls send every other request the slot's status shows (DEVICE OFF, DO NOT REMOVE, RQST FAULT/IDENT, ENABLE BYP A/B from the application-client bypass bits, an array slot's array-state requests) and change only their own bit
