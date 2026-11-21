@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **chore:** release v0.57.3 (#181), sc-build passed on 4739c34
 - **fix:** #181 (finding f7a6d05cde97) a shelf or drive LED request the hardware refused is no longer remembered as done: it is sent again with a backoff (30 s doubling to 30 min) until it takes; a shelf request the enclosure took but does not show after 10 min is sent again; a request is forgotten when its object or spec field goes
 - **fix:** #181 (finding f8241fc52724) `PUT /api/v1/thermal/limits` writes the new limits before they go live: a failed save leaves the live limits unchanged
 - **docs:** #172/#173 work plan: sc-build passed on 81575f1, v0.57.2, image build be48662f52de, shipped
@@ -31,6 +32,12 @@
 ### 2026-11-18
 - **docs:** #152 work plan: stormcos#683 re-copied the Shelf CRD + role; shipped with an order-independent proof (status keys are alphabetical: `bays` before `position`)
 - **docs:** documentation refreshed from the code since 2026-11-12: `rescan.rs` added to the CLAUDE.md source tree; README, architecture, CRD and example config checked against config keys, health TLS fields, ALPN, tiers and status fields (no other drift found)
+
+## [v0.57.3] — 2026-11-21
+
+### Fixed
+- (#181, finding f7a6d05cde97) a shelf or drive LED request the hardware refused is sent again with a backoff (30 s doubling to 30 min) until it takes, instead of being remembered as done; a shelf request the enclosure never shows is sent again after 10 min
+- (#181, finding f8241fc52724) `PUT /api/v1/thermal/limits` saves the new limits before they go live: a failed save leaves the live limits unchanged
 
 ## [v0.57.2] — 2026-11-21
 
