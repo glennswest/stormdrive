@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **docs:** #171 work plan: sc-build passed on d257383 (build, test, clippy), closed
 - **refactor:** #171 removed the RAID controller personality change, which could only answer 501 `tool_missing`: no vendor binary ships (owner, compliance-ops#231). Gone: `POST /api/v1/controllers/{key}/personality` and `…/personality/{mode}`, the feed's Switch to HBA action, the perccli search/run/parse code, `[controllers] perccli` in the config (an old config that sets it still parses), and the controller report's `perccli`, `pending_mode` and `reboot_pending` finding. `mode` is inferred over MFI as before, and RAID mode stays a finding. Set good and JBOD stay. A personality change, if ever wanted, comes from stormraid#93
 - **docs:** #180 work plan: sc-build passed on 19858c3 (build, test, clippy), closed
 - **fix:** #180 (finding 63bd02ad750e) a format request can no longer start two formats on one drive: `start_formats` formats a drive named twice (by any alias) once, and reserves every drive (`format::reserve`, all or nothing, under the inventory write lock) before any format task starts, so a concurrent request finds it `Formatting` and gets 409 instead of a second MODE SELECT/FORMAT UNIT and a replaced run record
