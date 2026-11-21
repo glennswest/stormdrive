@@ -769,7 +769,7 @@ method used, logical block size, PI type, capacity and blocks, before and after.
 | 0 | formatted and read back as asked |
 | 1 | failed (transport, the format failed, the read-back is not what was asked): the drive may need a format |
 | 2 | usage: unknown flag, a block size other than 512/4096, no such device |
-| 3 | refused by the drive (ILLEGAL REQUEST, with the sense and its field pointer, as #129), or a partition of it is mounted: nothing was formatted |
+| 3 | refused by the drive (ILLEGAL REQUEST, with the sense and its field pointer, as #129), or the disk (the sd disk behind an sg node included) or a partition of it is mounted or held by a dm/md stack: nothing was formatted |
 | 4 | already at the format (`auto`, `none`; any method on a drive that takes no format command): nothing sent |
 | 5 | not at the format (`none`) |
 

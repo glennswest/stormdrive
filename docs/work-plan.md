@@ -2407,3 +2407,8 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] `raidctl::match_drive` compares `PdStatus.slot` with `location.controller_slot`, else the bay only when not platform-numbered; host + uniqueness checks kept
 - [x] test `a_mapped_bay_is_matched_by_its_controller_slot` (R6415 map, no SAS addresses); README
 - [x] sc-build passed on 107fbc9: cargo build, cargo test (478 lib tests + every suite, 0 failed), clippy -D warnings clean; closed
+
+### #179 — formatting through an sg node bypassed the mounted-disk guard (finding 5c92c84d172b)
+- [x] `formatcli::in_use`: sg → its sd disk via sysfs, then mounts + `holders/` on the disk and each partition; `main` refuses on it
+- [x] test `an_sg_node_is_guarded_by_its_disk_mounts_and_holders`; README exit code 3
+- [ ] sc-build

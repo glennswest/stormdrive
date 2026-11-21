@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **fix:** #179 (finding 5c92c84d172b) `stormdrive format sgN` no longer bypasses the mounted-disk guard: an sg node is resolved through sysfs (`class/scsi_generic/sgN/device/block`) to its sd disk, and the format is refused when that disk or a partition of it is mounted or held by an active stack (dm, md: `holders/`); the same holders check now guards a block node too
 - **docs:** #178 work plan: sc-build passed on 107fbc9 (build, test, clippy), closed
 - **fix:** #178 (finding 4d4ce1d41af1) a RAID controller's disk with no SAS address is matched to its drive by the drive's `controller_slot`, not its physical bay: with a `[[bay_map]]` (R6415: slots 0/3/4/7 = bays 0-3) slots 3/4/7 used to miss (or hit the wrong drive) and a Failed disk lost its controller state; the bay stands in only when it is the controller's own numbering. Host and slot-uniqueness checks unchanged
 - **docs:** #177 work plan: sc-build passed on 473d9e2 (build, test, clippy), closed

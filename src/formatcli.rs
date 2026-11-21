@@ -693,6 +693,52 @@ pub fn mounted_on(mounts: &str, name: &str) -> Option<String> {
     })
 }
 
+/// The block disks behind a device name, in a sysfs tree at `sys` (finding
+/// 5c92c84d172b): an sg node resolves to the disk sd made of the same
+/// device (`class/scsi_generic/sgN/device/block/*`), none when sd made
+/// none; any other name is its own disk.
+pub fn block_disks_of(sys: &std::path::Path, name: &str) -> Vec<String> {
+    if !name.starts_with("sg") {
+        return vec![name.to_string()];
+    }
+    let Ok(entries) = std::fs::read_dir(sys.join("class/scsi_generic").join(name).join("device/block")) else { return vec![] };
+    let mut out: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    out.sort();
+    out
+}
+
+/// What holds a disk or one of its partitions (dm, md, bcache — an active
+/// stack), from `block/<disk>/holders` and `block/<disk>/<part>/holders`
+/// in a sysfs tree at `sys`.
+pub fn held_by(sys: &std::path::Path, disk: &str) -> Option<String> {
+    let dir = sys.join("block").join(disk);
+    let holders = |d: &std::path::Path| -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(d.join("holders")).map(|e| e.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()).unwrap_or_default();
+        v.sort();
+        v
+    };
+    let mut places = vec![(disk.to_string(), dir.clone())];
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut parts: Vec<_> = entries.flatten().filter(|e| e.path().join("partition").exists()).map(|e| (e.file_name().to_string_lossy().to_string(), e.path())).collect();
+        parts.sort();
+        places.extend(parts);
+    }
+    places.into_iter().find_map(|(n, p)| {
+        let h = holders(&p);
+        (!h.is_empty()).then(|| format!("/dev/{n} is held by {}", h.join(", ")))
+    })
+}
+
+/// Why a format of `name` must not run (finding 5c92c84d172b): something on
+/// its disk — the disk behind an sg node included — is mounted or held by
+/// an active stack. `mounts` is /proc/mounts, `sys` the sysfs root.
+pub fn in_use(sys: &std::path::Path, mounts: &str, name: &str) -> Option<String> {
+    block_disks_of(sys, name).iter().find_map(|d| {
+        let why = mounted_on(mounts, d).or_else(|| held_by(sys, d))?;
+        Some(if d == name { why } else { format!("{why} ({name} is /dev/{d})") })
+    })
+}
+
 /// The command line's run: resolve the device, refuse a mounted one, run,
 /// print. Returns the exit code.
 pub fn main(device: &str, block_size: u32, protection: Prot, method: Method, poll_secs: u64, json: bool) -> i32 {
@@ -711,8 +757,9 @@ pub fn main(device: &str, block_size: u32, protection: Prot, method: Method, pol
         return 2;
     }
     if method != Method::None {
-        if let Some(m) = std::fs::read_to_string("/proc/mounts").ok().and_then(|m| mounted_on(&m, &name)) {
-            let r = Report::new(&name, method, (block_size, prot)).end(Outcome::Refused, Some(format!("{m}: unmount it first")));
+        let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        if let Some(m) = in_use(std::path::Path::new("/sys"), &mounts, &name) {
+            let r = Report::new(&name, method, (block_size, prot)).end(Outcome::Refused, Some(format!("{m}: unmount it or stop the stack first")));
             return finish(&r, json);
         }
     }
@@ -1178,6 +1225,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         assert_eq!(integrity_pi_type("none"), 0);
         assert_eq!(integrity_pi_type("T10-DIF-TYPE3-IP"), 3);
+    }
+
+    #[test]
+    fn an_sg_node_is_guarded_by_its_disk_mounts_and_holders() {
+        // finding 5c92c84d172b: sg2 is sdc's device; sdc1 is mounted.
+        let sys = std::env::temp_dir().join(format!("sd-fmt179-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sys);
+        std::fs::create_dir_all(sys.join("class/scsi_generic/sg2/device/block/sdc")).unwrap();
+        std::fs::create_dir_all(sys.join("class/scsi_generic/sg3/device")).unwrap();
+        std::fs::create_dir_all(sys.join("block/sdc/sdc1/holders")).unwrap();
+        std::fs::write(sys.join("block/sdc/sdc1/partition"), "1\n").unwrap();
+        std::fs::create_dir_all(sys.join("block/sdc/holders")).unwrap();
+        assert_eq!(block_disks_of(&sys, "sg2"), vec!["sdc".to_string()]);
+        assert!(block_disks_of(&sys, "sg3").is_empty(), "no block node: nothing to be mounted");
+        assert_eq!(block_disks_of(&sys, "sdc"), vec!["sdc".to_string()]);
+
+        let m = "/dev/sdc1 /data xfs rw 0 0\n";
+        assert_eq!(in_use(&sys, m, "sg2").as_deref(), Some("/dev/sdc1 on /data (sg2 is /dev/sdc)"));
+        assert_eq!(in_use(&sys, m, "sdc").as_deref(), Some("/dev/sdc1 on /data"));
+        assert_eq!(in_use(&sys, m, "sg3"), None);
+        assert_eq!(in_use(&sys, "", "sg2"), None, "nothing mounted, nothing held");
+
+        // A partition held by dm (LVM, crypt): refused through either node.
+        std::fs::create_dir_all(sys.join("block/sdc/sdc1/holders/dm-0")).unwrap();
+        assert_eq!(in_use(&sys, "", "sg2").as_deref(), Some("/dev/sdc1 is held by dm-0 (sg2 is /dev/sdc)"));
+        assert_eq!(in_use(&sys, "", "sdc").as_deref(), Some("/dev/sdc1 is held by dm-0"));
+        // The whole disk held by md.
+        std::fs::remove_dir(sys.join("block/sdc/sdc1/holders/dm-0")).unwrap();
+        std::fs::create_dir_all(sys.join("block/sdc/holders/md0")).unwrap();
+        assert_eq!(held_by(&sys, "sdc").as_deref(), Some("/dev/sdc is held by md0"));
+        let _ = std::fs::remove_dir_all(&sys);
     }
 
     #[test]
