@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **docs:** #174 work plan: sc-build passed on db2815c, v0.57.4, image build 3c88d1879e23, closed
 - **chore:** release v0.57.4 (#174, #176), sc-build passed on db2815c
 - **docs:** #176 work plan: sc-build passed on b39e3d5, closed
 - **fix:** #176 (finding 8d18e6456d4c) a Shelf whose RAID controller (MFI) read failed is no longer `Healthy=True`: it is `False` with reason `ControllerReadFailed` and the controller's error in the message (and the Warning Event); a successful controller read with no SES telemetry stays `ThroughController`
