@@ -2392,3 +2392,8 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] Test `a_failed_controller_read_is_not_healthy` (condition, object, Warning Event; the successful-read case).
 - [x] README, changelog.
 - [x] sc-build passed on b39e3d5 (build VM, 474 lib tests + all suites, clippy -D warnings, zero warnings; the new test ran); closed.
+
+### #175 — a bay LED change cleared DEVICE OFF (finding d14b1a801a9c)
+- [x] `ses::slot_control_kept`: a slot's control bytes 1–3 asking for what its status shows (DEVICE OFF, DO NOT REMOVE, RQST FAULT/IDENT, ENABLE BYP A/B from APP CLIENT BYPASSED, array-state bits); ident/fault/power change only their own bit
+- [x] tests: `led_changes_keep_a_powered_off_bay_off`, `slot_controls_keep_every_other_request`
+- [ ] sc-build (build + test, clippy)

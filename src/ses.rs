@@ -684,9 +684,9 @@ pub fn parse_additional(raw: &[u8]) -> Vec<SlotAddress> {
 /// Build a page-0x02 control page from the status page that sets or
 /// clears IDENT on one element. Every other element is left with SELECT=0
 /// (ignored by the enclosure); the chosen element gets SELECT plus only
-/// the request bits that mirror its current state (IDENT/FAULT for slots,
-/// IDENT for the rest), so a locate request never smuggles a "remove" or
-/// "power off" along with it.
+/// the request bits that mirror its current state (a slot's kept state,
+/// see [`slot_control_kept`]; IDENT for the rest), so a locate request
+/// never smuggles a "remove" or "power on/off" along with it.
 pub fn build_ident_control(status_raw: &[u8], element_offset: usize, element_type: u8, on: bool) -> Option<Vec<u8>> {
     if status_raw.len() < 8 || element_offset + 4 > status_raw.len() {
         return None;
@@ -701,10 +701,10 @@ pub fn build_ident_control(status_raw: &[u8], element_offset: usize, element_typ
     ctl[0] = 0x80; // SELECT
     match element_type {
         ET_DEVICE_SLOT | ET_ARRAY_DEVICE_SLOT => {
-            // RQST IDENT byte 2 bit 1, RQST FAULT byte 3 bit 5 — same
-            // positions as IDENT / FAULT REQSTD in the status element.
-            ctl[3] = st[3] & 0x20;
-            ctl[2] = if on { 0x02 } else { 0 };
+            // RQST IDENT byte 2 bit 1; everything else the slot shows as
+            // requested is sent back as it is (#175).
+            ctl[1..4].copy_from_slice(&slot_control_kept(st, element_type));
+            ctl[2] = (ctl[2] & !0x02) | if on { 0x02 } else { 0 };
         }
         ET_ENCLOSURE => {
             // RQST IDENT byte 1 bit 7; byte 3 bits 1/0 REQUEST FAILURE /
@@ -737,8 +737,8 @@ pub fn build_fault_control(status_raw: &[u8], element_offset: usize, element_typ
         ctl[1] = st[1] & 0x80;
         ctl[3] = (st[3] & 0x01) | if on { 0x02 } else { 0 };
     } else {
-        ctl[2] = st[2] & 0x02;
-        ctl[3] = if on { 0x20 } else { 0 };
+        ctl[1..4].copy_from_slice(&slot_control_kept(st, element_type));
+        ctl[3] = (ctl[3] & !0x20) | if on { 0x20 } else { 0 };
     }
     Some(page)
 }
@@ -755,9 +755,28 @@ pub fn build_power_control(status_raw: &[u8], element_offset: usize, element_typ
     let mut page = build_ident_control(status_raw, element_offset, element_type, false)?;
     let st = &status_raw[element_offset..element_offset + 4];
     let ctl = &mut page[element_offset..element_offset + 4];
-    ctl[2] = st[2] & 0x02;
-    ctl[3] = (st[3] & 0x20) | if off { 0x10 } else { 0 };
+    ctl[1..4].copy_from_slice(&slot_control_kept(st, element_type));
+    ctl[3] = (ctl[3] & !0x10) | if off { 0x10 } else { 0 };
     Some(page)
+}
+
+/// Control bytes 1..=3 of a (array) device slot that ask for exactly what
+/// its status element shows was asked for, so changing one request leaves
+/// the others alone (#175: an LED change used to clear DEVICE OFF, i.e.
+/// power the bay back on). Kept: RQST IDENT (byte 2 bit 1), DO NOT REMOVE
+/// (byte 2 bit 6), RQST FAULT (byte 3 bit 5, from FAULT REQSTD), DEVICE
+/// OFF (byte 3 bit 4), ENABLE BYP A/B (byte 3 bits 3/2, from APP CLIENT
+/// BYPASSED A/B: status byte 2 bit 7 / byte 3 bit 7 — not the BYPASSED
+/// bits, which include the enclosure's own bypass), and for an array slot
+/// byte 1's array-state requests (RQST OK … RQST R/R ABORT, same bits as
+/// the status). Never set: RQST ACTIVE/MISSING/INSERT/REMOVE, one-shot
+/// requests the status does not mirror. A plain device slot's byte 1 is
+/// reserved: 0.
+pub fn slot_control_kept(st: &[u8], element_type: u8) -> [u8; 3] {
+    let b1 = if element_type == ET_ARRAY_DEVICE_SLOT { st[1] } else { 0 };
+    let b2 = st[2] & 0x42;
+    let b3 = (st[3] & 0x30) | ((st[2] & 0x80) >> 4) | ((st[3] & 0x80) >> 5);
+    [b1, b2, b3]
 }
 
 /// Byte offset of the n-th element (page order, overall elements
@@ -1643,6 +1662,56 @@ mod tests {
         let on = build_power_control(&st, element_offset(2), ET_ARRAY_DEVICE_SLOT, false).unwrap();
         assert_eq!(on[19], 0x20, "DEVICE OFF cleared");
         assert!(build_power_control(&st, element_offset(6), ET_ENCLOSURE, true).is_none());
+    }
+
+    #[test]
+    fn led_changes_keep_a_powered_off_bay_off() {
+        // finding d14b1a801a9c: identify / fault on a bay whose drive was
+        // turned off must not ask for it to be powered back on.
+        let mut st = status_page();
+        let at = element_offset(2);
+        st[at + 3] |= 0x10; // DEVICE OFF
+        for on in [true, false] {
+            let id = build_ident_control(&st, at, ET_ARRAY_DEVICE_SLOT, on).unwrap();
+            assert_eq!(id[at + 3], 0x10, "ident {on}: DEVICE OFF kept");
+            assert_eq!(id[at + 2], if on { 0x02 } else { 0 });
+            let f = build_fault_control(&st, at, ET_ARRAY_DEVICE_SLOT, on).unwrap();
+            assert_eq!(f[at + 3], 0x10 | if on { 0x20 } else { 0 }, "fault {on}: DEVICE OFF kept");
+        }
+        // a powered-on bay stays on
+        st[at + 3] &= !0x10;
+        let id = build_ident_control(&st, at, ET_DEVICE_SLOT, true).unwrap();
+        assert_eq!(id[at + 3] & 0x10, 0);
+        let f = build_fault_control(&st, at, ET_DEVICE_SLOT, true).unwrap();
+        assert_eq!(f[at + 3], 0x20);
+    }
+
+    #[test]
+    fn slot_controls_keep_every_other_request() {
+        let mut st = status_page();
+        let at = element_offset(2);
+        st[at + 1] = 0xa4; // array: OK, HOT SPARE, IN FAILED ARRAY
+        st[at + 2] = 0x80 | 0x40 | 0x20 | 0x08 | 0x04 | 0x02; // APP BYP A, DNR, ENC BYP A, READY, RMV, IDENT
+        st[at + 3] = 0x80 | 0x40 | 0x20 | 0x10 | 0x0f; // APP BYP B, SENSED, REQSTD, OFF, bypassed bits
+        // nothing changed: ident on, fault on, power off ask for what is there
+        let want = [0xa4, 0x42, 0x20 | 0x10 | 0x08 | 0x04];
+        let id = build_ident_control(&st, at, ET_ARRAY_DEVICE_SLOT, true).unwrap();
+        assert_eq!(&id[at..at + 4], &[0x80, want[0], want[1], want[2]]);
+        let f = build_fault_control(&st, at, ET_ARRAY_DEVICE_SLOT, true).unwrap();
+        assert_eq!(&f[at + 1..at + 4], &want);
+        let p = build_power_control(&st, at, ET_ARRAY_DEVICE_SLOT, true).unwrap();
+        assert_eq!(&p[at + 1..at + 4], &want);
+        // each verb changes its own bit only
+        let id = build_ident_control(&st, at, ET_ARRAY_DEVICE_SLOT, false).unwrap();
+        assert_eq!(&id[at + 1..at + 4], &[want[0], 0x40, want[2]]);
+        let f = build_fault_control(&st, at, ET_ARRAY_DEVICE_SLOT, false).unwrap();
+        assert_eq!(&f[at + 1..at + 4], &[want[0], want[1], 0x10 | 0x08 | 0x04]);
+        let p = build_power_control(&st, at, ET_ARRAY_DEVICE_SLOT, false).unwrap();
+        assert_eq!(&p[at + 1..at + 4], &[want[0], want[1], 0x20 | 0x08 | 0x04]);
+        // a plain device slot's byte 1 is the slot address in the status:
+        // reserved in the control, sent as 0
+        let id = build_ident_control(&st, at, ET_DEVICE_SLOT, true).unwrap();
+        assert_eq!(id[at + 1], 0);
     }
 
     #[test]

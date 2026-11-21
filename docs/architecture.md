@@ -588,7 +588,10 @@ when a shelf appears/disappears, its overall status moves, or an element
 goes bad or recovers. Control is IDENT (bay and shelf locate LEDs),
 FAULT (#44) and a bay's DEVICE OFF (#81), each built from a fresh status
 page, so the generation code matches and no other request bit rides
-along, plus the IOM firmware download (#35, below, under Firmware). Each
+along: a slot's other requests are sent back as its status shows them
+(DEVICE OFF, DO NOT REMOVE, RQST FAULT/IDENT, the application's bypass,
+an array slot's array-state bits), so an LED change never powers a bay
+back on (#175), plus the IOM firmware download (#35, below, under Firmware). Each
 ESP path carries its IOM's revision (sysfs `rev`).
 
 Since #81 it also reads, when page 0x00 lists them, help text (0x03) and
