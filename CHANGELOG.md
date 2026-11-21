@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **chore:** release v0.57.4 (#174, #176), sc-build passed on db2815c
 - **docs:** #176 work plan: sc-build passed on b39e3d5, closed
 - **fix:** #176 (finding 8d18e6456d4c) a Shelf whose RAID controller (MFI) read failed is no longer `Healthy=True`: it is `False` with reason `ControllerReadFailed` and the controller's error in the message (and the Warning Event); a successful controller read with no SES telemetry stays `ThroughController`
 - **fix:** test race from #181: `a_failed_save_leaves_the_live_limits` and `hwmon_is_read_from_sysfs` shared one temp dir and removed it under each other (failed on the #174 build VM); the save test has its own. Restores CHANGELOG.md, emptied by 31f2a6a when the session VM's disk filled
@@ -37,6 +38,13 @@
 ### 2026-11-18
 - **docs:** #152 work plan: stormcos#683 re-copied the Shelf CRD + role; shipped with an order-independent proof (status keys are alphabetical: `bays` before `position`)
 - **docs:** documentation refreshed from the code since 2026-11-12: `rescan.rs` added to the CLAUDE.md source tree; README, architecture, CRD and example config checked against config keys, health TLS fields, ALPN, tiers and status fields (no other drift found)
+
+## [v0.57.4] — 2026-11-21
+
+### Fixed
+- (#174, finding b7fa23d4e5c2) fleet reconciliation matches the engine's drives by registration uuid (`drive=` label), then WWN, then exact path; a serial only when no other drive here shares it — the namespaces of one NVMe controller are no longer all marked when the engine lists one
+- (#176, finding 8d18e6456d4c) a Shelf whose RAID controller (MFI) read failed is `Healthy=False`, reason `ControllerReadFailed`, with the controller's error in the message
+- test race from #181: the thermal save test has its own temp dir
 
 ## [v0.57.3] — 2026-11-21
 
