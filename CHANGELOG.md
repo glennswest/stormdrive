@@ -4,6 +4,9 @@
 
 <!-- New unreleased changes go here -->
 
+### 2026-11-21
+- **docs:** #172/#173 work plan: sc-build passed on 81575f1, v0.57.2, image build be48662f52de, shipped
+
 ### 2026-11-20
 - **fix:** #173 (finding 759a0ee08e0a) a shelf IOM firmware run no longer takes the next IOM down on stale path counts: before and after each IOM every drive's working paths are probed on the devices (sysfs by WWID, SCSI state `running`, TEST UNIT READY answered), matched by WWID, and must hold for 60 s with no gap; never read from the inventory. A shelf with a drive that has no WWID is refused unless `allow_path_loss`
 - **docs:** #141 work plan: proof seen on forge1's console (install forge1-1794940637, 12.91, passed): 4 drives on the HBA, each formatted 4096 + PI type 1, all laid, node-data set created over 4 with parity 1; issue closed
