@@ -1150,7 +1150,7 @@ mod tests {
     /// Finding f8241fc52724: a save that fails changes nothing live.
     #[test]
     fn a_failed_save_leaves_the_live_limits() {
-        let dir = std::env::temp_dir().join(format!("stormdrive-thermal-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stormdrive-thermal-save-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut rt = Runtime { settings_path: Some(dir.join("thermal-limits.json")), ..Default::default() };
