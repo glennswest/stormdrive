@@ -374,6 +374,11 @@ are listed under [Not yet](#not-yet).
 - **Fleet** (`src/fleet.rs`, `src/stormblock.rs`). A drive's lifecycle is
   three separate fields:
   - `membership`: `out` or `fleet`. `fleet` means handed to stormblock.
+    Each tick reconciles it with the engine's drive list (#174): an entry
+    is this drive by its registration uuid (the `drive=` label), else its
+    WWN, else an exact path; a serial only when no other drive here has
+    it and nothing stronger names another one (namespaces of one NVMe
+    controller share a serial).
     An `out` drive always says why (#156): the Drive object's
     `status.membershipReason` and its `Member` condition (False with a
     reason word: NoPolicy, NotSelected with each policy's first mismatch,

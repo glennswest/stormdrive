@@ -2381,3 +2381,8 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] f8241fc52724: `thermal::Runtime::replace` writes before it makes the settings live; the PUT uses it.
 - [x] Tests, README, architecture, changelog.
 - [x] sc-build passed on 4739c34 (build VM, 472 lib tests + all suites, clippy -D warnings, zero warnings; the four new tests ran); v0.57.3 (faf88db, tag); image build c1865d1ecb8f; shipped; closed.
+
+### #174 — fleet reconcile by identity, not a shared serial (finding b7fa23d4e5c2)
+- [x] `monitor::in_engine` / `engine_lists`: registration uuid (`drive=` label, or the entry's `uuid`), then WWN (normalised), then exact path (disk, enrolled partition, any path); serial only when unique among our drives and no WWN/uuid on the entry. A `drive=` label naming another drive, or a different WWN, is never this drive.
+- [x] Test `namespaces_sharing_a_serial_are_reconciled_apart` (two namespaces, one serial).
+- [ ] sc-build; v0.57.4; image; shipped; close.

@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **fix:** #174 (finding b7fa23d4e5c2) fleet reconciliation no longer marks every namespace of an NVMe controller fleet when the engine lists one: an engine entry is matched by our registration uuid (its `drive=` label), then WWN, then an exact path; a serial counts only when no other drive here shares it and no stronger identity on the entry names another drive
 - **docs:** #181 work plan: sc-build passed on 4739c34, v0.57.3, image build c1865d1ecb8f, shipped
 - **chore:** release v0.57.3 (#181), sc-build passed on 4739c34
 - **fix:** #181 (finding f7a6d05cde97) a shelf or drive LED request the hardware refused is no longer remembered as done: it is sent again with a backoff (30 s doubling to 30 min) until it takes; a shelf request the enclosure took but does not show after 10 min is sent again; a request is forgotten when its object or spec field goes

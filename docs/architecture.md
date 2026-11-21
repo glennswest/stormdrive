@@ -139,6 +139,9 @@ Location {                         // controller → shelf → bay hierarchy
 }
 // Lifecycle is three ORTHOGONAL fields, not one state ladder:
 Membership  = out | fleet          // is the drive handed to stormblock?
+                                     // reconciled with the engine's list by
+                                     // registration uuid, WWN, exact path;
+                                     // serial only when unambiguous (#174)
 Designation = none | reserved | spare | failed | system   // operator-set;
                                      // applies both in fleet and out; system
                                      // (#66) = the install's system drive(s),

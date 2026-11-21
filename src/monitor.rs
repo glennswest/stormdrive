@@ -1411,14 +1411,9 @@ async fn reconcile_stormblock(state: &Arc<AppState>) -> anyhow::Result<()> {
     let listed = state.stormblock.list_drives().await?;
     let mut inv = state.inventory.write().await;
     let mut events = Vec::new();
+    let listed_ids = in_engine(&inv.drives, &listed);
     for d in inv.drives.values_mut() {
-        let sb_path = d.stormblock_path();
-        let in_sb = listed.iter().any(|sd| {
-            sd.get("path").and_then(|v| v.as_str()) == Some(d.path.as_str())
-                || sd.get("path").and_then(|v| v.as_str()) == Some(sb_path.as_str())
-                || (!d.serial.is_empty()
-                    && sd.get("serial").and_then(|v| v.as_str()) == Some(d.serial.as_str()))
-        });
+        let in_sb = listed_ids.contains(&d.id);
         match (in_sb, d.membership) {
             (true, Membership::Out) => {
                 d.membership = Membership::Fleet;
@@ -1449,6 +1444,61 @@ async fn reconcile_stormblock(state: &Arc<AppState>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The drives of ours the engine's drive list names (#174): each entry
+/// matched by [`engine_lists`], a serial counting only when no other
+/// drive of ours has it.
+fn in_engine(drives: &HashMap<DriveId, crate::drive::Drive>, listed: &[serde_json::Value]) -> std::collections::HashSet<DriveId> {
+    let mut serials: HashMap<&str, usize> = HashMap::new();
+    for d in drives.values().filter(|d| !d.serial.is_empty()) {
+        *serials.entry(d.serial.as_str()).or_default() += 1;
+    }
+    drives
+        .values()
+        .filter(|d| {
+            let serial_unique = serials.get(d.serial.as_str()) == Some(&1);
+            listed.iter().any(|sd| engine_lists(d, sd, serial_unique))
+        })
+        .map(|d| d.id)
+        .collect()
+}
+
+/// A WWID/WWN said one way: lower case, no `naa.`/`eui.`/`t10.`/`0x`.
+fn wwn_key(w: &str) -> String {
+    let w = w.trim().to_ascii_lowercase();
+    let w = w.split_once('.').filter(|(scheme, _)| matches!(*scheme, "naa" | "eui" | "t10")).map_or(w.as_str(), |(_, rest)| rest);
+    w.strip_prefix("0x").unwrap_or(w).to_string()
+}
+
+/// Is this engine drive-list entry our drive `d`? (#174) Strongest
+/// identity first: the registration uuid (the `drive=` rung the engine
+/// records from our `uuid`, or its own `uuid` field), then the WWN, then
+/// an exact path (the disk, its enrolled partition, any of its paths).
+/// A serial is a fallback only: when no stronger identity on the entry
+/// names another drive, and no other drive of ours shares it — the
+/// namespaces of one NVMe controller share the controller's serial.
+fn engine_lists(d: &crate::drive::Drive, sd: &serde_json::Value, serial_unique: bool) -> bool {
+    let ours = d.id.0.to_string();
+    let label_id = sd["labels"].as_str().and_then(|l| l.split('/').find_map(|kv| kv.strip_prefix("drive=")));
+    let ids = [label_id, sd["uuid"].as_str()];
+    if ids.iter().flatten().any(|u| u.eq_ignore_ascii_case(&ours)) {
+        return true;
+    }
+    if label_id.is_some() {
+        // Registered under another of our identities: never this drive.
+        return false;
+    }
+    let wwn = sd["wwn"].as_str().filter(|w| !w.is_empty()).map(wwn_key);
+    if let (Some(w), Some(mine)) = (&wwn, d.wwid.as_deref()) {
+        return *w == wwn_key(mine);
+    }
+    if let Some(p) = sd["path"].as_str() {
+        if p == d.path || p == d.stormblock_path() || d.paths.iter().any(|x| x == p) {
+            return true;
+        }
+    }
+    wwn.is_none() && serial_unique && !d.serial.is_empty() && sd["serial"].as_str() == Some(d.serial.as_str())
+}
+
 /// A drive whose plan is not the default (4096+PI type 1): one warning
 /// when its probe arrives or changes, the issue the owner asked to see
 /// rather than a quiet fallback (#82).
@@ -1462,6 +1512,58 @@ pub fn fallback_issue(name: &str, s: Option<&crate::pi::Supports>) -> Option<Str
 
 #[cfg(test)]
 mod tests {
+    /// #174: two namespaces of one NVMe controller share its serial. The
+    /// engine lists one; only that one is in the fleet, whether it is named
+    /// by our registration uuid, its WWN or its path. A serial alone counts
+    /// only when it is ours alone, and never against a stronger identity.
+    #[test]
+    fn namespaces_sharing_a_serial_are_reconciled_apart() {
+        use crate::drive::{Drive, DriveId};
+        use serde_json::json;
+        let ns = |n: u32, wwid: &str, serial: &str| -> Drive {
+            serde_json::from_value(json!({
+                "id": DriveId::derive(Some(wwid), "SAMSUNG MZQL2", serial), "path": format!("/dev/nvme0n{n}"), "name": format!("nvme0n{n}"),
+                "paths": [format!("/dev/nvme0n{n}")], "kind": "nvme_ssd", "model": "SAMSUNG MZQL2", "serial": serial, "firmware": "GDC5",
+                "wwid": wwid, "capacity_bytes": 1_000_000_000u64, "block_size": 4096,
+                "first_seen": {"secs_since_epoch": 0, "nanos_since_epoch": 0}, "last_seen": {"secs_since_epoch": 0, "nanos_since_epoch": 0},
+            }))
+            .unwrap()
+        };
+        let a = ns(1, "eui.002538b111b0a001", "S64HNE0R100001");
+        let b = ns(2, "eui.002538b111b0a002", "S64HNE0R100001");
+        let lone = ns(3, "eui.002538b111b0a003", "S64HNE0R100099");
+        let drives: std::collections::HashMap<DriveId, Drive> = [a.clone(), b.clone(), lone.clone()].into_iter().map(|d| (d.id, d)).collect();
+        let listed = |entries: serde_json::Value| super::in_engine(&drives, entries.as_array().unwrap());
+        let only = |ids: &[DriveId]| ids.iter().copied().collect::<std::collections::HashSet<_>>();
+
+        // By registration uuid (the `drive=` rung), on a path the engine
+        // opened under another name: a only.
+        let by_uuid = listed(json!([{ "uuid": uuid::Uuid::nil().to_string(), "path": "/dev/disk/by-id/x", "serial": "S64HNE0R100001",
+                                      "labels": format!("shelf=s/bay=1/drive={}", a.id.0) }]));
+        assert_eq!(by_uuid, only(&[a.id]), "the sibling namespace is not fleet by the shared serial");
+        // By WWN, no labels: a only.
+        let by_wwn = listed(json!([{ "uuid": uuid::Uuid::nil().to_string(), "path": "/dev/other", "serial": "S64HNE0R100001", "wwn": "eui.002538b111b0a001", "labels": "" }]));
+        assert_eq!(by_wwn, only(&[a.id]));
+        // By exact path, no WWN: b only.
+        let by_path = listed(json!([{ "uuid": uuid::Uuid::nil().to_string(), "path": "/dev/nvme0n2", "serial": "S64HNE0R100001", "labels": "" }]));
+        assert_eq!(by_path, only(&[b.id]));
+        // The shared serial alone names neither namespace.
+        let by_serial = listed(json!([{ "uuid": uuid::Uuid::nil().to_string(), "path": "/dev/gone", "serial": "S64HNE0R100001", "labels": "" }]));
+        assert!(by_serial.is_empty(), "an ambiguous serial matched {by_serial:?}");
+        // A serial ours alone still matches when nothing stronger is said…
+        let unique = listed(json!([{ "uuid": uuid::Uuid::nil().to_string(), "path": "/dev/gone", "serial": "S64HNE0R100099", "labels": "" }]));
+        assert_eq!(unique, only(&[lone.id]));
+        // …but not against a WWN that is another device's, nor a
+        // registration uuid that is another drive's, nor on a stale path.
+        let wrong_wwn = listed(json!([{ "uuid": uuid::Uuid::nil().to_string(), "path": "/dev/nvme0n3", "serial": "S64HNE0R100099", "wwn": "eui.ffff", "labels": "" }]));
+        assert!(wrong_wwn.is_empty(), "{wrong_wwn:?}");
+        let wrong_uuid = listed(json!([{ "uuid": uuid::Uuid::nil().to_string(), "path": "/dev/nvme0n3", "serial": "S64HNE0R100099", "labels": format!("drive={}", a.id.0) }]));
+        assert_eq!(wrong_uuid, only(&[a.id]), "the registration uuid wins over path and serial");
+        // The WWN is compared one way: case and the scheme prefix aside.
+        assert_eq!(super::wwn_key("EUI.002538B111B0A001"), super::wwn_key("002538b111b0a001"));
+        assert_eq!(super::wwn_key("naa.0x5000C500AAAA0001"), "5000c500aaaa0001");
+    }
+
     /// #141: a drive back from missing sheds a failed format record (and
     /// says what it was); a running one is never touched.
     #[test]
