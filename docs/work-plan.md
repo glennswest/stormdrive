@@ -2386,3 +2386,9 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] `monitor::in_engine` / `engine_lists`: registration uuid (`drive=` label, or the entry's `uuid`), then WWN (normalised), then exact path (disk, enrolled partition, any path); serial only when unique among our drives and no WWN/uuid on the entry. A `drive=` label naming another drive, or a different WWN, is never this drive.
 - [x] Test `namespaces_sharing_a_serial_are_reconciled_apart` (two namespaces, one serial).
 - [ ] sc-build; v0.57.4; image; shipped; close.
+
+### #176 — a failed PERC read still marked its Shelf healthy (finding 8d18e6456d4c)
+- [x] `shelfobj::conditions`: `through.error` → `Healthy=False`, reason `ControllerReadFailed`, the error in the message; a successful read with no SES keeps `ThroughController`.
+- [x] Test `a_failed_controller_read_is_not_healthy` (condition, object, Warning Event; the successful-read case).
+- [x] README, changelog.
+- [ ] sc-build; close.

@@ -1129,7 +1129,10 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   node no longer sees it), and `conditions`:
   A Drive's `status.enclosure` is the name of its Shelf, `status.bay` its
   bay there.
-  - `Healthy` (every element OK), `SinglePath` (one ESP, or IOMs with no
+  - `Healthy` (every element OK; a shelf read through its controller with
+    no SES is `ThroughController`, and `False` with reason
+    `ControllerReadFailed` and the controller's error when that read
+    failed), `SinglePath` (one ESP, or IOMs with no
     path), `PSUDegraded`, `FanDegraded`, `OverTemp` (a sensor's own
     over-temperature flag, critical status, or at/over its page-0x05 high
     warning).

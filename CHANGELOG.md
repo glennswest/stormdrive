@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **fix:** #176 (finding 8d18e6456d4c) a Shelf whose RAID controller (MFI) read failed is no longer `Healthy=True`: it is `False` with reason `ControllerReadFailed` and the controller's error in the message (and the Warning Event); a successful controller read with no SES telemetry stays `ThroughController`
 - **fix:** test race from #181: `a_failed_save_leaves_the_live_limits` and `hwmon_is_read_from_sysfs` shared one temp dir and removed it under each other (failed on the #174 build VM); the save test has its own. Restores CHANGELOG.md, emptied by 31f2a6a when the session VM's disk filled
 - **fix:** #174 (finding b7fa23d4e5c2) fleet reconciliation no longer marks every namespace of an NVMe controller fleet when the engine lists one: an engine entry is matched by our registration uuid (its `drive=` label), then WWN, then an exact path; a serial counts only when no other drive here shares it and no stronger identity on the entry names another drive
 - **docs:** #181 work plan: sc-build passed on 4739c34, v0.57.3, image build c1865d1ecb8f, shipped

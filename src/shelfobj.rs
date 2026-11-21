@@ -121,18 +121,25 @@ pub fn conditions(rep: &ShelfReport, sm: &Summary) -> Vec<Condition> {
     let single = (rep.through.is_none() && sm.multipath.paths <= 1) || (sm.multipath.ioms_installed >= 2 && sm.multipath.ioms_with_path < sm.multipath.ioms_installed && sm.multipath.ioms_with_path > 0);
 
     let worst = rep.worst();
-    let healthy = !bad(worst) && psu_bad.is_empty() && fans_bad.is_empty() && hot.is_empty();
+    // A controller that could not be read (finding 8d18e6456d4c) gave no bay
+    // or enclosure status at all: never healthy, and the error is the message.
+    let read_error = rep.through.as_ref().and_then(|t| t.error.as_ref().map(|e| (t, e)));
+    let healthy = read_error.is_none() && !bad(worst) && psu_bad.is_empty() && fans_bad.is_empty() && hot.is_empty();
     out.push(Condition {
         kind: "Healthy",
         status: healthy,
-        reason: if rep.through.is_some() {
+        reason: if read_error.is_some() {
+            "ControllerReadFailed".into()
+        } else if rep.through.is_some() {
             "ThroughController".into()
         } else if healthy {
             "AllOk".into()
         } else {
             format!("{worst:?}")
         },
-        message: if let Some(t) = &rep.through {
+        message: if let Some((t, e)) = read_error {
+            format!("read through {} failed: {e}; no bay or enclosure status", t.via())
+        } else if let Some(t) = &rep.through {
             format!("read through {}: the enclosure's elements are not visible", t.via())
         } else if healthy {
             "every element reports OK".into()
@@ -590,5 +597,49 @@ mod tests {
         let healthy = &st["conditions"][0];
         assert_eq!(healthy["reason"], "ThroughController");
         assert!(healthy["message"].as_str().unwrap().contains("its HBA (mpt3sas)"), "{healthy}");
+    }
+
+    fn perc(error: Option<&str>) -> ShelfReport {
+        let mut r = report(0);
+        r.elements.clear();
+        r.through = Some(crate::megaraid::Through {
+            driver: "megaraid_sas".into(),
+            scsi_host: "host0".into(),
+            pcie_addr: Some("0000:18:00.0".into()),
+            enclosure_device_id: Some(32),
+            device_bays: BTreeMap::new(),
+            no_enclosure_devices: vec![],
+            slot_not_matched: vec![],
+            controller_slots: BTreeMap::new(),
+            bay_numbering: None,
+            bay_map: None,
+            error: error.map(String::from),
+            bay_phys: BTreeMap::new(),
+        });
+        r
+    }
+
+    /// Finding 8d18e6456d4c: a PERC whose management command failed gave
+    /// no bay or enclosure status; the Shelf is not Healthy and says why.
+    #[test]
+    fn a_failed_controller_read_is_not_healthy() {
+        let r = perc(Some("MFI DCMD 0x02010000 failed: status 0x03"));
+        let h = cond(&conditions(&r, &summary(&r)), "Healthy").clone();
+        assert!(!h.status);
+        assert_eq!(h.reason, "ControllerReadFailed");
+        assert!(h.message.contains("MFI DCMD 0x02010000 failed: status 0x03"), "{}", h.message);
+        // As the object and its Event carry it.
+        let o = shelf_object(&r, &summary(&r), &[], "forge1", &Value::Null, "t0");
+        assert_eq!(o["status"]["conditions"][0]["status"], "False");
+        let ev = transitions(&conditions(&r, &summary(&r)), &Value::Null);
+        assert!(ev.iter().any(|(k, reason, m)| *k == "Warning" && reason == "HealthyFalse" && m.contains("status 0x03")), "{ev:?}");
+
+        // A successful read with no SES telemetry keeps its unknown status:
+        // healthy, ThroughController.
+        let ok = perc(None);
+        let h = cond(&conditions(&ok, &summary(&ok)), "Healthy").clone();
+        assert!(h.status);
+        assert_eq!(h.reason, "ThroughController");
+        assert!(h.message.contains("not visible"), "{}", h.message);
     }
 }
