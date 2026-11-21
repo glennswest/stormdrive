@@ -2411,4 +2411,4 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 ### #179 — formatting through an sg node bypassed the mounted-disk guard (finding 5c92c84d172b)
 - [x] `formatcli::in_use`: sg → its sd disk via sysfs, then mounts + `holders/` on the disk and each partition; `main` refuses on it
 - [x] test `an_sg_node_is_guarded_by_its_disk_mounts_and_holders`; README exit code 3
-- [ ] sc-build
+- [x] sc-build passed on f426514: cargo build, cargo test (479 lib tests + every suite, 0 failed), clippy -D warnings clean; closed
