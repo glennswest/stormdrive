@@ -2373,3 +2373,4 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] `iomfw.rs`: paths probed directly (`live_paths`: sysfs by WWID, state `running`, TUR answered), before and after each IOM, matched by WWID (`short_paths`), held `PATHS_SETTLE` (60 s) with no gap (`wait_paths_back`); a drive with no WWID refuses the run unless `allow_path_loss`.
 - [x] Tests (fake sysfs, the stale-then-drop sequence, WWID matching), README, architecture, changelog.
 - [ ] sc-build (build + test + clippy); v0.57.2 with #172; image; shipped.
+- State (2026-11-21): fix 1953913 pushed, unbuilt. Its sc-build sat in the line (67-74 ahead) and was stopped on this VM for low memory, not by the build. Next: the one combined sc-build (covers #172 c725a69 too), then v0.57.2, image, shipped.
