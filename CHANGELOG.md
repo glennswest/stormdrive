@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-21
+- **docs:** #175 work plan: sc-build passed on d2d8e3d (build, test, clippy), closed
 - **fix:** #175 (finding d14b1a801a9c) a bay LED change (IDENT or FAULT, by hand or fleet reconciliation) no longer clears the slot's DEVICE OFF, i.e. no longer powers a turned-off bay back on: identify, fault and power controls send every other request the slot's status shows (DEVICE OFF, DO NOT REMOVE, RQST FAULT/IDENT, ENABLE BYP A/B from the application-client bypass bits, an array slot's array-state requests) and change only their own bit
 - **docs:** #174 work plan: sc-build passed on db2815c, v0.57.4, image build 3c88d1879e23, closed
 - **chore:** release v0.57.4 (#174, #176), sc-build passed on db2815c

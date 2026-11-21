@@ -2396,4 +2396,4 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 ### #175 — a bay LED change cleared DEVICE OFF (finding d14b1a801a9c)
 - [x] `ses::slot_control_kept`: a slot's control bytes 1–3 asking for what its status shows (DEVICE OFF, DO NOT REMOVE, RQST FAULT/IDENT, ENABLE BYP A/B from APP CLIENT BYPASSED, array-state bits); ident/fault/power change only their own bit
 - [x] tests: `led_changes_keep_a_powered_off_bay_off`, `slot_controls_keep_every_other_request`
-- [ ] sc-build (build + test, clippy)
+- [x] sc-build passed on d2d8e3d: cargo build && cargo test (exit 0, 107 s); clippy -D warnings clean, both new tests and the existing ses control tests pass (17 ses tests); closed
