@@ -612,6 +612,21 @@ are listed under [Not yet](#not-yet).
     second path, e.g. a single-pathed shelf, or when a drive on the shelf
     has no WWID, unless `allow_path_loss`. `GET …/firmware` gives
     each IOM's revision (sysfs `rev`) and the run.
+  - **Firmware manifest** (#80, `src/fwmanifest.rs`; #29 decided). The
+    release says which image golden applies to which drive or IOM:
+    `firmware.manifest` (`/pallets/firmware/manifest.toml`), one
+    `[[image]]` per image with `kind` (`drive`/`iom`), `vendor`?, `model`,
+    `from` (the revisions it replaces; none = any but `version`),
+    `version`, `file` (beside the manifest), `sha256`, `source` (the vendor
+    URL the golden was recorded from), `golden`?. Each drive and IOM shows
+    `firmware_available` (REST; `status.firmwareAvailable` on the Drive,
+    `paths[].firmwareAvailable` on the Shelf), or `{error}` when two entries
+    match one device. Revisions are the vendor's and not ordered, so newer
+    is what `from` says. The file is re-read when it changes; absent means
+    nothing is offered. Applying is `{"manifest": true}` on the firmware
+    POSTs, never automatic: the image is read from the golden and its
+    sha256 checked every time, then the same engine runs it (one fleet drive
+    at a time, the #24 redundancy gate, IOMs one at a time).
 - **No page** (#84, owner: "stormdrive should be part of stormui, as a
   plugin"). The Svelte page that lived in `web/` (#6, #38, #47) is gone in
   0.30.0; `/`, `/ui` and `/assets/*` are unknown paths now (401 without a
@@ -1252,15 +1267,16 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET·POST /api/v1/format` | all runs · `{"drives":[…],"block_size","protection","method"}`, all started at once; a drive named twice (by any alias) is formatted once, and every drive is reserved before any starts: one already reserved or formatting (a concurrent request) answers 409 and nothing starts |
 | `GET·POST /api/v1/worker/jobs` | drive worker jobs · `{"select":{…},"steps":[…],"destroy"?,"i_know_in_use"?,"dry_run"?}` |
 | `GET /api/v1/worker/jobs/{id}`, `POST …/{id}/cancel`, `POST …/{id}/resume` | one job; stop what hasn't started; continue interrupted drives |
-| `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` |
-| `GET·POST /api/v1/firmware` | all runs · `{"image","drives"?,"model"?,"force"?}` |
-| `GET /api/v1/firmware/images`, `GET·PUT·DELETE …/images/{name}` | image store; PUT takes the raw image |
+| `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` or `{"manifest":true,"force"?}` (the release's image for it, #80) |
+| `GET·POST /api/v1/firmware` | all runs · `{"image"\|"manifest":true,"drives"?,"model"?,"force"?}`; with `manifest` each drive gets its own entry's image, and one without an entry stops them all |
+| `GET /api/v1/firmware/images`, `GET·PUT·DELETE …/images/{name}` | image store; PUT takes the raw image (a one-off) |
+| `GET /api/v1/firmware/manifest` | the release's firmware manifest (#80): `path`, `loaded`, `error`, `images`, and each drive's and IOM's `available` |
 | `GET /api/v1/shelves`, `GET …/shelves/{key}` | every shelf, also one only a controller (`through`) or a drive names (`status` `unknown`, no elements): `position` (#65), SES identity, status, elements (with descriptor `attributes`, thresholds), slots, drives (vendor, model, firmware, sector size); `summary`: shelf ID, chassis serial, IOMs, PSUs, connectors, multipath, `problems`; `help_text` (#81, docs/netapp-shelf.md) |
 | `GET /api/v1/shelves/{key}/diagnostics` | the diagnostic pages each ESP answers (page 0x00) |
 | `GET /api/v1/shelves/{key}/diagnostics/{page}?esp=` | one page raw as hex (`0a`, `0x80`): RECEIVE DIAGNOSTIC RESULTS only — `sg_ses -p N -r` |
 | `POST /api/v1/shelves/{key}/locate` | `{"on":bool,"bay"?}` |
 | `POST /api/v1/shelves/{key}/bays/{bay}/power` | `{"on":bool}` — SES DEVICE OFF; a drive operation; refused while the bay's drive is in the fleet, holds data or is busy (#81) |
-| `GET·POST /api/v1/shelves/{key}/firmware` | `{"image","allow_path_loss"?}` — the shelf's IOMs, one at a time (#35); GET: each IOM's revision + the run |
+| `GET·POST /api/v1/shelves/{key}/firmware` | `{"image"\|"manifest":true,"allow_path_loss"?}` — the shelf's IOMs, one at a time (#35); GET: each IOM's revision, its `available` (#80) + the run |
 | `POST /api/v1/shelves/{key}/format` | `{"block_size","protection"?,"method"?,"all"?}` — out-of-fleet drives that need it |
 | `GET /api/v1/topology` | controller → shelf → drive tree, with HBA firmware |
 | `GET /api/v1/hbas` | every PCIe SCSI HBA |
@@ -1346,6 +1362,9 @@ curl -s $C -H "$T" -X POST $S/api/v1/format -H 'Content-Type: application/json' 
 curl -s $C -H "$T" -X PUT --data-binary @image.lod $S/api/v1/firmware/images/image.lod
 curl -s $C -H "$T" -X POST $S/api/v1/firmware -H 'Content-Type: application/json' \
      -d '{"model":"ST1200MM0098","image":"image.lod"}'
+curl -s $C -H "$T" $S/api/v1/firmware/manifest | python3 -m json.tool      # what the release offers
+curl -s $C -H "$T" -X POST $S/api/v1/drives/sdb/firmware -H 'Content-Type: application/json' \
+     -d '{"manifest":true}'
 ```
 
 ## Remote calls and retries (#71)

@@ -115,6 +115,10 @@ pub struct FirmwareConfig {
     /// fully redundant, before the reset and again after it, before the
     /// next drive (#24).
     pub redundancy_wait_mins: u64,
+    /// The release's firmware manifest (#80): which image golden applies
+    /// to which drive / IOM model and revision; the images are beside it.
+    /// Absent file = nothing offered; empty = no manifest.
+    pub manifest: String,
 }
 
 impl Default for FirmwareConfig {
@@ -123,6 +127,7 @@ impl Default for FirmwareConfig {
             chunk_kib: 32,
             max_image_mib: 256,
             redundancy_wait_mins: 30,
+            manifest: "/pallets/firmware/manifest.toml".into(),
         }
     }
 }

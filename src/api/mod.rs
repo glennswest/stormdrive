@@ -2,7 +2,7 @@
 //! Error envelope matches stormblock's `{error, code}` shape.
 
 use crate::config::Config;
-use crate::drive::{Activity, Designation, DriveId, HealthStatus, Membership};
+use crate::drive::{Activity, Designation, Drive, DriveId, HealthStatus, Membership};
 use crate::drivetest::{TestHandle, TestKind, TestState};
 use crate::firmware::FwHandle;
 use crate::format::FormatHandle;
@@ -238,6 +238,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Firmware: image store + updates (one, many, or by model).
         .route("/api/v1/firmware", get(list_firmware).post(firmware_many))
         .route("/api/v1/firmware/images", get(list_images))
+        .route("/api/v1/firmware/manifest", get(get_manifest))
         .route(
             "/api/v1/firmware/images/{name}",
             axum::routing::put(put_image).delete(delete_image).get(get_image),
@@ -501,6 +502,7 @@ async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
     let tests = s.tests.read().await;
     let formats = s.formats.read().await;
     let fws = s.firmware.read().await;
+    let fwm = crate::fwmanifest::current();
     let mut drives: Vec<serde_json::Value> = Vec::new();
     let mut sorted: Vec<_> = inv.drives.values().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -520,6 +522,7 @@ async fn list_drives(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
         }
         v["needs_reformat"] = json!(d.needs_reformat());
         v["owner"] = json!(d.owner());
+        v["firmware_available"] = crate::fwmanifest::drive_available(&fwm, d);
         put_in_use(&mut v, d);
         v["prep"] = prep_of(&s, d);
         drives.push(v);
@@ -537,6 +540,7 @@ async fn get_drive(
         .ok_or_else(|| ApiError::not_found(format!("drive {id:?}")))?;
     let mut v = serde_json::to_value(d).map_err(|e| ApiError::internal(e.to_string()))?;
     v["owner"] = json!(d.owner());
+    v["firmware_available"] = crate::fwmanifest::drive_available(&crate::fwmanifest::current(), d);
     put_in_use(&mut v, d);
     v["prep"] = prep_of(&s, d);
     Ok(Json(v))
@@ -1908,7 +1912,12 @@ fn bay_power_blocker(d: &crate::drive::Drive) -> Option<String> {
 
 #[derive(Deserialize)]
 struct ShelfFirmwareBody {
-    image: String,
+    /// An image in the store, or `manifest: true`: the release's image for
+    /// the shelf's IOMs (#80).
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    manifest: bool,
     /// Go ahead although a drive serving data loses its only path while an
     /// IOM restarts.
     #[serde(default)]
@@ -1926,28 +1935,68 @@ async fn shelf_firmware(
     if let Some(t) = &r.through {
         return Err(ApiError::conflict(format!("shelf {}: read through {}, no IOM to update from here", r.key, t.via())));
     }
-    if !crate::firmware::valid_image_name(&body.image) {
-        return Err(ApiError::bad_request(format!("image name {:?}", body.image)));
-    }
-    let path = image_dir(&s)?.join(&body.image);
-    let data = tokio::fs::read(&path)
-        .await
-        .map_err(|_| ApiError::not_found(format!("image {:?} is not in the store", body.image)))?;
-    if data.is_empty() {
-        return Err(ApiError::bad_request(format!("image {:?} is empty", body.image)));
-    }
-    let h = crate::iomfw::start(s.clone(), r, body.image, Arc::new(data), body.allow_path_loss)
+    let (name, data) = match image_source(body.image, body.manifest)? {
+        Some(name) => {
+            if !crate::firmware::valid_image_name(&name) {
+                return Err(ApiError::bad_request(format!("image name {name:?}")));
+            }
+            let path = image_dir(&s)?.join(&name);
+            let data = tokio::fs::read(&path)
+                .await
+                .map_err(|_| ApiError::not_found(format!("image {name:?} is not in the store")))?;
+            if data.is_empty() {
+                return Err(ApiError::bad_request(format!("image {name:?} is empty")));
+            }
+            (name, data)
+        }
+        None => {
+            let r2 = r.clone();
+            let (e, data) = tokio::task::spawn_blocking(move || iom_manifest_image(&crate::fwmanifest::current(), &r2))
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?
+                .map_err(ApiError::conflict)?;
+            s.events.write().await.push(
+                None,
+                Severity::Info,
+                "firmware",
+                format!("shelf {}: IOM firmware {} from the firmware manifest ({}, sha256 {}…, {})", r.key, e.version, e.file, &e.sha256[..12], e.source),
+            );
+            (e.file, data)
+        }
+    };
+    let h = crate::iomfw::start(s.clone(), r, name, Arc::new(data), body.allow_path_loss)
         .await
         .map_err(ApiError::conflict)?;
     Ok(Json(json!(h.view())))
 }
 
+/// The one manifest image for a shelf's IOMs (#80): every IOM the manifest
+/// offers anything must be offered the same image; an IOM already at its
+/// version is flashed with it again (the update runs IOM by IOM).
+fn iom_manifest_image(fwm: &crate::fwmanifest::Loaded, r: &crate::ses::ShelfReport) -> Result<(crate::fwmanifest::Entry, Vec<u8>), String> {
+    let model = r.shelf.model.as_deref().ok_or_else(|| format!("shelf {}: its SES product is not known", r.key))?;
+    // (the revision it was found at, its file) per IOM the manifest offers one
+    let mut offered: Vec<(String, String)> = Vec::new();
+    for e in &r.esps {
+        let Some(rev) = e.revision.as_deref() else { continue };
+        if let Some(entry) = fwm.manifest.find(crate::fwmanifest::Kind::Iom, r.shelf.vendor.as_deref(), model, rev)? {
+            offered.push((rev.to_string(), entry.file.clone()));
+        }
+    }
+    if offered.iter().any(|(_, f)| *f != offered[0].1) {
+        return Err(format!("shelf {}: its IOMs are offered different images by the firmware manifest", r.key));
+    }
+    let rev = offered.first().map(|(r, _)| r.clone()).ok_or_else(|| format!("shelf {}: the firmware manifest names no image for {model} at its IOMs' revisions", r.key))?;
+    fwm.image(crate::fwmanifest::Kind::Iom, r.shelf.vendor.as_deref(), model, &rev)
+}
+
 async fn get_shelf_firmware(State(s): State<Arc<AppState>>, Path(key): Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
     let r = resolve_shelf(&s, &key).await?;
     let run = s.shelf_firmware.read().await.get(&r.key).map(|h| h.view());
+    let fwm = crate::fwmanifest::current();
     Ok(Json(json!({
         "shelf": r.key,
-        "ioms": r.esps.iter().map(|e| json!({ "scsi_id": e.scsi_id, "serial": e.serial, "revision": e.revision })).collect::<Vec<_>>(),
+        "ioms": r.esps.iter().map(|e| json!({ "scsi_id": e.scsi_id, "serial": e.serial, "revision": e.revision, "available": crate::fwmanifest::iom_available(&fwm, &r.shelf, e.revision.as_deref()) })).collect::<Vec<_>>(),
         "run": run,
     })))
 }
@@ -2324,14 +2373,23 @@ async fn delete_image(
 
 #[derive(Deserialize)]
 struct FirmwareBody {
-    image: String,
+    /// An image in the store (a one-off upload) …
+    #[serde(default)]
+    image: Option<String>,
+    /// … or the image the release's firmware manifest names for the drive
+    /// (#80), read from its golden and sha256-checked.
+    #[serde(default)]
+    manifest: bool,
     #[serde(default)]
     force: bool,
 }
 
 #[derive(Deserialize)]
 struct FirmwareManyBody {
-    image: String,
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    manifest: bool,
     /// Drive handles (id, name, path, serial, wwid) …
     #[serde(default)]
     drives: Vec<String>,
@@ -2343,19 +2401,33 @@ struct FirmwareManyBody {
     force: bool,
 }
 
+/// Where a firmware request's image comes from: the store or the manifest.
+fn image_source(image: Option<String>, manifest: bool) -> Result<Option<String>, ApiError> {
+    match (image, manifest) {
+        (Some(_), true) => Err(ApiError::bad_request("image or manifest, not both")),
+        (None, false) => Err(ApiError::bad_request("image (a store name) or manifest: true (the release's image for each drive, #80)")),
+        (Some(i), false) => Ok(Some(i)),
+        (None, true) => Ok(None),
+    }
+}
+
 /// Validate every drive and read the image once; start none if any is
 /// blocked. Fleet drives queue on the node-wide lock inside the engine.
+/// `image_name` None: each drive's image from the firmware manifest (#80).
 async fn start_firmware(
     s: &Arc<AppState>,
     ids: Vec<DriveId>,
-    image_name: String,
+    image_name: Option<String>,
     force: bool,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !crate::firmware::valid_image_name(&image_name) {
-        return Err(ApiError::bad_request(format!("image name {image_name:?}")));
-    }
     if ids.is_empty() {
         return Err(ApiError::bad_request("no drives to update"));
+    }
+    let Some(image_name) = image_name else {
+        return start_firmware_from_manifest(s, ids, force).await;
+    };
+    if !crate::firmware::valid_image_name(&image_name) {
+        return Err(ApiError::bad_request(format!("image name {image_name:?}")));
     }
     let dir = image_dir(s)?;
     let path = dir.join(&image_name);
@@ -2394,13 +2466,102 @@ async fn start_firmware(
     Ok(Json(json!({ "image": image_name, "started": started })))
 }
 
+/// Each drive's image from the release's firmware manifest (#80): the one
+/// entry for its model and revision, read from the golden beside the
+/// manifest and sha256-checked. Every drive must have one and none may be
+/// blocked, or none starts.
+async fn start_firmware_from_manifest(s: &Arc<AppState>, ids: Vec<DriveId>, force: bool) -> Result<Json<serde_json::Value>, ApiError> {
+    let fwm = crate::fwmanifest::current();
+    if fwm.error.is_none() && !fwm.loaded {
+        let at = fwm.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(firmware.manifest unset)".into());
+        return Err(ApiError::not_found(format!("no firmware manifest on this node ({at})")));
+    }
+    let candidates: Vec<Drive> = {
+        let inv = s.inventory.read().await;
+        ids.iter().filter_map(|id| inv.drives.get(id).cloned()).collect()
+    };
+    if candidates.len() != ids.len() {
+        return Err(ApiError::not_found("a drive asked for is not in the inventory"));
+    }
+    let fwm2 = fwm.clone();
+    let planned = tokio::task::spawn_blocking(move || {
+        let mut images: HashMap<String, Arc<Vec<u8>>> = HashMap::new();
+        let mut plan = Vec::new();
+        let mut blocked = Vec::new();
+        for d in candidates {
+            if let Some(why) = d.firmware_blocker(force) {
+                blocked.push(format!("{} ({why})", d.name));
+                continue;
+            }
+            match fwm2.image(crate::fwmanifest::Kind::Drive, d.vendor.as_deref(), &d.model, &d.firmware) {
+                Ok((e, data)) => {
+                    let img = images.entry(e.file.clone()).or_insert_with(|| Arc::new(data)).clone();
+                    plan.push((d, e, img));
+                }
+                Err(why) => blocked.push(format!("{} ({why})", d.name)),
+            }
+        }
+        (plan, blocked)
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?;
+    let (plan, blocked) = planned;
+    if !blocked.is_empty() {
+        return Err(ApiError::conflict(format!("not started: {}", blocked.join("; "))));
+    }
+    let mut started = Vec::new();
+    for (d, e, img) in plan {
+        s.events.write().await.push(
+            Some(d.id),
+            Severity::Info,
+            "firmware",
+            format!("{}: {} → {} from the firmware manifest ({}, sha256 {}…, {})", d.name, d.firmware, e.version, e.file, &e.sha256[..12], e.source),
+        );
+        let h = crate::firmware::start(s.clone(), d, e.file.clone(), img, force).await;
+        let mut run = serde_json::to_value(h.run.lock().unwrap().clone()).unwrap_or_default();
+        run["manifest"] = serde_json::to_value(crate::fwmanifest::Available::from(&e)).unwrap_or_default();
+        started.push(run);
+    }
+    Ok(Json(json!({ "manifest": fwm.path, "started": started })))
+}
+
+/// `GET /api/v1/firmware/manifest` (#80): the release's manifest, and what
+/// it offers each drive and IOM on this node.
+async fn get_manifest(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let fwm = tokio::task::spawn_blocking(crate::fwmanifest::current).await.unwrap_or_default();
+    let drives: Vec<serde_json::Value> = {
+        let inv = s.inventory.read().await;
+        let mut ds: Vec<&Drive> = inv.drives.values().collect();
+        ds.sort_by(|a, b| a.name.cmp(&b.name));
+        ds.into_iter()
+            .map(|d| json!({ "id": d.id, "name": d.name, "vendor": d.vendor, "model": d.model, "firmware": d.firmware, "available": crate::fwmanifest::drive_available(&fwm, d) }))
+            .collect()
+    };
+    let shelves: Vec<serde_json::Value> = {
+        let sh = s.shelves.read().await;
+        sh.values()
+            .map(|r| {
+                json!({
+                    "shelf": r.key, "vendor": r.shelf.vendor, "model": r.shelf.model,
+                    "ioms": r.esps.iter().map(|e| json!({ "scsi_id": e.scsi_id, "serial": e.serial, "revision": e.revision, "available": crate::fwmanifest::iom_available(&fwm, &r.shelf, e.revision.as_deref()) })).collect::<Vec<_>>(),
+                })
+            })
+            .collect()
+    };
+    Json(json!({
+        "path": fwm.path, "loaded": fwm.loaded, "error": fwm.error,
+        "images": fwm.manifest.images, "drives": drives, "shelves": shelves,
+    }))
+}
+
 async fn firmware_drive(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<FirmwareBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let did = resolve_id(&s, &id).await?;
-    start_firmware(&s, vec![did], body.image, body.force).await
+    let src = image_source(body.image, body.manifest)?;
+    start_firmware(&s, vec![did], src, body.force).await
 }
 
 async fn firmware_many(
@@ -2425,7 +2586,8 @@ async fn firmware_many(
             return Err(ApiError::not_found(format!("no drives of model {model:?}")));
         }
     }
-    start_firmware(&s, ids, body.image, body.force).await
+    let src = image_source(body.image, body.manifest)?;
+    start_firmware(&s, ids, src, body.force).await
 }
 
 async fn get_firmware(

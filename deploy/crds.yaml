@@ -99,6 +99,7 @@ spec:
                 model: { type: string }
                 serial: { type: string }
                 firmware: { type: string }
+                firmwareAvailable: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "What the release's firmware manifest offers this drive (#80): version, file, sha256, source, golden; null when nothing; {error} when the manifest names two images for it. Applying it is POST /api/v1/drives/{id}/firmware {manifest: true}, never automatic." }
                 wwid: { type: string, nullable: true }
                 capacityBytes: { type: integer }
                 blockSize: { type: integer, description: "Logical sector size: 512, 4096, or 520/528 on a drive that needs a reformat." }

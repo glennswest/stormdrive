@@ -207,6 +207,7 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "model": d.model,
             "serial": d.serial,
             "firmware": d.firmware,
+            "firmwareAvailable": crate::fwmanifest::drive_available(&crate::fwmanifest::current(), d),
             "wwid": d.wwid,
             "capacityBytes": d.capacity_bytes,
             "blockSize": d.block_size,

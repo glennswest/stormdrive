@@ -1092,6 +1092,38 @@ health-gated, abort-on-regression.
     follow, unless `allow_path_loss`.
   - **Records.** Runs are in memory per shelf, like drive firmware runs;
     events go out on start, per IOM and at the end.
+- Firmware manifest (#80, `fwmanifest.rs`; #29: vendor images are
+  recorded goldens, a manifest per release says which apply, applying is
+  the operator's):
+  - **Format.** TOML at `firmware.manifest` (default
+    `/pallets/firmware/manifest.toml`; empty = none), `[[image]]` entries:
+    `kind` drive|iom, optional `vendor` (INQUIRY vendor; for an IOM the
+    shelf's SES vendor), `model` (INQUIRY product / NVMe model / the
+    shelf's SES product), `from` (revisions replaced), `version`, `file` (a
+    plain name in the manifest's directory: the golden's image), `sha256`,
+    `source` (http(s) URL the golden was recorded from), optional `golden`.
+    Unknown keys, a bad sha256, a non-URL source, a path in `file`, or
+    `from` naming `version` reject the whole file (`error`, nothing offered).
+  - **Matching.** Kind, model and vendor (when named) compared trimmed and
+    case-blind; the device's current revision must be in `from`, or with no
+    `from` anything but `version`. Revision strings are not ordered, so the
+    manifest is what says newer. Two matching entries is an error for that
+    device, and neither is offered or applied.
+  - **Reading.** A process-wide cache stats the file on each use and re-reads
+    it when its mtime or size change; an absent file is no manifest, not an
+    error (a release with no firmware goldens).
+  - **Shown.** REST drive `firmware_available`, IOM `available` on
+    `GET /api/v1/shelves/{key}/firmware`, `GET /api/v1/firmware/manifest`
+    (the file, its state, every drive and IOM); Drive
+    `status.firmwareAvailable`, Shelf `status.paths[].firmwareAvailable`.
+  - **Applied** only by `{"manifest": true}` on `POST
+    /api/v1/drives/{id}/firmware`, `POST /api/v1/firmware` (drives or model)
+    and `POST /api/v1/shelves/{key}/firmware`. Each device's entry is found,
+    its file read and its sha256 compared before anything starts; a drive
+    with no entry, a mismatch or a missing golden stops the whole request.
+    A shelf's IOMs must all be offered the same image. Then the store path's
+    engine runs unchanged (event naming version, file, sha256, source).
+    No DriveOperation verb yet.
 - Policy: never automatic. Out-of-fleet drives update in parallel;
   fleet drives one at a time behind a node-wide lock; Failing/Failed
   drives are refused unless `force`. One, many, or every drive of a

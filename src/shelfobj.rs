@@ -252,6 +252,13 @@ pub fn led_actions(spec: &ShelfSpec, rep: &ShelfReport) -> (Option<bool>, Option
 /// times); `at` the RFC 3339 time now.
 pub fn shelf_object(rep: &ShelfReport, sm: &Summary, drives: &[BayDrive], node: &str, previous: &Value, at: &str) -> Value {
     let (ident, fault_req, fault_ind) = leds(rep);
+    // Each IOM's firmware and what the release's manifest offers it (#80).
+    let fwm = crate::fwmanifest::current();
+    let paths: Vec<Value> = rep
+        .esps
+        .iter()
+        .map(|p| json!({ "scsiId": p.scsi_id, "sasAddress": p.sas_address, "firmware": p.revision, "firmwareAvailable": crate::fwmanifest::iom_available(&fwm, &rep.shelf, p.revision.as_deref()) }))
+        .collect();
     let fans: Vec<Value> = rep
         .elements
         .iter()
@@ -294,7 +301,7 @@ pub fn shelf_object(rep: &ShelfReport, sm: &Summary, drives: &[BayDrive], node: 
             "position": rep.shelf.position,
             "through": rep.through,
             "state": rep.worst(),
-            "paths": rep.esps.iter().map(|p| json!({ "scsiId": p.scsi_id, "sasAddress": p.sas_address, "firmware": p.revision })).collect::<Vec<_>>(),
+            "paths": paths,
             "ioms": sm.ioms,
             "powerSupplies": sm.power_supplies,
             "connectors": sm.connectors,

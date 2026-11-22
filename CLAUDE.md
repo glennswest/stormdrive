@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.57.4** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.58.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -134,6 +134,8 @@ src/
   gpt.rs          one-partition GPT with stormblock's slab type GUIDs
   firmware.rs     image store + WRITE BUFFER / NVMe download+commit jobs,
                   redundancy gate before a data-serving drive resets (#24)
+  fwmanifest.rs   the release's firmware manifest: model + revision → image
+                  golden, firmware_available, applied only on request (#80)
   iomfw.rs        shelf IOM firmware: SES Download Microcode page 0x0E (#35)
   drivetest.rs    smoke / read_scan / destructive_sample
   wear.rs         wear-out projection from the wear trend (#23)

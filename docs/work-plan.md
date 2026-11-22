@@ -1918,8 +1918,8 @@ with stable id. Found:
 
 ### Phase 5: Firmware management — mostly DONE (v0.8.0, pulled into 1e)
 - [x] Firmware inventory per drive (already collected in Phase 1)
-- [x] Image store (<data_dir>/firmware); policy file (model → desired
-      version, never automatic) still to do
+- [x] Image store (<data_dir>/firmware); the release's firmware manifest
+      (model + revision → image golden, never automatic) — #80
 - [x] NVMe: Firmware Image Download (0x11) + Commit (0x10)
 - [x] SCSI: WRITE BUFFER mode 0x0E/0x0F, 0x07 fallback
 - [x] Fleet drives one at a time, health-gated
@@ -2422,3 +2422,10 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] routes, handler, feed action, perccli find/run/parse/set, `[controllers] perccli`, report `perccli` / `pending_mode` / `reboot_pending` removed; `Mode::perccli_word` → `word`; the scan sets findings itself
 - [x] tests: perccli tests gone; `a_raid_mode_controller_warns_and_offers_no_personality_switch`, `an_old_controllers_perccli_key_is_ignored`; README, architecture, CLAUDE.md, example config
 - [x] sc-build passed on d257383: cargo build, cargo test (480 lib tests + every suite, 0 failed), clippy -D warnings clean; closed
+
+### #80 — firmware manifest from the release: which image golden applies to which drive/IOM (#29 decided)
+- [x] `src/fwmanifest.rs`: TOML `[[image]]` (kind, vendor?, model, from, version, file, sha256, source, golden?), validated whole; match by kind/vendor/model + current revision; two matches = error; cached, re-read on change; absent = none
+- [x] `firmware.manifest` (default `/pallets/firmware/manifest.toml`); `firmware_available` on REST drives, IOM `available`, `GET /api/v1/firmware/manifest`; Drive `status.firmwareAvailable` (CRD), Shelf `paths[].firmwareAvailable`
+- [x] apply only with `{"manifest": true}` (drive, many/model, shelf): image from the golden beside the manifest, sha256 checked, all-or-nothing, then the existing engine (#24 gate, one fleet drive / one IOM at a time)
+- [x] unit tests (matching, vendor, duplicates, bad entries, golden read + sha256 + tamper); README, architecture, example config
+- [ ] sc-build; stormcos: ship the manifest path + re-copy the CRD (issue filed)

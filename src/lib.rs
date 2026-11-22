@@ -25,6 +25,7 @@ pub mod engine;
 pub mod erase;
 pub mod events;
 pub mod firmware;
+pub mod fwmanifest;
 pub mod fleet;
 pub mod format;
 pub mod formatcli;

@@ -154,6 +154,8 @@ async fn daemon(args: Args) -> anyhow::Result<()> {
     let gate = stormdrive::kubeauth::Gate::new(&config.api, kube.clone(), data_dir.as_deref());
     // :9092's serving pair (#19), read now so health can say it (#158).
     let serving = stormdrive::tls::ServingCert::new(config.api.tls_cert_file.clone().into(), config.api.tls_key_file.clone().into());
+    // The release's firmware manifest (#80): read now, re-read on change.
+    stormdrive::fwmanifest::init(&config.firmware.manifest);
     let state = Arc::new(AppState {
         config,
         inventory: RwLock::new(inventory),
