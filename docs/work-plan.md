@@ -2428,4 +2428,5 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] `firmware.manifest` (default `/pallets/firmware/manifest.toml`); `firmware_available` on REST drives, IOM `available`, `GET /api/v1/firmware/manifest`; Drive `status.firmwareAvailable` (CRD), Shelf `paths[].firmwareAvailable`
 - [x] apply only with `{"manifest": true}` (drive, many/model, shelf): image from the golden beside the manifest, sha256 checked, all-or-nothing, then the existing engine (#24 gate, one fleet drive / one IOM at a time)
 - [x] unit tests (matching, vendor, duplicates, bad entries, golden read + sha256 + tamper); README, architecture, example config
-- [ ] sc-build; stormcos: ship the manifest path + re-copy the CRD (issue filed)
+- [x] sc-build passed on a634602: cargo build, cargo test (486 lib tests incl. 6 fwmanifest + every suite, 0 failed), clippy -D warnings clean; closed
+- [ ] stormcos#1545: ship the manifest + image goldens at /pallets/firmware, re-copy the CRD (theirs)

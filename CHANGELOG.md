@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-22
+- **docs:** #80 work plan: sc-build passed on a634602 (build, test, clippy), stormcos#1545 filed for the manifest path and the CRD copy, closed
 - **feat:** #80 the release's firmware manifest (#29 decided): `firmware.manifest` (`/pallets/firmware/manifest.toml`) lists `[[image]]` entries (kind drive/iom, vendor?, model, from, version, file beside it, sha256, source URL, golden?). Each drive and IOM shows what it offers: REST `firmware_available` / IOM `available`, `GET /api/v1/firmware/manifest`, Drive `status.firmwareAvailable` (CRD field added), Shelf `paths[].firmwareAvailable`. Applying stays explicit: `{"manifest": true}` on `POST /api/v1/drives/{id}/firmware`, `POST /api/v1/firmware` and `POST /api/v1/shelves/{key}/firmware` reads each device's image from its golden, checks its sha256 against the manifest, refuses all if any drive has none, then runs the same engine (#24 gate, one fleet drive / one IOM at a time). Uploads to the store stay for a one-off. v0.58.0
 
 ### 2026-11-21
