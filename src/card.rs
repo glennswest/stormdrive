@@ -687,7 +687,7 @@ mod tests {
         let c = Fake::new(fake::hba330());
         let img = c.with(|s| s.flash[&1].clone());
         let r = read(&c, 0, "0000:01:00.0", "host0", false).unwrap();
-        assert_eq!(check_image(&spec(Region::Firmware, &img), &img, &r).unwrap().as_deref(), Some("16.00.01.00"));
+        assert_eq!(check_image(Region::Firmware, &spec(Region::Firmware, &img).image.typed().unwrap(), &img, &r).unwrap().as_deref(), Some("16.00.01.00"));
         let steps = Steps(Mutex::new(Vec::new()));
         let f = flash(&c, 0, true, Region::Firmware, &img, &|| Ok(()), &steps).unwrap();
         assert!(f.reset);
