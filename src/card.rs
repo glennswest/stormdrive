@@ -277,10 +277,15 @@ pub struct DriveRef {
     pub pci: Option<String>,
 }
 
+/// An NVDATA version word as the card's tools print it: `0e.01.00.07`.
+pub fn nvdata_version(w: u32) -> String {
+    format!("{:02x}.{:02x}.{:02x}.{:02x}", w >> 24, (w >> 16) & 0xFF, (w >> 8) & 0xFF, w & 0xFF)
+}
+
 /// The HostBusAdapter object (`storage.storm.io/v1`) for one card.
 pub fn object(r: &CardReport, node: &str, sas_address: Option<&str>, drives: &[DriveRef], shelves: &BTreeMap<u64, String>) -> Value {
     let name = object_name(node, &r.pci);
-    let nv = |w: u32| format!("{:02x}.{:02x}.{:02x}.{:02x}", w >> 24, (w >> 16) & 0xFF, (w >> 8) & 0xFF, w & 0xFF);
+    let nv = nvdata_version;
     let device = |h: u16| r.devices.iter().find(|d| d.handle == h);
     let drive_of = |a: u64| drives.iter().find(|d| d.sas_address == Some(a));
     let phys: Vec<Value> = r
@@ -390,6 +395,7 @@ pub fn object(r: &CardReport, node: &str, sas_address: Option<&str>, drives: &[D
             "drives": r.devices.iter().filter(|d| !d.is_expander() && d.kind().ends_with("drive")).count(),
             "enclosures": enclosures,
             "firmware": { "images": images, "readAt": r.images_read.map(rfc) },
+            "firmwareAvailable": crate::fwmanifest::card_available(&crate::fwmanifest::current(), r),
             "lastFlash": r.last_flash.as_ref().map(|f| json!({
                 "operation": f.operation, "region": f.region.as_str(), "image": f.image, "sha256": f.sha256,
                 "before": f.before, "after": f.after, "started": rfc(f.started), "finished": rfc(f.finished), "result": f.result,
@@ -417,9 +423,52 @@ pub struct FlashSpec {
     pub card: String,
     pub op: FlashOp,
     pub region: Region,
-    pub image: GoldenRef,
+    pub image: ImageSpec,
     #[serde(default)]
     pub dry_run: bool,
+}
+
+/// What a CardOperation names as its image: a golden in the node's store
+/// typed in full (`name`, `sha256`, `source`), or `manifest: true`, the
+/// release's firmware manifest entry for this card's region at its current
+/// version (#184), whose file, sha256 and source come from the record. With
+/// `manifest`, a `sha256` pins the entry the requester saw: another one is
+/// refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSpec {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub manifest: bool,
+}
+
+impl ImageSpec {
+    /// The golden typed in full; Err when it is not (or is the manifest).
+    pub fn typed(&self) -> Result<GoldenRef, String> {
+        match (&self.name, &self.sha256, &self.source) {
+            (Some(n), Some(h), Some(s)) => Ok(GoldenRef { name: n.clone(), sha256: h.clone(), source: s.clone() }),
+            _ => Err("image: name, sha256 and source (a golden in the node's store), or manifest: true (the release's entry for the card, #184)".into()),
+        }
+    }
+
+    /// The manifest's entry as the golden, checked against what the spec
+    /// pins. Only `sha256` may be given beside `manifest`.
+    pub fn from_entry(&self, e: &crate::fwmanifest::Entry) -> Result<GoldenRef, String> {
+        if self.name.is_some() || self.source.is_some() {
+            return Err("image: manifest: true takes the name and source from the manifest's record; give only sha256 to pin it".into());
+        }
+        if let Some(h) = &self.sha256 {
+            if !h.trim().eq_ignore_ascii_case(e.sha256.trim()) {
+                return Err(format!("image.sha256 {} is not the manifest's entry for this card ({} {}, sha256 {}): the manifest changed", h.trim(), e.file, e.version, e.sha256.trim()));
+            }
+        }
+        Ok(GoldenRef { name: e.file.clone(), sha256: e.sha256.clone(), source: e.source.clone() })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -440,45 +489,45 @@ pub struct GoldenRef {
 
 /// The image is the golden named, and fits this card. -> the version the
 /// image carries, when it says one.
-pub fn check_image(spec: &FlashSpec, image: &[u8], card: &CardReport) -> Result<Option<String>, String> {
-    let want = spec.image.sha256.trim().to_lowercase();
+pub fn check_image(region: Region, golden: &GoldenRef, image: &[u8], card: &CardReport) -> Result<Option<String>, String> {
+    let want = golden.sha256.trim().to_lowercase();
     if want.len() != 64 || !want.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("image.sha256: 64 hex digits".into());
     }
-    let src = spec.image.source.trim();
+    let src = golden.source.trim();
     if !(src.starts_with("https://") || src.starts_with("http://")) {
         return Err("image.source: the URL the golden was recorded from (compliance-ops#23)".into());
     }
     let got = crate::firmware::sha256_hex(image);
     if got != want {
-        return Err(format!("image {}: sha256 {got}, not the golden's {want}", spec.image.name));
+        return Err(format!("image {}: sha256 {got}, not the golden's {want}", golden.name));
     }
-    match spec.region {
+    match region {
         Region::Firmware => {
-            let h = mpt::parse_fw_header(image).ok_or_else(|| format!("image {}: no MPI firmware header", spec.image.name))?;
+            let h = mpt::parse_fw_header(image).ok_or_else(|| format!("image {}: no MPI firmware header", golden.name))?;
             if h.vendor_id != 0x1000 {
-                return Err(format!("image {}: vendor {:04x}, the card's is 1000", spec.image.name, h.vendor_id));
+                return Err(format!("image {}: vendor {:04x}, the card's is 1000", golden.name, h.vendor_id));
             }
             let facts = card.facts.as_ref().ok_or("the card's IOC Facts were not read: its product cannot be checked")?;
             if h.product_id != facts.product_id {
-                return Err(format!("image {}: product {:04x}, the card is {:04x}", spec.image.name, h.product_id, facts.product_id));
+                return Err(format!("image {}: product {:04x}, the card is {:04x}", golden.name, h.product_id, facts.product_id));
             }
             if (h.image_size as usize) > image.len() {
-                return Err(format!("image {}: its header says {} bytes, the file has {}", spec.image.name, h.image_size, image.len()));
+                return Err(format!("image {}: its header says {} bytes, the file has {}", golden.name, h.image_size, image.len()));
             }
             Ok(Some(mpt::version(h.fw_version)))
         }
         Region::Bios => {
             let roms = mpt::parse_rom(image);
             if roms.is_empty() {
-                return Err(format!("image {}: not an option ROM (no 55 AA / PCIR image)", spec.image.name));
+                return Err(format!("image {}: not an option ROM (no 55 AA / PCIR image)", golden.name));
             }
             if let Some(r) = roms.iter().find(|r| r.vendor_id != 0x1000) {
-                return Err(format!("image {}: its {} image is for vendor {:04x}, the card's is 1000", spec.image.name, r.kind(), r.vendor_id));
+                return Err(format!("image {}: its {} image is for vendor {:04x}, the card's is 1000", golden.name, r.kind(), r.vendor_id));
             }
             Ok(None)
         }
-        Region::FirmwareBackup | Region::Manufacturing => Err(format!("region {}: a flash writes firmware or bios", spec.region.as_str())),
+        Region::FirmwareBackup | Region::Manufacturing => Err(format!("region {}: a flash writes firmware or bios", region.as_str())),
     }
 }
 
@@ -601,7 +650,7 @@ mod tests {
             card: "0000:01:00.0".into(),
             op: FlashOp::Flash,
             region,
-            image: GoldenRef { name: "hba330.fw".into(), sha256: crate::firmware::sha256_hex(image), source: "https://example.invalid/hba330.fw".into() },
+            image: ImageSpec { name: Some("hba330.fw".into()), sha256: Some(crate::firmware::sha256_hex(image)), source: Some("https://example.invalid/hba330.fw".into()), manifest: false },
             dry_run: false,
         }
     }
@@ -680,30 +729,56 @@ mod tests {
     fn an_image_that_is_not_the_golden_or_not_for_this_card_is_refused() {
         let c = Fake::new(fake::hba330());
         let r = read(&c, 0, "0000:01:00.0", "host0", false).unwrap();
+        let chk = |s: &FlashSpec, img: &[u8], r: &CardReport| check_image(s.region, &s.image.typed().unwrap(), img, r);
         let img = fake::fw_image(0x1000_0200, 0x2221, 4096);
         let mut s = spec(Region::Firmware, &img);
-        s.image.sha256 = "00".repeat(32);
-        assert!(check_image(&s, &img, &r).unwrap_err().contains("not the golden's"));
+        s.image.sha256 = Some("00".repeat(32));
+        assert!(chk(&s, &img, &r).unwrap_err().contains("not the golden's"));
         let mut s = spec(Region::Firmware, &img);
-        s.image.source = String::new();
-        assert!(check_image(&s, &img, &r).unwrap_err().contains("source"));
+        s.image.source = Some(String::new());
+        assert!(chk(&s, &img, &r).unwrap_err().contains("source"));
         let other = fake::fw_image(0x1000_0200, 0x2228, 4096);
-        assert!(check_image(&spec(Region::Firmware, &other), &other, &r).unwrap_err().contains("product 2228"));
+        assert!(chk(&spec(Region::Firmware, &other), &other, &r).unwrap_err().contains("product 2228"));
         let rom = fake::rom_image();
-        assert!(check_image(&spec(Region::Firmware, &rom), &rom, &r).unwrap_err().contains("no MPI firmware header"));
-        assert_eq!(check_image(&spec(Region::Bios, &rom), &rom, &r).unwrap(), None);
-        assert!(check_image(&spec(Region::Bios, &img), &img, &r).unwrap_err().contains("not an option ROM"));
+        assert!(chk(&spec(Region::Firmware, &rom), &rom, &r).unwrap_err().contains("no MPI firmware header"));
+        assert_eq!(chk(&spec(Region::Bios, &rom), &rom, &r).unwrap(), None);
+        assert!(chk(&spec(Region::Bios, &img), &img, &r).unwrap_err().contains("not an option ROM"));
         let mut nofacts = r.clone();
         nofacts.facts = None;
-        assert!(check_image(&spec(Region::Firmware, &img), &img, &nofacts).unwrap_err().contains("IOC Facts"));
+        assert!(chk(&spec(Region::Firmware, &img), &img, &nofacts).unwrap_err().contains("IOC Facts"));
     }
 
     #[test]
     fn spec_parses_and_refuses_unknown_fields() {
         let v = json!({ "node": "forge1", "card": "forge1-0000-01-00-0", "op": "flash", "region": "firmware", "image": { "name": "a.fw", "sha256": "ab", "source": "https://x" }, "dryRun": true });
         let s: FlashSpec = serde_json::from_value(v).unwrap();
-        assert!(s.dry_run && s.region == Region::Firmware);
+        assert!(s.dry_run && s.region == Region::Firmware && s.image.typed().is_ok());
         assert!(serde_json::from_value::<FlashSpec>(json!({ "node": "a", "card": "b", "op": "erase", "region": "bios", "image": { "name": "a", "sha256": "b", "source": "c" } })).is_err());
+        assert!(serde_json::from_value::<FlashSpec>(json!({ "node": "a", "card": "b", "op": "flash", "region": "bios", "image": { "file": "a" } })).is_err());
+        // #184: the manifest's entry, its record filling the golden.
+        let m: FlashSpec = serde_json::from_value(json!({ "node": "a", "card": "b", "op": "flash", "region": "firmware", "image": { "manifest": true } })).unwrap();
+        assert!(m.image.manifest && m.image.typed().is_err());
+        let sha = "ab".repeat(32);
+        let e = crate::fwmanifest::Entry {
+            kind: crate::fwmanifest::Kind::Card,
+            region: Some(crate::fwmanifest::CardRegion::Firmware),
+            vendor: None,
+            model: "HBA330".into(),
+            from: vec![],
+            version: "16.17.01.00".into(),
+            file: "hba330-16.17.bin".into(),
+            sha256: sha.clone(),
+            source: "https://vendor.example/hba330".into(),
+            golden: None,
+        };
+        let g = m.image.from_entry(&e).unwrap();
+        assert_eq!((g.name.as_str(), g.sha256.as_str(), g.source.as_str()), ("hba330-16.17.bin", sha.as_str(), "https://vendor.example/hba330"));
+        let pinned = ImageSpec { sha256: Some(sha.to_uppercase()), manifest: true, ..Default::default() };
+        assert!(pinned.from_entry(&e).is_ok());
+        let stale = ImageSpec { sha256: Some("cd".repeat(32)), manifest: true, ..Default::default() };
+        assert!(stale.from_entry(&e).unwrap_err().contains("manifest changed"));
+        let typed = ImageSpec { source: Some("https://typed".into()), manifest: true, ..Default::default() };
+        assert!(typed.from_entry(&e).unwrap_err().contains("from the manifest"));
     }
 
     #[test]

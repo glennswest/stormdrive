@@ -528,6 +528,7 @@ spec:
                   type: object
                   x-kubernetes-preserve-unknown-fields: true
                   description: "images: each region read back from the card (FW Upload) — firmware, bios (and its legacy_bios / uefi parts), firmware_backup, manufacturing — with size, sha256, version; readAt."
+                firmwareAvailable: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "What the release's firmware manifest offers this card (#184), per region (firmware, bios, uefi, nvdata): current (the card's version), image (version, region, file, sha256, source, golden; null when nothing), error (two entries apply), flashable (a CardOperation writes firmware and bios). A flash from it is a CardOperation with image.manifest: true." }
                 lastFlash: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "The last CardOperation flash on this card: operation, region, image, sha256, before, after, started, finished, result." }
                 problems: { type: array, items: { type: string }, description: "IOC exceptions and device access statuses, in words." }
                 errors: { type: array, items: { type: string }, description: "What could not be read." }
@@ -575,12 +576,12 @@ spec:
                 region: { type: string, enum: [firmware, bios], description: "firmware: the IOC firmware; bios: the option ROM (legacy BIOS and UEFI driver)." }
                 image:
                   type: object
-                  description: "The golden (compliance-ops#23): the image's name in the node's firmware store (<data_dir>/firmware, POST /api/v1/firmware/images), its sha256 and the URL it was recorded from. The file's sha256 must be this one."
-                  required: [name, sha256, source]
+                  description: "The golden (compliance-ops#23): the image's name in the node's firmware store (<data_dir>/firmware, POST /api/v1/firmware/images), its sha256 and the URL it was recorded from; the file's sha256 must be this one. Or manifest: true (#184): the release's firmware manifest entry for this card's region at its current version gives name, sha256 and source (the file beside the manifest, else in the store); a sha256 given with it pins that entry."
                   properties:
                     name: { type: string }
                     sha256: { type: string, pattern: "^[0-9a-fA-F]{64}$" }
                     source: { type: string }
+                    manifest: { type: boolean }
                 dryRun: { type: boolean, description: "Check the image and the guards, change nothing." }
             status:
               type: object
@@ -593,6 +594,7 @@ spec:
                 bytesDone: { type: integer }
                 bytesTotal: { type: integer }
                 imageVersion: { type: string, nullable: true }
+                manifest: { type: object, nullable: true, x-kubernetes-preserve-unknown-fields: true, description: "The firmware manifest entry the image is, when image.manifest (#184)." }
                 before: { type: string, nullable: true }
                 after: { type: string, nullable: true }
                 started: { type: string, nullable: true }

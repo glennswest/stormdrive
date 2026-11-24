@@ -1124,6 +1124,24 @@ health-gated, abort-on-regression.
     A shelf's IOMs must all be offered the same image. Then the store path's
     engine runs unchanged (event naming version, file, sha256, source).
     No DriveOperation verb yet.
+  - **SAS cards** (#184, for stormconsole#380's Flash picker). `kind =
+    "card"` entries need a `region` (firmware|bios|uefi|nvdata; any other
+    kind may not have one). `model` matches the card's board name or its
+    PCI id `1000:dddd`; `vendor` (optional) its PCI subsystem `vvvv:dddd`.
+    The revision compared is the region's version as the card reports it:
+    IOC firmware, BIOS Page 3, IO Unit Page 0 persistent NVDATA; there is
+    no UEFI version on the card, so a `uefi` entry matches nothing (listed,
+    never offered). HostBusAdapter `status.firmwareAvailable` is a map per
+    region of `{current, image|null, error?, flashable}`, `GET
+    /api/v1/firmware/manifest` lists `cards[].regions` the same way.
+    A CardOperation `image: {manifest: true, sha256?}` (region firmware or
+    bios) plans from the entry: file read beside the manifest, else from
+    the node's firmware store under the entry's name; the sha256 is the
+    manifest's either way, an optional spec `sha256` must equal it, and
+    then the #166 image checks (MPI header / option ROM, vendor, product)
+    and guards run unchanged. NVDATA is written as part of a firmware image
+    and the UEFI driver as part of the bios option ROM: their entries are
+    `flashable: false`.
 - Policy: never automatic. Out-of-fleet drives update in parallel;
   fleet drives one at a time behind a node-wide lock; Failing/Failed
   drives are refused unless `force`. One, many, or every drive of a

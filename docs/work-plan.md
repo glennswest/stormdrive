@@ -2430,3 +2430,11 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] unit tests (matching, vendor, duplicates, bad entries, golden read + sha256 + tamper); README, architecture, example config
 - [x] sc-build passed on a634602: cargo build, cargo test (486 lib tests incl. 6 fwmanifest + every suite, 0 failed), clippy -D warnings clean; closed
 - [ ] stormcos#1545: ship the manifest + image goldens at /pallets/firmware, re-copy the CRD (theirs)
+
+### #184 — firmware manifest: SAS card entries per region, offered on HostBusAdapter (stormconsole#380)
+- [x] `fwmanifest.rs`: `kind = "card"` + `region` (firmware|bios|uefi|nvdata; required for a card, refused otherwise); match board name or PCI id, `vendor` = PCI subsystem, the region's current version; `CardId`, `card_available`, `card_image` (beside the manifest, else the store; sha256 checked)
+- [x] HostBusAdapter `status.firmwareAvailable` per region (current, image, error, flashable); `GET /api/v1/firmware/manifest` `cards`; CRD fields
+- [x] CardOperation `image: {manifest: true, sha256?}`: name/sha256/source from the entry, a given sha256 pins it, typed name/source refused beside it; #166 checks + guards unchanged; status `manifest`
+- [x] unit tests (region parse, board/PCI/subsystem match, per-region offer, duplicates, image beside/store/tamper, spec parse + pin); README, architecture, CHANGELOG, v0.59.0
+- [ ] sc-build
+- note: `uefi` has no version on the card (listed, never offered); `uefi`/`nvdata` entries are `flashable: false` (they ride in the bios ROM / firmware image)

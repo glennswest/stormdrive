@@ -926,7 +926,7 @@ impl Controller {
                 None
             }
         };
-        let (card, image, version) = match crate::cardop::plan(&self.state, &spec, cordoned).await {
+        let planned = match crate::cardop::plan(&self.state, &spec, cordoned).await {
             Ok(p) => p,
             Err(why) => {
                 self.event_on("CardOperation", op, "Warning", "Refused", &why).await;
@@ -934,6 +934,7 @@ impl Controller {
                 return self.put_cop_status(name, refuse(why)).await;
             }
         };
+        let (card, version) = (&planned.card, planned.version.clone());
         let current = match spec.region {
             crate::mpt::Region::Bios => card.bios_version.map(crate::mpt::version),
             _ => Some(crate::mpt::version(card.info.firmware_version)),
@@ -945,21 +946,21 @@ impl Controller {
             card.man0.as_ref().and_then(|m| m.board_name.clone()).unwrap_or_else(|| card.info.adapter().to_string()),
             current.clone().unwrap_or_else(|| "?".into()),
             version.clone().unwrap_or_else(|| "?".into()),
-            spec.image.name,
-            spec.image.sha256.to_lowercase(),
-            spec.image.source
+            planned.golden.name,
+            planned.golden.sha256.to_lowercase(),
+            if planned.manifest.is_some() { format!("{}, the firmware manifest's entry", planned.golden.source) } else { planned.golden.source.clone() }
         );
         if spec.dry_run {
             let msg = format!("dry run: would flash {what}");
             self.event_on("CardOperation", op, "Normal", "Planned", &msg).await;
             return self
-                .put_cop_status(name, json!({ "phase": "Planned", "message": msg, "requester": who.who, "before": current, "imageVersion": version, "observedGeneration": generation }))
+                .put_cop_status(name, json!({ "phase": "Planned", "message": msg, "requester": who.who, "before": current, "imageVersion": version, "manifest": planned.manifest, "observedGeneration": generation }))
                 .await;
         }
         let msg = format!("flashing {what} for {}", who.who);
         self.event_on("CardOperation", op, "Normal", "Accepted", &msg).await;
         self.card_audit(name, "accepted", &msg).await;
-        let run = crate::cardop::start(self.state.clone(), name.to_string(), spec, card, image, version);
+        let run = crate::cardop::start(self.state.clone(), name.to_string(), spec, planned);
         self.put_cop_status(name, run.status(&who.who, generation)).await
     }
 

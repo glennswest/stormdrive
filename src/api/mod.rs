@@ -2526,7 +2526,7 @@ async fn start_firmware_from_manifest(s: &Arc<AppState>, ids: Vec<DriveId>, forc
 }
 
 /// `GET /api/v1/firmware/manifest` (#80): the release's manifest, and what
-/// it offers each drive and IOM on this node.
+/// it offers each drive, IOM and SAS card region (#184) on this node.
 async fn get_manifest(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let fwm = tokio::task::spawn_blocking(crate::fwmanifest::current).await.unwrap_or_default();
     let drives: Vec<serde_json::Value> = {
@@ -2548,9 +2548,23 @@ async fn get_manifest(State(s): State<Arc<AppState>>) -> Json<serde_json::Value>
             })
             .collect()
     };
+    // Each SAS card, per region (#184).
+    let cards: Vec<serde_json::Value> = {
+        let cs = s.cards.reports.read().await;
+        cs.values()
+            .map(|r| {
+                let id = crate::fwmanifest::CardId::of(r);
+                json!({
+                    "card": crate::card::object_name(&s.node_name, &r.pci), "pci": r.pci,
+                    "models": id.models, "subsystem": id.subsystem,
+                    "regions": crate::fwmanifest::card_available(&fwm, r),
+                })
+            })
+            .collect()
+    };
     Json(json!({
         "path": fwm.path, "loaded": fwm.loaded, "error": fwm.error,
-        "images": fwm.manifest.images, "drives": drives, "shelves": shelves,
+        "images": fwm.manifest.images, "drives": drives, "shelves": shelves, "cards": cards,
     }))
 }
 

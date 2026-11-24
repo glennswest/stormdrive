@@ -4,6 +4,9 @@
 
 <!-- New unreleased changes go here -->
 
+### 2026-11-24
+- **feat:** #184 the firmware manifest records SAS card images (stormconsole#380): `kind = "card"` entries with a `region` (`firmware`, `bios`, `uefi`, `nvdata`), `model` = the board name or PCI id `1000:dddd`, `vendor`? = the PCI subsystem; same `sha256` / `source` / `file` checks. The HostBusAdapter's `status.firmwareAvailable` (CRD field added) and `GET /api/v1/firmware/manifest` `cards[].regions` say per region the card's current version, the entry that applies, and whether a flash writes that region (firmware, bios). A CardOperation `image: {manifest: true, sha256?}` takes the file, sha256 and source from the entry instead of typed text: the file is read beside the manifest or else from the node's store, its sha256 checked; a given `sha256` pins the entry; the run's status carries `manifest`. `uefi` entries are listed but offered to no card (the card reports no UEFI version). v0.59.0
+
 ### 2026-11-22
 - **docs:** #80 work plan: sc-build passed on a634602 (build, test, clippy), stormcos#1545 filed for the manifest path and the CRD copy, closed
 - **feat:** #80 the release's firmware manifest (#29 decided): `firmware.manifest` (`/pallets/firmware/manifest.toml`) lists `[[image]]` entries (kind drive/iom, vendor?, model, from, version, file beside it, sha256, source URL, golden?). Each drive and IOM shows what it offers: REST `firmware_available` / IOM `available`, `GET /api/v1/firmware/manifest`, Drive `status.firmwareAvailable` (CRD field added), Shelf `paths[].firmwareAvailable`. Applying stays explicit: `{"manifest": true}` on `POST /api/v1/drives/{id}/firmware`, `POST /api/v1/firmware` and `POST /api/v1/shelves/{key}/firmware` reads each device's image from its golden, checks its sha256 against the manifest, refuses all if any drive has none, then runs the same engine (#24 gate, one fleet drive / one IOM at a time). Uploads to the store stay for a one-off. v0.58.0

@@ -627,6 +627,16 @@ are listed under [Not yet](#not-yet).
     POSTs, never automatic: the image is read from the golden and its
     sha256 checked every time, then the same engine runs it (one fleet drive
     at a time, the #24 redundancy gate, IOMs one at a time).
+    **SAS cards** (#184): `kind = "card"` with a `region` (`firmware`,
+    `bios`, `uefi`, `nvdata`); `model` is the board name (Manufacturing
+    Page 0, `HBA330`) or the PCI id (`1000:0097`), `vendor`? the PCI
+    subsystem (`1028:1f45`, so Dell's image is not offered to an LSI card).
+    The region's current version is the card's `firmwareVersion` /
+    `biosVersion` / `nvdataVersion`; the card reports no UEFI version, so a
+    `uefi` entry is listed but offered to none. The HostBusAdapter shows
+    `status.firmwareAvailable` per region (`current`, `image`, `flashable`:
+    a flash writes firmware and bios only). A CardOperation with
+    `image: {manifest: true}` takes file, sha256 and source from the entry.
 - **No page** (#84, owner: "stormdrive should be part of stormui, as a
   plugin"). The Svelte page that lived in `web/` (#6, #38, #47) is gone in
   0.30.0; `/`, `/ui` and `/assets/*` are unknown paths now (401 without a
@@ -1178,7 +1188,10 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   card lists (with its access status when not 0), each enclosure with its
   Shelf, and `firmware.images`: each region read back with FW Upload
   (firmware, bios and its `legacy_bios` / `uefi` parts, firmware_backup,
-  manufacturing) with size, sha256, version. Pages every discovery pass;
+  manufacturing) with size, sha256, version, and `firmwareAvailable`: per
+  region (firmware, bios, uefi, nvdata) the current version, the firmware
+  manifest's entry for it or null (`{error}` when two apply) and whether a
+  flash writes that region (#184). Pages every discovery pass;
   regions once per run and after each flash. Status only; `NotSeen` when
   the card goes. `sc get hba`, `sc describe hba <name>`.
 - **`CardOperation`** (#166, `cop`): sas3flash's flash, ours. `spec`:
@@ -1186,7 +1199,13 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   flash`, `region: firmware|bios`, `image {name, sha256, source}` — the
   golden (compliance-ops#23): the file in the node's firmware store
   (`POST /api/v1/firmware/images`) must have that sha256, and `source` is
-  the URL it was recorded from. `dryRun` checks without writing. The node
+  the URL it was recorded from. Or `image {manifest: true, sha256?}`
+  (#184): the release's firmware manifest entry for this card's region at
+  its current version gives the file, sha256 and source; the file is read
+  beside the manifest or else from the store, its sha256 checked either
+  way; a `sha256` given pins the entry the requester saw (another is
+  refused); `name`/`source` with `manifest` are refused. The run's status
+  carries `manifest` (the entry). `dryRun` checks without writing. The node
   re-checks the stamped requester (`cardoperations` create, like a
   DriveOperation), then:
   1. checks the image against the card: a firmware image needs an MPI
@@ -1270,7 +1289,7 @@ case), serial, shelf id, or an SES device's SCSI id.
 | `GET·POST /api/v1/drives/{id}/firmware` | version + runs · `{"image","force"?}` or `{"manifest":true,"force"?}` (the release's image for it, #80) |
 | `GET·POST /api/v1/firmware` | all runs · `{"image"\|"manifest":true,"drives"?,"model"?,"force"?}`; with `manifest` each drive gets its own entry's image, and one without an entry stops them all |
 | `GET /api/v1/firmware/images`, `GET·PUT·DELETE …/images/{name}` | image store; PUT takes the raw image (a one-off) |
-| `GET /api/v1/firmware/manifest` | the release's firmware manifest (#80): `path`, `loaded`, `error`, `images`, and each drive's and IOM's `available` |
+| `GET /api/v1/firmware/manifest` | the release's firmware manifest (#80): `path`, `loaded`, `error`, `images`, each drive's and IOM's `available`, and each SAS card's `regions` (#184) |
 | `GET /api/v1/shelves`, `GET …/shelves/{key}` | every shelf, also one only a controller (`through`) or a drive names (`status` `unknown`, no elements): `position` (#65), SES identity, status, elements (with descriptor `attributes`, thresholds), slots, drives (vendor, model, firmware, sector size); `summary`: shelf ID, chassis serial, IOMs, PSUs, connectors, multipath, `problems`; `help_text` (#81, docs/netapp-shelf.md) |
 | `GET /api/v1/shelves/{key}/diagnostics` | the diagnostic pages each ESP answers (page 0x00) |
 | `GET /api/v1/shelves/{key}/diagnostics/{page}?esp=` | one page raw as hex (`0a`, `0x80`): RECEIVE DIAGNOSTIC RESULTS only — `sg_ses -p N -r` |
