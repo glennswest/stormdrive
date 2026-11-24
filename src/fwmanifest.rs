@@ -546,8 +546,9 @@ mod tests {
 
     fn card_entry(region: &str, model: &str, from: &[&str], version: &str, sha: &str) -> String {
         format!(
-            "[[image]]\nkind = \"card\"\nregion = \"{region}\"\nmodel = \"{model}\"\nfrom = [{}]\nversion = \"{version}\"\nfile = \"{model}-{region}-{version}.bin\"\nsha256 = \"{sha}\"\nsource = \"https://vendor.example/{model}\"\n",
-            from.iter().map(|f| format!("\"{f}\"")).collect::<Vec<_>>().join(", ")
+            "[[image]]\nkind = \"card\"\nregion = \"{region}\"\nmodel = \"{model}\"\nfrom = [{}]\nversion = \"{version}\"\nfile = \"{}-{region}-{version}.bin\"\nsha256 = \"{sha}\"\nsource = \"https://vendor.example/{model}\"\n",
+            from.iter().map(|f| format!("\"{f}\"")).collect::<Vec<_>>().join(", "),
+            model.replace(':', "-")
         )
     }
 
