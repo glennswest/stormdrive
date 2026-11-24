@@ -2436,5 +2436,5 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] HostBusAdapter `status.firmwareAvailable` per region (current, image, error, flashable); `GET /api/v1/firmware/manifest` `cards`; CRD fields
 - [x] CardOperation `image: {manifest: true, sha256?}`: name/sha256/source from the entry, a given sha256 pins it, typed name/source refused beside it; #166 checks + guards unchanged; status `manifest`
 - [x] unit tests (region parse, board/PCI/subsystem match, per-region offer, duplicates, image beside/store/tamper, spec parse + pin); README, architecture, CHANGELOG, v0.59.0
-- [ ] sc-build
+- [x] sc-build passed on 9e3bcbc: cargo build, cargo test (488 lib tests incl. 8 fwmanifest + every suite, 0 failed), clippy -D warnings clean; #186/#187 (two test slips on the way) closed by sc-build; closed
 - note: `uefi` has no version on the card (listed, never offered); `uefi`/`nvdata` entries are `flashable: false` (they ride in the bios ROM / firmware image)
