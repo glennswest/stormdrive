@@ -2444,5 +2444,6 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] stormblock client `hba_rows()` (`GET /api/v1/storage/hba`, 404 = none); fleet tick every 60 s
 - [x] Drive object `status.health.errors` + conditions; controller Event on a level change; `at`/`perMin`/raw counters out of the fingerprint; stormview feed metric; CRD health description + Errors column
 - [x] unit tests (join, projection, not-a-block, conditions per level, health merge, events); README, architecture, CLAUDE.md, CHANGELOG, v0.60.0
-- [ ] sc-build
+- [x] sc-build passed on f1b7129: cargo build, cargo test (493 lib tests incl. 5 driveerrors + every suite, 0 failed), clippy -D warnings clean; closed
+- [ ] stormcos#1545: re-copy the CRD at v0.60.0 (theirs)
 - note: no `/metrics` of ours: stormblock exports `storm_drive_errors_*` already

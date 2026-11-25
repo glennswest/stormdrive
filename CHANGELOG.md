@@ -4,6 +4,9 @@
 
 <!-- New unreleased changes go here -->
 
+### 2026-11-25
+- **docs:** #160 work plan: sc-build passed on f1b7129 (build, test, clippy), CRD re-copy noted on stormcos#1545, closed
+
 ### 2026-11-24 (#160)
 - **feat:** #160 (stormblock#648) the Drive object carries the drive's own error and PI-check counters: the fleet tick reads stormblock's `GET /api/v1/storage/hba` every 60 s and joins each row's `errors` by SAS address into `status.health.errors` (the engine's `level` settling/ok/degraded/failing, since, at, streak, why, piChecks, eedpChecks, uncorrected, mediumErrors, grownDefects, defectsPerDay, pendingPerDay, raw `drive` and `sense` counters, perMin). Conditions `DriveErrorsDegraded` / `DriveErrorsFailing` (message = why, lastTransitionTime = since), a Kubernetes Event on a level change, an Errors column, a "drive errors" metric in the stormview feed. CRD: `status.health` described, the Errors column. v0.60.0
 
