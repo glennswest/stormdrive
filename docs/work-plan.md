@@ -2089,7 +2089,7 @@ Left here: the last write-test matrix run, from stormblock's card API.
 - [x] fleet tick: every 5 min, each drive with a SAS address
 - [x] Drive `status.writeTest`, `-o wide` column WriteTest (passed); CRD,
   docs, changelog, tests (writetest.rs 3); sc-build (415 lib tests + clippy -D warnings); v0.50.0; image
-- [ ] proof: forge1's Drive objects carry status.writeTest once stormblock has run the matrix there
+- [x] (item shipped 2026-11-25) proof: on forge1 `"writeTest":{"(at|sasAddress)":` in the drives list, once stormblock has run the matrix there (its admin action: LBA 0 + last LBA overwritten)
 
 ### #152: a Shelf for a backplane with no SES; Shelf CRD on the node (2026-11-18) — P0
 forge1 12.91: no `shelves` resource on the node's apiserver, and the four
