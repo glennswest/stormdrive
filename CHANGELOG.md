@@ -5,6 +5,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-11-25
+- **docs:** #190 work plan: wave refusal for 14.03 answered by the wave's own rebuild (golden-stormdrive-114e669c912e, made after golden-stormd-b1b78114b5a6); no code change
 - **docs:** #160 work plan: sc-build passed on f1b7129 (build, test, clippy), CRD re-copy noted on stormcos#1545, closed
 
 ### 2026-11-24 (#160)

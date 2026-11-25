@@ -2447,3 +2447,8 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] sc-build passed on f1b7129: cargo build, cargo test (493 lib tests incl. 5 driveerrors + every suite, 0 failed), clippy -D warnings clean; closed
 - [ ] stormcos#1545: re-copy the CRD at v0.60.0 (theirs)
 - note: no `/metrics` of ours: stormblock exports `storm_drive_errors_*` already
+
+### #190 — release wave dc81988e73 refused 14.03: stormdrive golden made from an older stormd (P0, wave-refusal)
+- cause: golden-stormdrive-f241355ac8f6 (b054019) was made from golden-stormd-f46ad22d8b8f; the wave carries golden-stormd-b1b78114b5a6 (stormd d2cf426, built 19:35 UTC). No code change here
+- [x] the wave restaged stormdrive at 20:55:41 UTC (stormcos#1511): golden-stormdrive-114e669c912e at 4883d80, built 21:02:39 UTC, after stormd b1b78114b5a6 (still stormd's newest); `stormcentral component list`/`GET /api/v1/components`
+- [x] sc-build of the head commit; closed. The other members the refusal names (stormgit#90, stormlb#50) are theirs
