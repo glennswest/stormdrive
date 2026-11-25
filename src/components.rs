@@ -154,6 +154,12 @@ fn drive_among(d: &Drive, others: &[&Drive]) -> ComponentSummary {
             _ => {}
         }
     }
+    // The drive's own errors (#160): the engine's level.
+    match crate::driveerrors::get(&d.id).and_then(|e| e["level"].as_str().and_then(crate::driveerrors::Level::parse)) {
+        Some(crate::driveerrors::Level::Degraded) => metrics.push(Metric::new("drive errors", "degraded").tone("warn")),
+        Some(crate::driveerrors::Level::Failing) => metrics.push(Metric::new("drive errors", "failing").tone("error")),
+        _ => {}
+    }
     if let Some(h) = d.location.controller.as_ref().and_then(controller_name) {
         metrics.push(Metric::new("hba", h).tone("muted"));
     }

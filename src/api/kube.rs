@@ -189,6 +189,9 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
     let (link, mut conditions) = crate::link::status(&d.id);
     // Never a bare `out` (#156): the Member condition says why.
     conditions.push(crate::membership::condition(d));
+    // The drive's own error and PI-check counters from the engine (#160).
+    let (health, error_conds) = crate::driveerrors::status(&d.id, serde_json::to_value(&d.health).unwrap_or_default());
+    conditions.extend(error_conds);
     json!({
         "apiVersion": api_version(),
         "kind": "Drive",
@@ -243,7 +246,7 @@ pub fn drive_object_with(d: &Drive, node: &str, want: Option<(u32, crate::pi::Pr
             "smr": d.smr.as_ref().map(|i| i.smr),
             "smrSource": d.smr.as_ref().map(|i| i.source.clone()),
             "activity": d.activity,
-            "health": d.health,
+            "health": health,
             "drain": d.drain,
             "usage": d.usage,
             "prep": crate::worker::prep(d, None),

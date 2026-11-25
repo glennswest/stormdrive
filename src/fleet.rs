@@ -52,6 +52,8 @@ pub struct FleetState {
     thermal_unsupported_until: Option<Instant>,
     /// When the engine's write-test runs were last asked for (#146).
     write_tests_at: Option<Instant>,
+    /// When the engine's per-drive error counters were last read (#160).
+    drive_errors_at: Option<Instant>,
 }
 
 /// Everything, in the order that matters: labels first (a drain places by
@@ -70,6 +72,7 @@ pub async fn tick(state: &Arc<AppState>, fs: &mut FleetState) {
     retry_pending_drains(state).await;
     sync_fault_leds(state).await;
     sync_write_tests(state, fs).await;
+    sync_drive_errors(state, fs).await;
     if state.config.stormblock.auto_add {
         auto_add(state, fs).await;
     }
@@ -97,6 +100,33 @@ async fn sync_write_tests(state: &Arc<AppState>, fs: &mut FleetState) {
                 return; // the engine is not answering: the next round
             }
         }
+    }
+}
+
+/// The drive's own error and PI-check counters and their level (#160,
+/// stormblock#648), from the engine's card rows every
+/// [`crate::driveerrors::REFRESH`], joined by SAS address: kept for the
+/// Drive object's `status.health.errors`. A drive the engine no longer
+/// lists has none; an engine that does not answer (or has no such route)
+/// leaves what was read last.
+async fn sync_drive_errors(state: &Arc<AppState>, fs: &mut FleetState) {
+    if fs.drive_errors_at.is_some_and(|t| t.elapsed() < crate::driveerrors::REFRESH) {
+        return;
+    }
+    fs.drive_errors_at = Some(Instant::now());
+    let report = match state.stormblock.hba_rows().await {
+        Ok(Some(v)) => v,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::debug!("stormblock: storage/hba: {e}");
+            return;
+        }
+    };
+    let mut by_sas = crate::driveerrors::by_sas(&report);
+    let inv = state.inventory.read().await;
+    for d in inv.drives.values() {
+        let e = d.location.sas_address.as_deref().and_then(|s| by_sas.remove(&crate::ses::normalize_sas(s)));
+        crate::driveerrors::set(d.id, e);
     }
 }
 

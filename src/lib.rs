@@ -20,6 +20,7 @@ pub mod contents;
 pub mod controller;
 pub mod discovery;
 pub mod drive;
+pub mod driveerrors;
 pub mod drivetest;
 pub mod engine;
 pub mod erase;

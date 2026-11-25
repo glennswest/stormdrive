@@ -652,6 +652,37 @@ before and after stay on the engine — the drive's own pages are
 `status.pages` (#147). `kubectl get drives -o wide` has a WriteTest
 column (passed).
 
+### The drive's own errors (`driveerrors.rs`, #160)
+stormblock#648 samples every drive behind the card every 30 s: its error
+log pages (read/write/verify, non-medium, the 0x2F exception), its grown
+defect list (SATA: reallocated, pending, offline uncorrectable) and the
+kernel's sense lines for it (PI guard/app/ref checks the drive raised,
+EEDP checks the card raised, medium/recovered/hardware errors), rated per
+minute, with a `level`: corrected-on-the-fly ECC never counts; `degraded`
+is a retry-corrected, non-medium, recovered, hardware or medium error, a
+PI check or a defect grown in the last day moving; `failing` is an
+uncorrected error, a PI check or medium error two samples running, or 10
+defects grown in a day. Each row of `GET /api/v1/storage/hba` carries it
+as `errors`.
+
+The fleet tick reads the rows every 60 s and joins them by SAS address
+(normalized). The Drive object carries the block, camelCased with the
+health summary's sums, as `status.health.errors` (level, since, at,
+streak, why, piChecks, eedpChecks, uncorrected, mediumErrors,
+grownDefects, defectsPerDay, pendingPerDay, the raw `drive` and `sense`
+counters, perMin) and two conditions: `DriveErrorsDegraded` (degraded or
+failing) and `DriveErrorsFailing`, message = the engine's why,
+lastTransitionTime = its `since`. A settling sample raises no condition.
+The level is the engine's; stormdrive does not re-derive it. A change into
+degraded or failing, or back to ok, is a Kubernetes Event on the Drive
+(`DriveErrorsDegraded`, `DriveErrorsFailing`, `DriveErrorsOk`). `at`,
+`perMin` and the raw counters are left out of the rewrite fingerprint.
+`kubectl get drives` has an Errors column; the stormview feed a "drive
+errors" metric when not ok. No `/metrics` of ours: stormblock already
+exports `storm_drive_errors_*` with node, drive, bay and shelf. A drive the
+engine no longer lists loses the block; an engine that does not answer (or
+predates the route: 404) leaves the last one.
+
 ### A drive's SAS link (`link.rs`, #149)
 stormblock#642 (owner, forge1 bay 3: "We need to monitor the sas metrics on
 the sas buss", "alarms when something is not normal, instead of when writes

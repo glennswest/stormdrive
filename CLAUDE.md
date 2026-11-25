@@ -13,7 +13,7 @@ Pure Rust. Single daemon (`stormdrive`) with a REST API, a stormd UI
 extension, and a monitor loop. Runs on every storage node alongside
 stormblock.
 
-**Version: 0.59.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.60.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 ## Why it exists (from the stormblock review, 2026-08-26)
 
@@ -149,6 +149,8 @@ src/
                   health, drain, overcommit
   fleet.rs        the loop: labels, health push, overcommit push, drains →
                   retire, auto-add
+  driveerrors.rs  the drive's own error + PI-check counters from stormblock's
+                  card rows → Drive status.health.errors, conditions (#160)
   usage.rs        per-drive used/free joined from stormblock's slabs (#12)
   writetest.rs    the last write-test matrix stormblock ran on a drive (card
                   API) → Drive status.writeTest (#146)

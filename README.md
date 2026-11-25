@@ -1033,6 +1033,12 @@ in `storage.storm.io/v1` (`src/controller.rs`; install `deploy/crds.yaml` and
   on the drive (its steps, lines, passed; from the engine's
   `GET /api/v1/storage/hba/{sas}/write-test`, every 5 min); the WriteTest
   column with `-o wide`.
+  `status.health.errors` (#160) is the drive's own error and PI-check
+  counters from stormblock's card rows (`GET /api/v1/storage/hba`, every
+  60 s): the engine's `level` (settling/ok/degraded/failing), why, PI and
+  EEDP checks, uncorrected and medium errors, grown defects, rates; the
+  conditions `DriveErrorsDegraded` / `DriveErrorsFailing` and an Errors
+  column.
   A SAS drive's `status.link` (#149) has both sides of its link, read on
   every health sample — the drive's log page 0x18 and the sysfs phy facing
   it: totals and per-minute rates of invalid DWORDs, disparity errors, loss

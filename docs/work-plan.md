@@ -2438,3 +2438,11 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] unit tests (region parse, board/PCI/subsystem match, per-region offer, duplicates, image beside/store/tamper, spec parse + pin); README, architecture, CHANGELOG, v0.59.0
 - [x] sc-build passed on 9e3bcbc: cargo build, cargo test (488 lib tests incl. 8 fwmanifest + every suite, 0 failed), clippy -D warnings clean; #186/#187 (two test slips on the way) closed by sc-build; closed
 - note: `uefi` has no version on the card (listed, never offered); `uefi`/`nvdata` entries are `flashable: false` (they ride in the bios ROM / firmware image)
+
+### #160 — Drive status.health: stormblock#648's per-drive error counters, level and PI checks
+- [x] `src/driveerrors.rs`: project a row's `errors` (camelCase + sums), join by normalized SAS address, conditions DriveErrorsDegraded/DriveErrorsFailing from the engine's level (since = lastTransitionTime), noteworthy level changes
+- [x] stormblock client `hba_rows()` (`GET /api/v1/storage/hba`, 404 = none); fleet tick every 60 s
+- [x] Drive object `status.health.errors` + conditions; controller Event on a level change; `at`/`perMin`/raw counters out of the fingerprint; stormview feed metric; CRD health description + Errors column
+- [x] unit tests (join, projection, not-a-block, conditions per level, health merge, events); README, architecture, CLAUDE.md, CHANGELOG, v0.60.0
+- [ ] sc-build
+- note: no `/metrics` of ours: stormblock exports `storm_drive_errors_*` already

@@ -732,6 +732,17 @@ impl StormBlockClient {
         Ok(Some(resp.error_for_status()?.json().await?))
     }
 
+    /// GET /api/v1/storage/hba — the card's rows, each with its drive's
+    /// `errors` (stormblock#648, v24.24.0+). None: an engine without the
+    /// route (404).
+    pub async fn hba_rows(&self) -> anyhow::Result<Option<Value>> {
+        let resp = self.send(self.http().get(self.url("/api/v1/storage/hba")), Idempotent::Yes).await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(resp.error_for_status()?.json().await?))
+    }
+
     /// DELETE /api/v1/drives/{id}/drain — stop a drain; what moved stays moved.
     /// Ordinary on the engine (detach-like): the node token.
     pub async fn cancel_drain(&self, id_or_path: &str) -> anyhow::Result<()> {

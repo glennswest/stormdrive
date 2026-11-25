@@ -183,6 +183,13 @@ fn drive_fingerprint(v: &Value) -> String {
         if let Some(l) = st.get_mut("link").and_then(Value::as_object_mut) {
             l.remove("at");
         }
+        // The engine's sample time, rates and raw counters move on every
+        // read (#160): the level, why and the sums are what rewrite.
+        if let Some(e) = st.get_mut("health").and_then(|h| h.get_mut("errors")).and_then(Value::as_object_mut) {
+            for k in ["at", "perMin", "drive", "sense"] {
+                e.remove(k);
+            }
+        }
     }
     v.to_string()
 }
@@ -306,6 +313,8 @@ pub struct Controller {
     drive_ssc: HashMap<String, (String, String)>,
     /// The last link level (not settling) each Drive's Event was judged by.
     drive_link: HashMap<String, crate::link::Level>,
+    /// The last errors level each Drive was seen at (#160).
+    drive_errors: HashMap<String, crate::driveerrors::Level>,
     /// HostBusAdapter status last written (fingerprint, when) (#166).
     hba_written: HashMap<String, (String, Instant)>,
     /// CardOperation status last written.
@@ -332,6 +341,7 @@ pub async fn run(state: Arc<AppState>, kube: Arc<KubeApi>) {
         drive_link_rate: HashMap::new(),
         drive_ssc: HashMap::new(),
         drive_link: HashMap::new(),
+        drive_errors: HashMap::new(),
         hba_written: HashMap::new(),
         cop_status: HashMap::new(),
     };
@@ -426,6 +436,26 @@ impl Controller {
                     }
                 }
                 self.drive_link.insert(name.clone(), now);
+            }
+            // The drive's errors level changed: an Event on the Drive (#160).
+            {
+                use crate::driveerrors::{level_of, noteworthy, Level};
+                if let Some(now) = level_of(&o).filter(|l| *l != Level::Settling) {
+                    let from = self.drive_errors.get(&name).copied().or_else(|| items.get(&name).and_then(|i| level_of(i)).filter(|l| *l != Level::Settling));
+                    if noteworthy(from, now) {
+                        if let Some(item) = items.get(&name) {
+                            let (kind, reason) = match now {
+                                Level::Failing => ("Warning", "DriveErrorsFailing"),
+                                Level::Degraded => ("Warning", "DriveErrorsDegraded"),
+                                _ => ("Normal", "DriveErrorsOk"),
+                            };
+                            let why = o["status"]["health"]["errors"]["why"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                            let msg = format!("{}: drive errors {} → {}{}", o["status"]["name"].as_str().unwrap_or(&name), from.map_or("unknown", |f| f.word()), now.word(), if why.is_empty() { String::new() } else { format!(": {why}") });
+                            self.event_on("Drive", item, kind, reason, &msg).await;
+                        }
+                    }
+                    self.drive_errors.insert(name.clone(), now);
+                }
             }
             let fp = drive_fingerprint(&o);
             if let Some((prev, at)) = self.written.get(&name) {

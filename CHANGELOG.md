@@ -4,6 +4,9 @@
 
 <!-- New unreleased changes go here -->
 
+### 2026-11-24 (#160)
+- **feat:** #160 (stormblock#648) the Drive object carries the drive's own error and PI-check counters: the fleet tick reads stormblock's `GET /api/v1/storage/hba` every 60 s and joins each row's `errors` by SAS address into `status.health.errors` (the engine's `level` settling/ok/degraded/failing, since, at, streak, why, piChecks, eedpChecks, uncorrected, mediumErrors, grownDefects, defectsPerDay, pendingPerDay, raw `drive` and `sense` counters, perMin). Conditions `DriveErrorsDegraded` / `DriveErrorsFailing` (message = why, lastTransitionTime = since), a Kubernetes Event on a level change, an Errors column, a "drive errors" metric in the stormview feed. CRD: `status.health` described, the Errors column. v0.60.0
+
 ### 2026-11-24
 - **docs:** #184 work plan: sc-build passed on 9e3bcbc (build, test, clippy), closed
 - **feat:** #184 the firmware manifest records SAS card images (stormconsole#380): `kind = "card"` entries with a `region` (`firmware`, `bios`, `uefi`, `nvdata`), `model` = the board name or PCI id `1000:dddd`, `vendor`? = the PCI subsystem; same `sha256` / `source` / `file` checks. The HostBusAdapter's `status.firmwareAvailable` (CRD field added) and `GET /api/v1/firmware/manifest` `cards[].regions` say per region the card's current version, the entry that applies, and whether a flash writes that region (firmware, bios). A CardOperation `image: {manifest: true, sha256?}` takes the file, sha256 and source from the entry instead of typed text: the file is read beside the manifest or else from the node's store, its sha256 checked; a given `sha256` pins the entry; the run's status carries `manifest`. `uefi` entries are listed but offered to no card (the card reports no UEFI version). v0.59.0

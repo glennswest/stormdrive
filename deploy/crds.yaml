@@ -60,6 +60,7 @@ spec:
         - { name: Tier, type: string, jsonPath: .status.tier }
         - { name: Why, type: string, jsonPath: .status.membershipReason, priority: 1 }
         - { name: Link, type: string, jsonPath: .status.link.level }
+        - { name: Errors, type: string, jsonPath: .status.health.errors.level }
         - { name: Owner, type: string, jsonPath: .status.owner }
         - { name: Prep, type: string, jsonPath: .status.prep.phase }
         - { name: SAS, type: string, jsonPath: .status.sasAddress, priority: 1 }
@@ -138,7 +139,7 @@ spec:
                     recommendation: { type: string, nullable: true }
                 conditions:
                   type: array
-                  description: "LinkDegraded (link errors moving, failing included) and LinkFailing (loss of sync or phy resets moving two samples running), each with reason, message and lastTransitionTime (#149). A change raises a Kubernetes Event on the Drive. Member (#156): True (Enrolled) in the fleet; False with the reason (NoPolicy, NotSelected, Designated, InUse, Busy, Failed, Hot, HostManagedSMR, NeedsReformat, NoHealthYet, Enrolling, Planned, EnrollFailed, Waiting, Suspended, Missing, NotDecided) and status.membershipReason as its message."
+                  description: "LinkDegraded (link errors moving, failing included) and LinkFailing (loss of sync or phy resets moving two samples running), each with reason, message and lastTransitionTime (#149). A change raises a Kubernetes Event on the Drive. DriveErrorsDegraded (the engine's errors level degraded or failing) and DriveErrorsFailing (#160, stormblock#648), message = the engine's why, lastTransitionTime = its since; a change raises an Event (DriveErrorsDegraded, DriveErrorsFailing, DriveErrorsOk). Member (#156): True (Enrolled) in the fleet; False with the reason (NoPolicy, NotSelected, Designated, InUse, Busy, Failed, Hot, HostManagedSMR, NeedsReformat, NoHealthYet, Enrolling, Planned, EnrollFailed, Waiting, Suspended, Missing, NotDecided) and status.membershipReason as its message."
                   items:
                     type: object
                     x-kubernetes-preserve-unknown-fields: true
@@ -148,6 +149,11 @@ spec:
                       reason: { type: string }
                       message: { type: string }
                       lastTransitionTime: { type: string }
+                health:
+                  type: object
+                  nullable: true
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: "The drive's health sample (status good|warning|failing|failed, temperature, wear, SMART counters). errors (#160, stormblock#648): the drive's own error and PI-check counters from stormblock's card rows (GET /api/v1/storage/hba, read every 60 s, joined by SAS address; absent when the engine has no sample): level (settling|ok|degraded|failing, the engine's: corrected-on-the-fly ECC never counts; degraded = a retry-corrected, non-medium, recovered, hardware or medium error, a PI check or a defect grown in a day moving; failing = an uncorrected error, a PI check or medium error two samples running, or 10 defects grown in a day), since, at, streak, why, piChecks (drive-raised guard+app+ref), eedpChecks (card-raised), uncorrected, mediumErrors, grownDefects, defectsPerDay, pendingPerDay, drive {read, write, verify {correctedFast, correctedDelayed, retries, corrected, uncorrected}, nonMedium, exception, grownDefects, reallocated, pending, offlineUncorrectable}, sense {piGuard, piAppTag, piRefTag, eedpGuard, eedpAppTag, eedpRefTag, mediumError, recoveredError, hardwareError}, perMin {kind: rate}."
                 writeTest:
                   type: object
                   nullable: true
