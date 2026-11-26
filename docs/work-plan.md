@@ -2351,6 +2351,12 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
   `[[process.api]]` probes from them).
 - [x] Shipped (feb743d, image build 51ad6b687f89) with the proof `get:http://{node}:9094/api/plugins/health/snapshot`
   shows the `drives` API of container stormdrive healthy; closes when a node shows it.
+- [x] 2026-11-26: reopened because the `get:` proof on :9094 answered 401. The proof checker
+  sends a ServiceAccount bearer, while stormconsole wants the console user (stormcentral#1799,
+  open; not ours). The fact holds: stormcentral's own snapshot reader (signed in as the console
+  user) records `api:<node>/stormdrive/stormdrive API drives` and `… API shelves` **healthy** on
+  pvetest1 (05:52Z), pvetest3 (06:09Z) and pvetest2 (06:21Z) on 14.06-flowsdn
+  (`stormcentral asset show`). Closed on that.
 
 ### #170: a single-namespace format must not erase every namespace (finding c1b3d071b848) (2026-11-20) — P0
 - [x] `erase::format_target`: with FNA bit 0 set, Format NVM goes to 0xFFFFFFFF only when the controller's own active namespace list (Identify CNS 2) has no other namespace; otherwise refused, naming them. List unreadable → refused unless NN = 1.
