@@ -2358,6 +2358,7 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] `stormdrive format` reports the refusal as Refused, not Failed.
 - [x] Tests, changelog, README/architecture; sc-build; image; shipped.
 - [x] Fix ea950a5, v0.57.1 (51cdbb6); sc-build + clippy passed; image build b5c1599e226c; shipped with proof `get:http://{node}:9092/healthz ~ "version":"0.57.1"`. FNA multi-namespace refusal proven by unit tests only (no such controller in the testbed).
+- [x] Reopened 2026-11-26 by the proof check: pvetest1 (14.06-flowsdn) answered `"version":"0.60.0"`, not the exact `0.57.1`. 0.60.0 (f1b7129) descends from ea950a5 and `src/erase.rs` is unchanged since it, so the node runs the fix; the proof was an exact match, not a floor. Re-verified with sc-build at main; closed.
 
 ### #167: card-side SAS IO Unit Page 1 rate write (2026-11-20) — P2, held after #163
 - Not built: its only user is #163 (unbuilt). `spec.linkRate`/`link_rate` already write the same page through sysfs (`maximum_linkrate` + `link_reset`), which also keeps mpt3sas's cached `maximum_linkrate` in step; a direct WRITE_CURRENT would leave `status.link` stale. Proposed `--after stormdrive#163`; #163 decides sysfs (close #167 as not needed) or a card write (e.g. NVRAM persistence).
