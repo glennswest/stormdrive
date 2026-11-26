@@ -2376,6 +2376,7 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - [x] 776a07af0ae7: Enroll and `fleet::join` propagate a `drive_slabs` error instead of reading it as "no slab" and formatting.
 - [x] Tests, changelog; sc-build; image; shipped.
 - [x] sc-build passed on 81575f1 (build + 468 lib tests + suites + clippy -D warnings, 0 warnings; the 4 new worker/inventory tests ran); v0.57.2 (4bdd199); image build be48662f52de; shipped with proof `get:http://{node}:9092/healthz ~ "version":"0.57.2"`. Behaviour proven by unit tests only (no destructive run on a node).
+- [x] Reopened 2026-11-26 by the proof check: pvetest1 (14.06-flowsdn) answered `"version":"0.60.0"`, not the exact `0.57.2`. 0.60.0 (f1b7129) descends from c725a69, 81575f1 and 98e8053; the `drive_slabs` error path (worker Enroll, `fleet::join`, the `items` check) is unchanged at main. Re-verified with sc-build (build, test, clippy) at main; closed.
 
 ### #173: IOM firmware path check on stale counts (finding 759a0ee08e0a) (2026-11-20) — P1
 - [x] `iomfw.rs`: paths probed directly (`live_paths`: sysfs by WWID, state `running`, TUR answered), before and after each IOM, matched by WWID (`short_paths`), held `PATHS_SETTLE` (60 s) with no gap (`wait_paths_back`); a drive with no WWID refuses the run unless `allow_path_loss`.
