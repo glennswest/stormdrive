@@ -2466,6 +2466,7 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - cause: NVMe never reached the record as a controller. `hba/<pcie>` came only from the SCSI-host HBA scan (mpt3sas, ahci; NVMe is not a SCSI host), and `nvme/<serial>` only from `/sys/class/nvme`, which is empty when no nvme driver is bound. stormcentral's ingest maps `nvme/` to a drive and `hba/` to a controller already; no `nvme/` item came from any of the five tracked machines, so either they have no NVMe or no driver took it, and the old record could not tell the two apart
 - [x] `assets.rs`: PCI class 0x01 scan → `hba/<pcie>` (pci_id, subsystem, class, kind, driver or null; an NVMe controller's model, serial, firmware, controller, namespaces); `nvme/<serial>` with pci_id, driver, controller, capacity, namespaces; the monitor merges host items under the HBA scan's (`or_insert`)
 - [x] unit tests (bound + unbound NVMe controller, namespace, NIC left out, namespace names, class kinds); architecture, CHANGELOG, v0.61.0
-- [ ] sc-build
+- [x] sc-build passed on a36e0a5: cargo test (494 lib tests incl. host_tree + namespaces_of_a_controller, every suite, 0 failed), cargo check --all-targets, clippy -D warnings clean; closed
+- [ ] on the fleet: the next record per machine names each PCIe storage controller; an NVMe one with `driver` null means no driver took it
 - note: SMART health and log pages for an NVMe drive already reach stormcentral via `/api/v1/drives` (the drive's `health`, keyed `drive:<serial>` like the `nvme/` item); nothing new needed there
 
