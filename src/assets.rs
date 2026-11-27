@@ -12,8 +12,8 @@
 //! | `dimm/<locator>` | SMBIOS type 17 (`/sys/firmware/dmi/tables/DMI`) |
 //! | `bmc` | SMBIOS type 38 (the BMC's interface; its detail is stormipmi's) |
 //! | `nic/<mac>` | `/sys/class/net/*` with a device: driver, PCIe address |
-//! | `hba/<pcie>` | the HBA scan (`hba.rs`): board, firmware, BIOS, NVDATA |
-//! | `nvme/<serial>` | `/sys/class/nvme/*` (PCIe controllers only) |
+//! | `hba/<pcie>` | the HBA scan (`hba.rs`): board, firmware, BIOS, NVDATA; and every other PCIe mass-storage controller (class 0x01, `/sys/bus/pci/devices`): PCI ids, class, kind, driver (null: none bound), an NVMe controller's model, serial, firmware, namespaces (#192) |
+//! | `nvme/<serial>` | `/sys/class/nvme/*` (PCIe controllers only): model, firmware, PCIe address, PCI id, driver, controller, capacity, each namespace (#192) |
 //! | `shelf/<key>` | the SES scan: vendor, model, serial, each IOM's revision |
 //! | `bay/<bay key>`, `drive/<id>` | each present drive: model, serial, firmware, size |
 //!
@@ -264,7 +264,8 @@ fn link_name(p: &Path) -> Option<String> {
 }
 
 /// The host's own assets under `root` (`/` on a node; a tree in tests):
-/// DMI, CPUs, DIMMs, BMC, NICs, NVMe controllers. Returns the items and
+/// DMI, CPUs, DIMMs, BMC, NICs, NVMe controllers, PCIe storage controllers
+/// (`hba/<pcie>`: merge them under the HBA scan's). Returns the items and
 /// the kernel's MemTotal.
 pub fn host_items(root: &Path) -> (BTreeMap<String, Value>, Option<u64>) {
     let mut items = BTreeMap::new();
@@ -303,22 +304,138 @@ pub fn host_items(root: &Path) -> (BTreeMap<String, Value>, Option<u64>) {
             );
         }
     }
-    if let Ok(rdir) = std::fs::read_dir(root.join("sys/class/nvme")) {
-        for e in rdir.flatten() {
-            let p = e.path();
-            // NVMe-oF controllers are someone's export (#49), not hardware.
-            if rd(&p.join("transport")).is_some_and(|t| t != "pcie") {
-                continue;
-            }
-            let Some(serial) = rd(&p.join("serial")) else { continue };
-            items.insert(
-                format!("nvme/{serial}"),
-                json!({ "model": rd(&p.join("model")), "firmware": rd(&p.join("firmware_rev")), "pcie": rd(&p.join("address")) }),
-            );
-        }
+    let nvme = nvme_controllers(root);
+    for c in &nvme {
+        let Some(serial) = &c.serial else { continue };
+        items.insert(
+            format!("nvme/{serial}"),
+            json!({ "model": c.model, "firmware": c.firmware, "pcie": c.pcie, "pci_id": c.pci_id, "driver": c.driver, "controller": c.name,
+                    "capacity_bytes": c.namespaces.iter().filter_map(|n| n["capacity_bytes"].as_u64()).sum::<u64>(), "namespaces": c.namespaces }),
+        );
     }
+    storage_controllers(root, &nvme, &mut items);
     let total = rd(&root.join("proc/meminfo")).and_then(|m| mem_total(&m));
     (items, total)
+}
+
+/// One PCIe NVMe controller from `/sys/class/nvme/<name>`.
+#[derive(Debug, Default)]
+struct NvmeCtl {
+    name: String,
+    serial: Option<String>,
+    model: Option<String>,
+    firmware: Option<String>,
+    pcie: Option<String>,
+    pci_id: Option<String>,
+    driver: Option<String>,
+    namespaces: Vec<Value>,
+}
+
+fn pci_ids(dev: &Path, a: &str, b: &str) -> Option<String> {
+    match (rd(&dev.join(a)), rd(&dev.join(b))) {
+        (Some(v), Some(d)) => Some(format!("{}:{}", v.trim_start_matches("0x").to_lowercase(), d.trim_start_matches("0x").to_lowercase())),
+        _ => None,
+    }
+}
+
+/// Is `n` a namespace of controller `ctl`: `nvme0n1`, or under native
+/// multipath its path node `nvme0c0n1` (#192)?
+fn namespace_of(ctl: &str, n: &str) -> bool {
+    let Some(rest) = n.strip_prefix(ctl) else { return false };
+    let rest = match rest.strip_prefix('c') {
+        Some(r) => r.trim_start_matches(|c: char| c.is_ascii_digit()),
+        None => rest,
+    };
+    rest.strip_prefix('n').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Every PCIe NVMe controller the kernel has bound (NVMe-oF controllers are
+/// someone's export, #49, not hardware), with its namespaces.
+fn nvme_controllers(root: &Path) -> Vec<NvmeCtl> {
+    let mut out = vec![];
+    let Ok(rdir) = std::fs::read_dir(root.join("sys/class/nvme")) else { return out };
+    let mut names: Vec<_> = rdir.flatten().map(|e| e.path()).collect();
+    names.sort();
+    for p in names {
+        if rd(&p.join("transport")).is_some_and(|t| t != "pcie") {
+            continue;
+        }
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let dev = p.join("device");
+        let mut namespaces: Vec<Value> = std::fs::read_dir(&p)
+            .map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| namespace_of(&name, n)).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| {
+                let ns = p.join(&n);
+                let block = rd(&ns.join("queue/logical_block_size")).and_then(|v| v.parse::<u64>().ok());
+                // `size` is in 512-byte sectors whatever the LBA size.
+                let cap = rd(&ns.join("size")).and_then(|v| v.parse::<u64>().ok()).map(|s| s * 512);
+                json!({ "name": n, "nsid": rd(&ns.join("nsid")).and_then(|v| v.parse::<u32>().ok()), "capacity_bytes": cap, "block_size": block })
+            })
+            .collect();
+        namespaces.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        out.push(NvmeCtl {
+            serial: rd(&p.join("serial")),
+            model: rd(&p.join("model")),
+            firmware: rd(&p.join("firmware_rev")),
+            pcie: rd(&p.join("address")).or_else(|| link_name(&dev)),
+            pci_id: pci_ids(&dev, "vendor", "device"),
+            driver: link_name(&dev.join("driver")),
+            namespaces,
+            name,
+        });
+    }
+    out
+}
+
+/// A PCI class code's storage kind (class 0x01, by subclass).
+fn storage_kind(class: u32) -> &'static str {
+    match (class >> 8) & 0xff {
+        0x00 => "scsi",
+        0x01 => "ide",
+        0x04 => "raid",
+        0x06 => "sata",
+        0x07 => "sas",
+        0x08 => "nvme",
+        0x80 => "other",
+        _ => "storage",
+    }
+}
+
+/// Every PCIe mass-storage controller (class 0x01) under
+/// `/sys/bus/pci/devices` as `hba/<pcie>` (#192): its PCI ids, class and
+/// bound driver (null: none bound, so a controller the kernel has no driver
+/// for is still on the record), and for an NVMe controller its model,
+/// serial, firmware and namespaces. An `hba/` item the HBA scan already
+/// wrote keeps its own fields (the scan's are richer): the caller merges
+/// with `or_insert`.
+fn storage_controllers(root: &Path, nvme: &[NvmeCtl], items: &mut BTreeMap<String, Value>) {
+    let Ok(rdir) = std::fs::read_dir(root.join("sys/bus/pci/devices")) else { return };
+    for e in rdir.flatten() {
+        let bdf = e.file_name().to_string_lossy().to_string();
+        let dev = e.path();
+        let Some(class) = rd(&dev.join("class")).and_then(|c| u32::from_str_radix(c.trim_start_matches("0x"), 16).ok()) else { continue };
+        if class >> 16 != 0x01 {
+            continue;
+        }
+        let mut v = json!({
+            "driver": link_name(&dev.join("driver")),
+            "pci_id": pci_ids(&dev, "vendor", "device"),
+            "pci_subsystem": pci_ids(&dev, "subsystem_vendor", "subsystem_device"),
+            "class": format!("0x{class:06x}"),
+            "kind": storage_kind(class),
+        });
+        if let Some(c) = nvme.iter().find(|c| c.pcie.as_deref() == Some(bdf.as_str())) {
+            v["board"] = json!(c.model);
+            v["model"] = json!(c.model);
+            v["serial"] = json!(c.serial);
+            v["firmware"] = json!(c.firmware);
+            v["controller"] = json!(c.name);
+            v["namespaces"] = json!(c.namespaces.len());
+        }
+        items.insert(format!("hba/{bdf}"), v);
+    }
 }
 
 /// What stormdrive's own scans know: HBAs, shelves, drives by bay.
@@ -619,6 +736,27 @@ mod tests {
         write(&root.join("sys/class/nvme/nvme0/transport"), "pcie\n");
         write(&root.join("sys/class/nvme/nvme1/serial"), "fabric\n");
         write(&root.join("sys/class/nvme/nvme1/transport"), "tcp\n");
+        // #192: its PCI function (bound to nvme), a namespace, an M.2 NVMe
+        // controller no driver took, the NIC (class 02, not storage).
+        write(&root.join("sys/class/nvme/nvme0/address"), "0000:03:00.0\n");
+        let f = root.join("sys/bus/pci/devices/0000:03:00.0");
+        write(&f.join("class"), "0x010802\n");
+        write(&f.join("vendor"), "0x8086\n");
+        write(&f.join("device"), "0x0a54\n");
+        write(&f.join("subsystem_vendor"), "0x8086\n");
+        write(&f.join("subsystem_device"), "0x4802\n");
+        write(&root.join("drivers/nvme/x"), "");
+        std::os::unix::fs::symlink(root.join("drivers/nvme"), f.join("driver")).unwrap();
+        std::os::unix::fs::symlink(&f, root.join("sys/class/nvme/nvme0/device")).unwrap();
+        write(&root.join("sys/class/nvme/nvme0/nvme0n1/size"), "3907029168\n");
+        write(&root.join("sys/class/nvme/nvme0/nvme0n1/nsid"), "1\n");
+        write(&root.join("sys/class/nvme/nvme0/nvme0n1/queue/logical_block_size"), "512\n");
+        write(&root.join("sys/class/nvme/nvme0/power/control"), "auto\n");
+        let u = root.join("sys/bus/pci/devices/0000:04:00.0");
+        write(&u.join("class"), "0x010802\n");
+        write(&u.join("vendor"), "0x144d\n");
+        write(&u.join("device"), "0xa808\n");
+        write(&root.join("sys/bus/pci/devices/0000:02:00.0/class"), "0x020000\n");
         let (items, total) = host_items(&root);
         assert_eq!(total, Some(1024 * 1024));
         assert_eq!(items["system"]["product"], "PowerEdge R230");
@@ -628,7 +766,30 @@ mod tests {
         assert!(!items.keys().any(|k| k == "nic/00:00:00:00:00:00"));
         assert_eq!(items["nvme/PHLJ123"]["firmware"], "VDV10131");
         assert!(!items.contains_key("nvme/fabric"));
+        let n = &items["nvme/PHLJ123"];
+        assert_eq!((n["pci_id"].as_str(), n["driver"].as_str(), n["controller"].as_str(), n["pcie"].as_str()), (Some("8086:0a54"), Some("nvme"), Some("nvme0"), Some("0000:03:00.0")));
+        assert_eq!(n["capacity_bytes"], 3907029168u64 * 512);
+        assert_eq!(n["namespaces"], json!([{ "name": "nvme0n1", "nsid": 1, "capacity_bytes": 3907029168u64 * 512, "block_size": 512 }]));
+        let c = &items["hba/0000:03:00.0"];
+        assert_eq!((c["kind"].as_str(), c["class"].as_str(), c["driver"].as_str(), c["pci_id"].as_str()), (Some("nvme"), Some("0x010802"), Some("nvme"), Some("8086:0a54")));
+        assert_eq!((c["model"].as_str(), c["serial"].as_str(), c["firmware"].as_str(), c["namespaces"].as_u64()), (Some("INTEL SSDPE2KX020T8"), Some("PHLJ123"), Some("VDV10131"), Some(1)));
+        // No driver bound: on the record all the same, driver null.
+        let c = &items["hba/0000:04:00.0"];
+        assert_eq!((c["kind"].as_str(), c["pci_id"].as_str()), (Some("nvme"), Some("144d:a808")));
+        assert!(c["driver"].is_null() && c["serial"].is_null());
+        assert!(!items.contains_key("hba/0000:02:00.0"), "a NIC is not a storage controller");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn namespaces_of_a_controller() {
+        for n in ["nvme0n1", "nvme0n12", "nvme0c0n1", "nvme0c3n2"] {
+            assert!(namespace_of("nvme0", n), "{n}");
+        }
+        for n in ["nvme1n1", "nvme10n1", "nvme0", "nvme0n", "nvme0c0n", "nvme0n1p1", "power", "device"] {
+            assert!(!namespace_of("nvme0", n), "{n}");
+        }
+        assert_eq!((storage_kind(0x010802), storage_kind(0x010601), storage_kind(0x010700), storage_kind(0x010400)), ("nvme", "sata", "sas", "raid"));
     }
 
     #[test]

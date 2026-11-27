@@ -1293,9 +1293,19 @@ discovery pass, `assets::host_items` (DMI from `/sys/class/dmi/id`,
 `/proc/cpuinfo` per `physical id`, SMBIOS from
 `/sys/firmware/dmi/tables/DMI`: type 17 memory devices with a module, type
 38 IPMI interface; `/sys/class/net/*` with a `device`; `/sys/class/nvme/*`
-with transport `pcie`) and `assets::scanned_items` (the HBA and SES scans,
-every present drive by bay key, else by WWN/serial) make a map of items
-under stable keys. The map is compared with this boot's file. A new boot
+with transport `pcie`, each as `nvme/<serial>` with its PCI id, driver,
+controller name, capacity and namespaces; every PCIe mass-storage
+controller, class 0x01, under `/sys/bus/pci/devices` as `hba/<pcie>`) and
+`assets::scanned_items` (the HBA and SES scans, every present drive by bay
+key, else by WWN/serial) make a map of items under stable keys. The PCI
+class scan (#192) puts the controllers the HBA scan misses on the record:
+NVMe, which is not a SCSI host, and any controller with no driver bound
+(`driver` null), so a missing kernel driver shows as a controller with
+nothing bound, not as no controller at all. Its items carry `pci_id`,
+`pci_subsystem`, `class` (`0x010802`), `kind` (nvme, sata, sas, raid, ide,
+scsi, other), and for a bound NVMe controller its `model`/`board`,
+`serial`, `firmware`, `controller` and namespace count. Where the HBA scan
+wrote the same `hba/<pcie>` item, the scan's richer one is kept. The map is compared with this boot's file. A new boot
 writes a new file with `changes` against the newest other boot's file
 (`assets::diff`: added, removed, `field: old → new` on the item's
 fields) and an `assets` event (a warning when something was removed). An

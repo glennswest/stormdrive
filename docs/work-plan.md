@@ -2461,3 +2461,11 @@ mpi2_image.h, mpt3sas_ctl.[ch]).
 - cause: golden-stormdrive-f241355ac8f6 (b054019) was made from golden-stormd-f46ad22d8b8f; the wave carries golden-stormd-b1b78114b5a6 (stormd d2cf426, built 19:35 UTC). No code change here
 - [x] the wave restaged stormdrive at 20:55:41 UTC (stormcos#1511): golden-stormdrive-114e669c912e at 4883d80, built 21:02:39 UTC, after stormd b1b78114b5a6 (still stormd's newest); `stormcentral component list`/`GET /api/v1/components`
 - [x] sc-build passed on 0f6e431: cargo build, cargo test (525 tests, 0 failed); closed. The other members the refusal names (stormgit#90, stormlb#50) are theirs
+
+### #192 — asset records carry no NVMe controllers or drives (stormcentral asset list)
+- cause: NVMe never reached the record as a controller. `hba/<pcie>` came only from the SCSI-host HBA scan (mpt3sas, ahci; NVMe is not a SCSI host), and `nvme/<serial>` only from `/sys/class/nvme`, which is empty when no nvme driver is bound. stormcentral's ingest maps `nvme/` to a drive and `hba/` to a controller already; no `nvme/` item came from any of the five tracked machines, so either they have no NVMe or no driver took it, and the old record could not tell the two apart
+- [x] `assets.rs`: PCI class 0x01 scan → `hba/<pcie>` (pci_id, subsystem, class, kind, driver or null; an NVMe controller's model, serial, firmware, controller, namespaces); `nvme/<serial>` with pci_id, driver, controller, capacity, namespaces; the monitor merges host items under the HBA scan's (`or_insert`)
+- [x] unit tests (bound + unbound NVMe controller, namespace, NIC left out, namespace names, class kinds); architecture, CHANGELOG, v0.61.0
+- [ ] sc-build
+- note: SMART health and log pages for an NVMe drive already reach stormcentral via `/api/v1/drives` (the drive's `health`, keyed `drive:<serial>` like the `nvme/` item); nothing new needed there
+

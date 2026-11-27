@@ -586,7 +586,10 @@ async fn refresh_assets(state: &Arc<AppState>) {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let res = tokio::task::spawn_blocking(move || {
         let (host, mem) = crate::assets::host_items(std::path::Path::new("/"));
-        items.extend(host);
+        // The HBA scan's `hba/` items are richer than the PCI class scan's (#192).
+        for (k, v) in host {
+            items.entry(k).or_insert(v);
+        }
         crate::assets::record(&h, &h.boot, items, mem, now)
     })
     .await;
